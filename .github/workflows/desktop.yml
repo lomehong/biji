@@ -1,13 +1,18 @@
 # CI：桌面客户端（Rust workspace desktop/）Windows + macOS 双平台构建。
 # 产物：biji-gui（GUI）与 biji（CLI）二进制，逐平台打包上传 artifact；
 # 另含 biji-server-go 的构建与测试作业（Linux），保证全仓可交付。
+# 发布：推送 v* tag 时，构建完成后自动创建 GitHub Release 并挂载全平台 zip。
 name: 桌面客户端构建
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write # tag 构建创建 Release 需要
 
 env:
   CARGO_TERM_COLOR: always
@@ -121,3 +126,30 @@ jobs:
         run: |
           go build ./...
           go test ./...
+
+  release:
+    # 仅 tag（v*）触发：收集三平台产物，创建 GitHub Release 并挂载 zip
+    name: 发布 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, server]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: biji-desktop-*
+          path: dist
+
+      - name: 整理发布文件
+        run: |
+          set -euxo pipefail
+          # dist/<artifact-name>/biji-<os>-<arch>.zip → 打平到 release/ 目录
+          mkdir -p release
+          find dist -name '*.zip' -exec cp {} release/ \;
+          ls -la release/
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*.zip

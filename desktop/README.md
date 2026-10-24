@@ -116,6 +116,10 @@ biji enml validate note.enml                # DTD 白名单校验
 原生目标同时跑 `cargo test --workspace` 全量测试；`biji-server-go` 在 Linux 作业里构建 + 测试。
 中文字体按平台加载（Windows：msyh 系；macOS：PingFang SC/冬青黑体/Arial Unicode；Linux：Noto CJK）。
 
+**发布 Release**：推送 `v*` tag（如 `git tag v0.1.0 && git push origin v0.1.0`）即触发发布流——
+全平台构建通过后自动创建 GitHub Release（自动生成变更说明）并挂载三平台 zip，
+ Releases 页可直接下载，无需登录 Actions。
+
 ## 尚未复刻（与分析文档 §12 对应，持续收敛中）
 
 1. **PDF 渲染质量上限**（已基本收敛）——按页渲染标注闭环已用 poppler 25.07.0 实测打通（见上方 GUI 验证记录）；残余仅为渲染保真度上限取决于外部渲染器二进制（pdftoppm 150dpi 光栅已满足标注用途，矢量/字体级高质量渲染可经 `BIJI_PDF_RENDER_CMD` 接入任意渲染命令）。
