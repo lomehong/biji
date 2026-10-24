@@ -135,6 +135,8 @@ struct UiState {
     search: String,
     rows: Vec<ListRow>,
     rows_sig: String,
+    /// 笔记列表无限滚动的可见窗口（滚动到底自动扩展，切换视图重置）。
+    list_limit: usize,
     present: Option<(Vec<i64>, usize)>,
     status: String,
     show_new_notebook: bool,
@@ -176,6 +178,9 @@ struct GroupspaceState {
 }
 
 impl UiState {
+    /// 无限滚动每步渲染的卡片数（首屏与每次扩展的步长）。
+    const LIST_PAGE: usize = 60;
+
     fn new() -> UiState {
         UiState {
             selection: Selection::All,
@@ -185,6 +190,7 @@ impl UiState {
             search: String::new(),
             rows: Vec::new(),
             rows_sig: String::new(),
+            list_limit: Self::LIST_PAGE,
             present: None,
             status: "就绪".into(),
             show_new_notebook: false,
@@ -240,6 +246,10 @@ impl BijiApp {
 
     fn refresh_rows(&mut self) {
         let sig = self.rows_signature();
+        if sig != self.st.rows_sig {
+            // 新列表（切换笔记本/标签/搜索/回收站）：无限滚动窗口回到首页
+            self.st.list_limit = UiState::LIST_PAGE;
+        }
         if sig == self.st.rows_sig {
             return;
         }
@@ -952,7 +962,14 @@ impl BijiApp {
                 );
                 ui.add_space(2.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    let rows = self.st.rows.clone();
+                    // 无限滚动：只渲染可见窗口内的卡片，滚动到底自动扩展
+                    let total = self.st.rows.len();
+                    let rows: Vec<ListRow> = self.st
+                        .rows
+                        .iter()
+                        .take(self.st.list_limit)
+                        .cloned()
+                        .collect();
                     if rows.is_empty() {
                         ui.add_space(20.0);
                         ui.label(egui::RichText::new("（空）").color(theme::SUBTLE));
@@ -1041,6 +1058,19 @@ impl BijiApp {
                             self.st.selected_note = Some(row.uid);
                         }
                         ui.add_space(6.0);
+                    }
+                    // 哨兵：进入视口即扩展窗口（步长 LIST_PAGE，封顶 total）
+                    if self.st.list_limit < total {
+                        let more = ui.label(
+                            egui::RichText::new("↓ 继续滚动加载更多…")
+                                .small()
+                                .color(theme::SUBTLE),
+                        );
+                        if more.rect.intersects(ui.clip_rect()) {
+                            self.st.list_limit =
+                                (self.st.list_limit + UiState::LIST_PAGE).min(total);
+                            ui.ctx().request_repaint();
+                        }
                     }
                 });
             });
