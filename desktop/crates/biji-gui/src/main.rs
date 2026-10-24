@@ -17,7 +17,6 @@ mod theme;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -28,7 +27,7 @@ use biji_service::{
     NoteView, ResourceData,
 };
 use biji_store::{ListNotes, Store};
-use biji_sync::{MockEdamServer, SyncEngine};
+use biji_sync::{ServerRemote, SyncEngine};
 
 fn main() -> ExitCode {
     let db = std::env::args()
@@ -733,11 +732,9 @@ impl BijiApp {
     fn do_sync(&mut self) {
         let store = self.service.store();
         let engine = SyncEngine::new(store);
-        // 凭证环境变量齐备 → 真实 EDAM 远端（自研 Go 服务端/印象笔记）；
-        // 否则内存 mock 演示闭环。
-        let mut remote = biji_sync::remote_from_env(Rc::new(std::cell::RefCell::new(
-            MockEdamServer::new(),
-        )));
+        // 同步目标 = 自研后端 biji-server-go（默认 127.0.0.1:8332 + biji/biji，
+        // BIJI_SERVER_URL/USER/PASS 覆盖）；未启动时诚实报错并给联调指引。
+        let mut remote = ServerRemote::connect();
         match engine.sync_round(&mut remote) {
             Ok(r) => {
                 self.st.status = format!(

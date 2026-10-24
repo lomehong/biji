@@ -1,10 +1,10 @@
-//! 全链路集成：内存 transport 注入 EdamClient，实跑 YinxiangRemote 的
-//! 完整 sync_round（请求编码断言 + 响应解析 + SyncRemote 语义）。
-//! 真实 HTTPS 联调仅剩「换域名 + 注入 BIJI_EDAM_TOKEN」两步。
+//! 全链路集成：内存 transport 注入 EdamClient，实跑 ServerRemote（自有后端
+//! biji-server-go 的客户端）完整 sync_round（请求编码断言 + 响应解析 +
+//! SyncRemote 语义）。真实 HTTP 联调即「启动 biji-server-go + 默认零配置」。
 
 use biji_store::{NoteDraft, Store};
 use biji_sync::edam::{TWriter, T_STRUCT};
-use biji_sync::{SyncEngine, SyncRemote, YinxiangRemote};
+use biji_sync::{ServerRemote, SyncEngine, SyncRemote};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -159,7 +159,10 @@ fn full_sync_round_against_in_memory_edam() {
     let transport_log =
         { move |url: &str, body: &[u8]| -> Result<Vec<u8>, String> { dbg_transport(url, body) } };
 
-    let mut remote = YinxiangRemote::with_token("app.yinxiang.com", Some("TEST-TOKEN".into()));
+    let mut remote = ServerRemote::with_token(
+        biji_sync::DEFAULT_SERVER_URL,
+        Some("TEST-TOKEN".into()),
+    );
     remote.set_transport("TEST-TOKEN", Rc::new(transport_log), note_url.to_string());
 
     // ---- 本地库：一条待推送笔记 ----
@@ -354,10 +357,12 @@ fn full_sync_round_against_in_memory_edam() {
 }
 #[test]
 fn missing_token_is_honest_error() {
-    let mut remote = YinxiangRemote::with_token("app.yinxiang.com", None);
+    // authenticate 失败（如服务端未启动）时 connect() 保留未认证句柄：
+    // 同步调用报 Unsupported，错误文案给出自有后端联调指引。
+    let mut remote = ServerRemote::with_token(biji_sync::DEFAULT_SERVER_URL, None);
     let err = remote.pull(0).unwrap_err();
     assert!(
-        matches!(err, biji_sync::SyncError::Unsupported(msg) if msg.contains("BIJI_EDAM_TOKEN"))
+        matches!(err, biji_sync::SyncError::Unsupported(msg) if msg.contains("BIJI_SERVER_USER"))
     );
     let store = Store::open_memory().expect("mem");
     let mut ident = biji_sync::IdentityResolver::new(&store);
@@ -365,7 +370,7 @@ fn missing_token_is_honest_error() {
         .upload(&biji_sync::PushPlan::default(), &mut ident)
         .unwrap_err();
     assert!(
-        matches!(err, biji_sync::SyncError::Unsupported(msg) if msg.contains("BIJI_EDAM_TOKEN"))
+        matches!(err, biji_sync::SyncError::Unsupported(msg) if msg.contains("BIJI_SERVER_URL"))
     );
 }
 

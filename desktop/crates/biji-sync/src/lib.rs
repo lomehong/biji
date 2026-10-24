@@ -9,8 +9,10 @@
 //! - `SyncEngine::sync_round` 跑通 **pull → apply → push → commit** 全轮次，
 //!   双客户端经由同一服务器即可互见对方的笔记、更新与删除。
 //!
-//! 真实云端（`YinxiangRemote`，app.yinxiang.com）保持诚实 Unsupported：
-//! 需要账号凭证与 EDAM/Thrift SDK。
+//! 同步远端是**自研后端 biji-server-go**（`ServerRemote`，EDAM Thrift over
+//! HTTP——协议对位印象笔记，服务端即本仓库 `biji-server-go/`）：
+//! 默认 `http://127.0.0.1:8332` + `biji/biji`，开箱直连，零环境变量；
+//! [`MockEdamServer`]/[`LocalEdamRemote`] 保留为离线演示（CLI `--demo`）与测试闭环。
 
 pub mod edam;
 
@@ -31,20 +33,18 @@ pub enum SyncError {
     Unsupported(&'static str),
     #[error("网络传输错误: {0}")]
     Transport(String),
-    #[error("云端拒绝: {0}")]
+    #[error("服务端拒绝: {0}")]
     Edam(String),
 }
 
-/// 中国区默认服务端（分析文档 §6.1 bootstrap 实测）。
-pub const DEFAULT_SERVICE_HOST: &str = "app.yinxiang.com";
-
-/// 印象笔记开发者 token 的环境变量名（凭证红线：只从环境读取）。
-pub const EDAM_TOKEN_ENV: &str = "BIJI_EDAM_TOKEN";
-/// 可选：账密认证的环境变量名（与 token 二选一；优先 token）。
-pub const EDAM_USER_ENV: &str = "BIJI_EDAM_USER";
-pub const EDAM_PASS_ENV: &str = "BIJI_EDAM_PASS";
-/// 可选：覆盖默认服务端（测试/私有部署用）。
-pub const EDAM_HOST_ENV: &str = "BIJI_EDAM_HOST";
+/// 自有后端（biji-server-go）默认地址：与其 `-addr` 默认值一致。
+pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8332";
+/// 自有后端认证用户名环境变量（与服务端 `BIJI_SERVER_USER` 同名同默认）。
+pub const SERVER_USER_ENV: &str = "BIJI_SERVER_USER";
+/// 自有后端认证密码环境变量（与服务端 `BIJI_SERVER_PASS` 同名同默认）。
+pub const SERVER_PASS_ENV: &str = "BIJI_SERVER_PASS";
+/// 覆盖自有后端地址（默认 [`DEFAULT_SERVER_URL`]；非本机部署时设置）。
+pub const SERVER_URL_ENV: &str = "BIJI_SERVER_URL";
 
 const LAST_USN_KEY: &str = "sync.last_usn";
 /// 推送侧本地 journal 水位（与服务器同步点分离，见 `journal_push_mark`）。
@@ -499,128 +499,64 @@ impl SyncRemote for LocalEdamRemote {
     }
 }
 
-/// 印象笔记中国区远端：真实 EDAM/Thrift 传输（`edam` 模块）。
+/// 自有后端远端（biji-server-go，EDAM Thrift over HTTP，`edam` 模块承载传输）。
 ///
-/// 凭证红线：开发者 token 只从环境变量 `BIJI_EDAM_TOKEN` 读取；
-/// 未配置时构造成功，但同步调用诚实报错并指明变量名。
-pub struct YinxiangRemote {
+/// 连接即产品形态：`ServerRemote::connect()` 以 `BIJI_SERVER_URL/USER/PASS`
+/// （默认 `http://127.0.0.1:8332` + `biji/biji`）经 UserStore.authenticate
+/// 换取认证 token；认证或网络未通时构造仍成功，同步调用诚实报错并给联调指引。
+pub struct ServerRemote {
     pub service_host: String,
-    token: Option<String>,
     client: Option<edam::EdamClient>,
     note_store_url: Option<String>,
 }
 
-/// 同步入口选择器（GUI/CLI 共用）：token 或账密环境变量齐备时走真实
-/// EDAM 远端（YinxiangRemote::china，含 BIJI_EDAM_HOST 基址直通），
-/// 否则回落内存 mock——GUI 演示闭环保持开箱可用。
-pub fn remote_from_env(server: Rc<RefCell<MockEdamServer>>) -> Box<dyn SyncRemote> {
-    let non_empty = |k: &str| {
-        std::env::var(k)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    };
-    remote_from_credentials(
-        non_empty(EDAM_TOKEN_ENV),
-        non_empty(EDAM_USER_ENV),
-        non_empty(EDAM_PASS_ENV),
-        server,
-    )
-}
-
-/// 纯函数决策核（可测，不读进程环境）：token 或账密齐备走真实远端。
-fn remote_from_credentials(
-    has_token: bool,
-    has_user: bool,
-    has_pass: bool,
-    server: Rc<RefCell<MockEdamServer>>,
-) -> Box<dyn SyncRemote> {
-    if has_token || (has_user && has_pass) {
-        Box::new(YinxiangRemote::china())
-    } else {
-        Box::new(LocalEdamRemote::new(server))
-    }
-}
-
-#[cfg(test)]
-mod remote_env_tests {
-    use super::*;
-
-    fn select(has_token: bool, has_user: bool, has_pass: bool) -> String {
-        let server = Rc::new(std::cell::RefCell::new(MockEdamServer::new()));
-        remote_from_credentials(has_token, has_user, has_pass, server)
-            .name()
-            .to_string()
-    }
-
-    /// 凭证齐备 → 真实远端；无凭证 → mock 演示远端（GUI 开箱闭环）。
-    #[test]
-    fn remote_selection_follows_credentials() {
-        assert_eq!(select(false, false, false), "local-edam", "无凭证应回落 mock");
-        assert_ne!(select(true, false, false), "local-edam", "有 token 走真实远端");
-        assert_ne!(
-            select(false, true, true),
-            "local-edam",
-            "账密齐备走真实远端"
-        );
-        assert_eq!(select(false, true, false), "local-edam", "账密缺一不可");
-    }
-}
-
-impl YinxiangRemote {
-    /// 免认证握手：对真实服务端验证 Thrift 传输与消息封装
-    /// （无需凭证即可执行的真实云端调用）。
+impl ServerRemote {
+    /// 免认证握手：对自有后端验证 Thrift 传输与消息封装（无需凭证）。
     pub fn check_version(&self, client_name: &str) -> Result<bool> {
         match &self.client {
             Some(c) => c.check_version(client_name).map_err(SyncError::Edam),
-            // checkVersion 免认证：无 token 也能对真实服务端验证传输层
+            // checkVersion 免认证：认证未通也能对服务端验证传输层
             None => edam::EdamClient::new(&self.service_host, "")
                 .check_version(client_name)
                 .map_err(SyncError::Edam),
         }
     }
 
-    pub fn china() -> YinxiangRemote {
-        let host = std::env::var(EDAM_HOST_ENV)
-            .ok()
-            .filter(|h| !h.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_SERVICE_HOST.to_string());
-        let token = std::env::var(EDAM_TOKEN_ENV)
-            .ok()
-            .filter(|t| !t.trim().is_empty());
-        let remote = YinxiangRemote::with_token(&host, token);
-        // 账密二选一路径：无 token 但有 BIJI_EDAM_USER/PASS 时先 authenticate 换 token
-        if remote.token.is_none() {
-            if let (Ok(user), Ok(pass)) = (
-                std::env::var(EDAM_USER_ENV),
-                std::env::var(EDAM_PASS_ENV),
-            ) {
-                if !user.trim().is_empty() && !pass.trim().is_empty() {
-                    let client = edam::EdamClient::new(&host, "");
-                    if let Ok(t) = client.authenticate(&user, &pass) {
-                        return YinxiangRemote::with_token(&host, Some(t));
-                    }
-                }
-            }
+    /// 连接自有后端（产品唯一同步目标）：地址/账密取环境变量，缺省
+    /// `http://127.0.0.1:8332` + `biji/biji`——与服务端默认一致，零配置直连。
+    /// 认证失败不 panic：保留未认证句柄，同步调用时给出联调指引。
+    pub fn connect() -> ServerRemote {
+        let non_empty = |k: &str, default: &str| {
+            std::env::var(k)
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        let url = non_empty(SERVER_URL_ENV, DEFAULT_SERVER_URL);
+        let user = non_empty(SERVER_USER_ENV, "biji");
+        let pass = non_empty(SERVER_PASS_ENV, "biji");
+        // authenticate 换认证 token（服务端 BIJI_SERVER_USER/PASS 默认 biji/biji）
+        match edam::EdamClient::new(&url, "").authenticate(&user, &pass) {
+            Ok(t) => ServerRemote::with_token(&url, Some(t)),
+            Err(_) => ServerRemote::with_token(&url, None),
         }
-        remote
     }
 
-    pub fn with_token(host: &str, token: Option<String>) -> YinxiangRemote {
+    pub fn with_token(host: &str, token: Option<String>) -> ServerRemote {
         let client = token.as_ref().map(|t| edam::EdamClient::new(host, t));
-        YinxiangRemote {
+        ServerRemote {
             service_host: host.to_string(),
-            token,
             client,
             note_store_url: None,
         }
     }
 
     /// 解析 NoteStore 地址并返回可克隆的客户端句柄；
-    /// 未配置 token 时诚实报错并指明环境变量名。
+    /// 认证未通时诚实报错并给出自有后端联调指引。
     fn require_client(&mut self) -> Result<edam::EdamClient> {
         if self.client.is_none() {
             return Err(SyncError::Unsupported(
-                "未配置 BIJI_EDAM_TOKEN（印象笔记开发者 token 在网页端「账号设置 → 开发者 Token」页创建后经该环境变量注入即接通真实云端）",
+                "自有后端认证未通：UserStore.authenticate 失败（默认账密 biji/biji，经 BIJI_SERVER_USER/BIJI_SERVER_PASS 覆盖；请确认 biji-server-go 已启动，默认 http://127.0.0.1:8332，经 BIJI_SERVER_URL 覆盖）",
             ));
         }
         if self.note_store_url.is_none() {
@@ -655,9 +591,9 @@ impl YinxiangRemote {
     }
 }
 
-impl SyncRemote for YinxiangRemote {
+impl SyncRemote for ServerRemote {
     fn name(&self) -> &str {
-        "yinxiang"
+        "server-go"
     }
 
     fn service_host(&self) -> &str {
@@ -702,7 +638,7 @@ impl SyncRemote for YinxiangRemote {
                     }
                     .map_err(SyncError::Edam)?;
                     if guid_existing.is_none() {
-                        eprintln!("[yinxiang] record note {} -> {}", ch.item_uid, result.guid);
+                        eprintln!("[server-go] record note {} -> {}", ch.item_uid, result.guid);
                         identities.record_external("note", ch.item_uid, &result.guid);
                     }
                 }
@@ -1413,11 +1349,13 @@ mod tests {
             .contains("正文快照"));
     }
 
+    /// 未认证句柄（authenticate 失败/服务端未启动时）保持诚实：
+    /// 同步调用报 Unsupported 并给出自有后端联调指引，不 panic 不误同步。
     #[test]
-    fn yinxiang_remote_is_honest_skeleton() {
-        let mut remote = YinxiangRemote::china();
-        assert_eq!(remote.name(), "yinxiang");
-        assert_eq!(remote.service_host(), "app.yinxiang.com");
+    fn server_remote_unauthenticated_is_honest() {
+        let mut remote = ServerRemote::with_token(DEFAULT_SERVER_URL, None);
+        assert_eq!(remote.name(), "server-go");
+        assert_eq!(remote.service_host(), DEFAULT_SERVER_URL);
         let s = store();
         let mut ids = IdentityResolver::new(&s);
         assert!(matches!(

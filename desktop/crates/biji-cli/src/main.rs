@@ -12,7 +12,7 @@ use biji_service::{
     LoggingFrontend, NodeWebkitCommand, NoteService, note_link,
 };
 use biji_store::{ListNotes, Store};
-use biji_sync::{LocalEdamRemote, MockEdamServer, SyncEngine, SyncRemote, YinxiangRemote};
+use biji_sync::{LocalEdamRemote, MockEdamServer, ServerRemote, SyncEngine, SyncRemote};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -63,7 +63,7 @@ enum Command {
         #[arg(long, default_value = "context-menu")]
         trigger: String,
     },
-    /// 同步（USN 记账 + 删除账；云端 EDAM 为接缝）
+    /// 同步（USN 记账 + 删除账；目标为自有后端 biji-server-go）
     Sync {
         #[command(subcommand)]
         cmd: SyncCmd,
@@ -465,9 +465,12 @@ fn sync(db: &Path, cmd: SyncCmd) -> Result<(), String> {
             }
         }
         SyncCmd::Ping => {
-            let remote = YinxiangRemote::china();
+            let remote = ServerRemote::connect();
             match remote.check_version("biji") {
-                Ok(true) => println!("握手成功：真实服务端确认 EDAM 协议兼容（Thrift 传输验证通过）"),
+                Ok(true) => println!(
+                    "握手成功：自有后端（{}）确认 EDAM 协议兼容（Thrift 传输验证通过）",
+                    remote.service_host()
+                ),
                 Ok(false) => println!("握手成功但服务端报告协议版本不兼容"),
                 Err(e) => println!("握手失败: {e}"),
             }
@@ -478,7 +481,7 @@ fn sync(db: &Path, cmd: SyncCmd) -> Result<(), String> {
                     MockEdamServer::new(),
                 ))))
             } else {
-                Box::new(YinxiangRemote::china())
+                Box::new(ServerRemote::connect())
             };
             match engine.sync_round(&mut remote) {
                 Ok(r) => {
@@ -489,7 +492,7 @@ fn sync(db: &Path, cmd: SyncCmd) -> Result<(), String> {
                 }
                 Err(biji_sync::SyncError::Unsupported(msg)) => {
                     return Err(format!(
-                        "云端同步未接通：{msg}（用 --demo 走本地 EDAM 服务器闭环）"
+                        "自有后端未接通：{msg}（或用 --demo 走内置 mock 闭环）"
                     ));
                 }
                 Err(e) => return Err(e.to_string()),
@@ -502,14 +505,14 @@ fn sync(db: &Path, cmd: SyncCmd) -> Result<(), String> {
                 )));
                 engine.push_via(&mut remote)
             } else {
-                let mut remote = YinxiangRemote::china();
+                let mut remote = ServerRemote::connect();
                 engine.push_via(&mut remote)
             };
             match result {
                 Ok(0) => println!("无待推送变更"),
                 Ok(n) => println!("已推送 {n} 条变更，同步点推进至 {}", engine.last_synced_usn()),
                 Err(biji_sync::SyncError::Unsupported(msg)) => {
-                    return Err(format!("云端同步未接通：{msg}（用 --demo 演示本地记账闭环）"));
+                    return Err(format!("自有后端未接通：{msg}（或用 --demo 演示内置 mock 闭环）"));
                 }
                 Err(e) => return Err(e.to_string()),
             }

@@ -56,7 +56,7 @@ PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm
 | §5.2 DesktopService 28 方法 | 编辑器→壳 | 28 个方法全部有签名级映射且**全部真实现**：笔记/资源/锁/账号/试用计数/事件回报、分段写回（`updateResource` offset 定位拼接/`createNoteFromResource` 分段装配幂等）、PDF 分页渲染（`renderPage`/`renderPages` 经渲染器接缝产出 PNG 文件，与 GUI 标注画布共享 `BIJI_PDF_RENDER_CMD`→pdftoppm 约定，CLI `res render` 可实测） | `biji-service::NoteService` |
 | §5.3 NodeWebkitService 15 方法 | 壳→编辑器 | 15 个变体的枚举 + LoggingFrontend | `biji-service::NodeWebkitCommand` |
 | §6.1 账号模型 | `user#service_host`；bootstrap 双 profile | `account set/show`；`AnalyticsInfo` 默认值 = 中国区 profile 实测开关 | `biji-service` |
-| §6.2 云端 | `app.yinxiang.com` 等 | `biji-sync::DEFAULT_SERVICE_HOST`；`YinxiangRemote` 为诚实接缝（网络未接通即报 Unsupported） | `biji-sync` |
+| §6.2 云端 | `app.yinxiang.com` 等 | 协议对位但不连官方云：同步目标为自研后端 biji-server-go（`ServerRemote`，默认 `http://127.0.0.1:8332` 零配置直连） | `biji-sync` |
 | §7.1 目录布局 | `<名>.exb` + `.exb.attachments` | `biji init` 产出 `biji.exb` + `biji.exb.attachments`；blob 两级哈希寻址、内容去重 | `biji-store::attachments_dir_for` |
 | §7.2 格式结论 | `.exb`=SQLite；`NOCASEUTF8` 需应用注册 | rusqlite(bundled SQLite) + 打开时注册同名 collation（测试覆盖大小写折叠排序） | `biji-store::nocase_utf8` |
 | §7.3 数据模型 | 核心四表（`note_attr`/`notebook_attr`/`tag_attr`/`resource_attr`，DDL 逐字段恢复）+ `expunged_items` | 四表 DDL **逐字段复刻**（含 `COLLATE NOCASEUTF8` 列）；`note_content`/`note_tag`/`sync_journal`/`meta` 为标注的扩展表（原存放点未恢复，分析文档 §12） | `biji-store::SCHEMA` |
@@ -65,21 +65,24 @@ PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm
 | §9.1 正文格式 | ENML 2.0（DTD 在 xml.evernote.com） | `biji-enml`：严格/宽松解析（真实笔记的 HTML 命名实体、碎片、DOCTYPE 全兼容）、白名单校验、script 剪除、纯文本提取 | `biji-enml` |
 | §9.3 风险 2 | USN/CSN 计数模型 | 每次变更加 USN 日志；**完整同步轮次 `sync_round`：pull → apply → push → commit**；`PushPlan` 含变更快照与删除账 | `biji-sync` |
 
-## 同步闭环（本地 EDAM 风格服务器）
+## 同步闭环（自有后端 biji-server-go + 本地 EDAM 风格演示）
 
-`biji-sync` 现包含一个进程内 EDAM 风格服务器与双向对账引擎，同步从"接缝"升级为"可演示闭环"：
+`biji-sync` 的同步目标分两层：**产品层 = 自研 Go 后端**（`ServerRemote`，真实 HTTP 传输），**演示层 = 进程内 EDAM 风格服务器**（离线演示与测试闭环）：
 
-- **`MockEdamServer`**：`update_count` 单调递增、每对象独立 usn、expunged 删除账、guid 铸造——与 EDAM 增量拉取模型一致；
-- **`SyncRemote` 双向协议**：`upload(plan, identities)`（guid ↔ 本地 uid 身份解析/铸造，服务器回执分配表）+ `pull(after_usn)`（增量笔记与删除账）+ `fetch_resource(guid)`（chunk 只带附件元数据时经 getResource 按需取 body，已落库附件按 guid 幂等跳过重复下载）；`LocalEdamRemote` 为其本地实现，`YinxiangRemote`（app.yinxiang.com）保持诚实 Unsupported；
+- **`ServerRemote`（产品同步目标）**：EDAM Thrift over HTTP 客户端（`biji-sync::edam`），连接自研后端 `biji-server-go/`——默认 `http://127.0.0.1:8332` + `biji/biji` 零配置直连（`BIJI_SERVER_URL/USER/PASS` 覆盖），UserStore.authenticate 换认证 token（只存内存）；已实证附件字节保真、getResource 恰好一次、标签/删除账跨端对账；
+- **`MockEdamServer`**：`update_count` 单调递增、每对象独立 usn、expunged 删除账、guid 铸造——与 EDAM 增量拉取模型一致（`--demo` 离线演示）；
+- **`SyncRemote` 双向协议**：`upload(plan, identities)`（guid ↔ 本地 uid 身份解析/铸造，服务器回执分配表）+ `pull(after_usn)`（增量笔记与删除账）+ `fetch_resource(guid)`（chunk 只带附件元数据时经 getResource 按需取 body，已落库附件按 guid 幂等跳过重复下载）；`LocalEdamRemote` 为 mock 侧实现；
 - **`SyncEngine::sync_round`**：pull → apply（`apply_remote_note`/`apply_remote_expunge`，不写本地日志，天然无回声）→ push → commit（同步点只前进不回退）；
 - **对账测试覆盖**：双客户端推拉、更新对账、彻底删除经删除账对账且新客户端绝不复活、双向变更、空轮次幂等、同步点不回退回归、**标签与笔记本/标签删除账跨端传播**、**推送游标与服务器游标分离（本地 journal usn 与服务器 usn 边界碰撞不漏推）**。
 
 ```bash
-biji sync round --demo   # 与本地 EDAM 服务器跑完整轮次（推送/拉取/删除账对账）
-biji sync status         # 同步点与待推送清单
+biji sync ping            # 与自有后端免认证握手（验证 Thrift 传输）
+biji sync round           # 与自有后端跑完整轮次（默认 127.0.0.1:8332，零环境变量）
+biji sync round --demo    # 离线演示：与进程内 mock 服务器跑完整轮次
+biji sync status          # 同步点与待推送清单
 ```
 
-双客户端互见：A 端 `biji note add` → `sync round --demo` → B 端（另一目录的同库或第二库）`sync round --demo` 即拉到 A 的笔记；彻底删除经删除账对账后对端同步移除。
+双客户端互见（真实后端）：启动 `biji-server-go`（默认地址/账密与客户端默认一致）→ A 端 `biji note add` → `biji sync round` → B 端 `biji sync round` 即拉到 A 的笔记；彻底删除经删除账对账后对端同步移除。
 
 ## 构建与验收
 
@@ -102,25 +105,10 @@ biji enml validate note.enml                # DTD 白名单校验
 
 ## 尚未复刻（与分析文档 §12 对应，持续收敛中）
 
-1. **真实云端同步（传输层与协议已实现并经真实服务器实证，等凭证即通）**——`biji-sync::edam` 已实现 EDAM Thrift 二进制协议 over HTTPS 的同步子集（getNoteStoreUrl / getSyncState / getFilteredSyncChunk 分页拉取 / createNote / updateNote / expungeNote / create·update·expungeNotebook / create·update·expungeTag），`YinxiangRemote` 已实现完整 `SyncRemote`；印象笔记开发者 token 经环境变量 ``BIJI_EDAM_TOKEN`注入即接通真实 `app.yinxiang.com`（可选 `BIJI_EDAM_HOST` 覆盖服务端），未配置时诚实报错并指明变量名——凭证红线：token 只从环境变量读，永不入库/日志。token 申请入口：印象笔记网页端「账号设置 → 开发者 Token」（app.yinxiang.com/api/DeveloperToken.action）。**真实服务器连通性已实证**：`biji sync ping` 免认证握手打通真实 `app.yinxiang.com`（TFramed 请求 + 裸消息响应自适应解析，服务端返回 EDAM 处理器层异常而非 Thrift 协议层错误——证明 Thrift 编码已被真实服务器成功反序列化）；**全链路同步语义由内存 transport 集成测试锚定**（`tests/edam_round.rs`：请求序列/方法名逐条断言、createNote 服务器 guid 经 `record_external` 回填 identity 表、pull 应用远端笔记可检索、第二轮幂等空轮、缺 token 诚实报错）——剩余仅为注入凭证后的认证调用运行时联调（需真实凭证，属用户侧输入）。**凭证两种注入方式二选一**：
-- 开发者 token：`BIJI_EDAM_TOKEN`（网页端「账号设置 → 开发者 Token」创建）；
-- 账号密码：`BIJI_EDAM_USER` + `BIJI_EDAM_PASS`（启动时自动 `UserStore.authenticate` 换取认证 token，EDAM 经典路径，中国区老版服务端可用）。
-**真实联调进度日志（本会话实测）**：对真实 app.yinxiang.com 依次试了帧/非帧发送、有无 evernote_ 前缀、i16/i32 版本参数——服务端对每种组合均返回**可完整解析的结构化 Thrift 异常**（TApplicationException），最终稳定为「EDAM processing error: Message length exceeded: 4」。该错误在认证过滤器层抛出（getNoteStoreUrl 需有效 token），与凭证缺失一致；无真实 token 无法进一步区分协议细节与认证失败。
-
-**真实云端联调三步（token 到手后执行）**：
-
-```bat
-:: 1. 创建 token：印象笔记网页端「账号设置 → 开发者 Token」（app.yinxiang.com/api/DeveloperToken.action）
-:: 2. 注入环境变量（当前终端或 setx 持久化）
-set BIJI_EDAM_TOKEN=S=s1:U=你的用户ID:E=你的过期时间戳
-:: 3. 真实同步（不加 --demo 即走 app.yinxiang.com）
-biji sync round
-```
-若服务端对业务细节有异议，报错前缀 `EDAM 异常:`（或 `云端拒绝:`）可直接用于微调——传输/编解码已被真实服务器双向验证（服务端返回 EDAM 处理器层异常而非 Thrift 协议层错误）。
-2. **PDF 渲染质量上限**（已基本收敛）——按页渲染标注闭环已用 poppler 25.07.0 实测打通（见上方 GUI 验证记录）；残余仅为渲染保真度上限取决于外部渲染器二进制（pdftoppm 150dpi 光栅已满足标注用途，矢量/字体级高质量渲染可经 `BIJI_PDF_RENDER_CMD` 接入任意渲染命令）。
-3. **旁路库格式**（.gdb/.tdb，原私有格式）——不做，复刻自有实现无此包袱。
-4. **富文本编辑深化（已全部收敛）**——源码编辑模式的**格式工具栏**（B/I/U/S/H1/H2/代码/待办/链接 九键，`wrap_enml_around_selection` 6 组单测）、**预览态就地编辑格式工具栏**（B/I/U/S/代码/链接作用于片段缓冲选区，2026-10 实机核验：✎ → B 键 → 缓冲出现 `<b>` 包裹 → ✓ 完成 → ENML 落库自动保存全链闭环）与**渲染态直接选区操作**（预览渲染上直接拖选文字施加标记——自研 galley 光标命中 + 片段表标记树映射 + 文本节点拆分，2026-10 实机核验 B/I 两标记写回 ENML，45 项单测含嵌套节点/跨兄弟节点/CJK 安全/带属性链接）均已实现，无剩余项。
-5. **标注旋转深化（已收敛）**——把手旋转（公共中心/外部点枢轴可切换）、paint 侧旋转文字（离屏栅格化 Mesh）、**绕外部点的标注轨道位移**（`rotate_around_canvas` 开启时移动拖拽变为绕画布中心的轨道变换：坐标经 rotate_point 刚体旋转、自身 angle 跟随，跨 ±180° 边界归一）均已实现；剩余仅 paint 侧文字字形直绘（egui TextFormat 限制，保存路径已支持）。
+1. **PDF 渲染质量上限**（已基本收敛）——按页渲染标注闭环已用 poppler 25.07.0 实测打通（见上方 GUI 验证记录）；残余仅为渲染保真度上限取决于外部渲染器二进制（pdftoppm 150dpi 光栅已满足标注用途，矢量/字体级高质量渲染可经 `BIJI_PDF_RENDER_CMD` 接入任意渲染命令）。
+2. **旁路库格式**（.gdb/.tdb，原私有格式）——不做，复刻自有实现无此包袱。
+3. **富文本编辑深化（已全部收敛）**——源码编辑模式的**格式工具栏**（B/I/U/S/H1/H2/代码/待办/链接 九键，`wrap_enml_around_selection` 6 组单测）、**预览态就地编辑格式工具栏**（B/I/U/S/代码/链接作用于片段缓冲选区，2026-10 实机核验：✎ → B 键 → 缓冲出现 `<b>` 包裹 → ✓ 完成 → ENML 落库自动保存全链闭环）与**渲染态直接选区操作**（预览渲染上直接拖选文字施加标记——自研 galley 光标命中 + 片段表标记树映射 + 文本节点拆分，2026-10 实机核验 B/I 两标记写回 ENML，45 项单测含嵌套节点/跨兄弟节点/CJK 安全/带属性链接）均已实现，无剩余项。
+4. **标注旋转深化（已收敛）**——把手旋转（公共中心/外部点枢轴可切换）、paint 侧旋转文字（离屏栅格化 Mesh）、**绕外部点的标注轨道位移**（`rotate_around_canvas` 开启时移动拖拽变为绕画布中心的轨道变换：坐标经 rotate_point 刚体旋转、自身 angle 跟随，跨 ±180° 边界归一）均已实现；剩余仅 paint 侧文字字形直绘（egui TextFormat 限制，保存路径已支持）。
 
 ## 法律边界
 

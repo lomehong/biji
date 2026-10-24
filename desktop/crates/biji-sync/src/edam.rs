@@ -1,13 +1,13 @@
-//! EDAM/Thrift 真实传输——印象笔记中国区 `app.yinxiang.com` 云端。
+//! EDAM/Thrift 传输——**自研后端 biji-server-go**（本仓库 `biji-server-go/`）。
 //!
-//! Evernote Cloud API 的 Thrift 二进制协议 over HTTPS 的最小子集实现，
-//! 覆盖同步引擎所需的调用：getNoteStoreUrl / getSyncState /
-//! getFilteredSyncChunk / createNote / updateNote / expungeNote /
-//! createNotebook / updateNotebook / expungeNotebook / createTag /
-//! updateTag / expungeTag。
+//! Evernote Cloud API 的 Thrift 二进制协议 over HTTP 的最小子集实现
+//! （协议对位印象笔记，连接目标是我们自己的服务端），覆盖同步引擎
+//! 所需的调用：getNoteStoreUrl / getSyncState / getFilteredSyncChunk /
+//! createNote / updateNote / expungeNote / createNotebook / updateNotebook /
+//! expungeNotebook / createTag / updateTag / expungeTag。
 //!
-//! 凭证红线：开发者 token 只从环境变量 `BIJI_EDAM_TOKEN` 读取，
-//! 永不写库、永不写日志。未配置时同步调用诚实报错并指明变量名。
+//! 凭证经 UserStore.authenticate（BIJI_SERVER_USER/PASS，默认 biji/biji）
+//! 换取认证 token，只存内存，永不写库、永不写日志。
 
 use ureq::{Agent, AgentBuilder};
 
@@ -478,8 +478,8 @@ impl EdamClient {
         let mut w = TWriter::new();
         w.call(method, seqid, args);
         // EDAM 传输格式开关：默认 TFramed（4B 大端帧长 + 消息）；
-        // BIJI_EDAM_UNFRAMED=1 时发裸消息（官方 SDK 实为非帧时的回退）。
-        let unframed = std::env::var("BIJI_EDAM_UNFRAMED").ok().as_deref() == Some("1");
+        // BIJI_SERVER_UNFRAMED=1 时发裸消息（协议调试回退开关）。
+        let unframed = std::env::var("BIJI_SERVER_UNFRAMED").ok().as_deref() == Some("1");
         let mut payload = Vec::with_capacity(w.buf.len() + 4);
         if !unframed {
             payload.extend_from_slice(&(w.buf.len() as i32).to_be_bytes());
@@ -1108,7 +1108,7 @@ mod tests {
             "getResource 全量态字节保真"
         );
     }
-    use crate::YinxiangRemote;
+    use crate::ServerRemote;
 
     #[test]
     fn message_header_layout() {
@@ -1194,13 +1194,13 @@ mod tests {
 
     #[test]
     fn missing_token_is_honest_error() {
-        let mut remote = YinxiangRemote::with_token("app.yinxiang.com", None);
+        let mut remote = ServerRemote::with_token(crate::DEFAULT_SERVER_URL, None);
         let err = remote.pull(0).unwrap_err();
-        assert!(matches!(err, SyncError::Unsupported(msg) if msg.contains("BIJI_EDAM_TOKEN")));
+        assert!(matches!(err, SyncError::Unsupported(msg) if msg.contains("BIJI_SERVER_USER")));
         let store = biji_store::Store::open_memory().expect("mem");
         let mut ident = IdentityResolver::new(&store);
         let err = remote.upload(&PushPlan::default(), &mut ident).unwrap_err();
-        assert!(matches!(err, SyncError::Unsupported(msg) if msg.contains("BIJI_EDAM_TOKEN")));
+        assert!(matches!(err, SyncError::Unsupported(msg) if msg.contains("BIJI_SERVER_URL")));
     }
 }
 

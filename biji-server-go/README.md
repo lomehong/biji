@@ -2,14 +2,15 @@
 
 自研笔记服务端：用 Golang 实现 EDAM（Thrift 二进制 over HTTP）同步子集，
 对接 Rust 复刻客户端（`biji-cli` / `biji-gui` 的 `biji-sync::edam`），
-**替代对印象笔记服务端与开发者 token 的依赖**。
+**是本产品唯一的同步后端——客户端不连接印象官方云**。
 
 ## 架构
 
 ```
 Rust 客户端 biji sync round
-   │  BIJI_EDAM_HOST=http://127.0.0.1:8332
-   │  BIJI_EDAM_USER / BIJI_EDAM_PASS（authenticate 换 token）
+   │  默认 http://127.0.0.1:8332 + biji/biji（零环境变量开箱直连）
+   │  UserStore.authenticate 换认证 token
+   │  （BIJI_SERVER_URL / BIJI_SERVER_USER / BIJI_SERVER_PASS 覆盖）
    ▼
 /edam/user   UserStore：checkVersion / authenticate / getNoteStoreUrl
 /edam/note   NoteStore：getSyncState / getFilteredSyncChunk
@@ -52,18 +53,16 @@ go build -o biji-server-go.exe ./cmd/biji-server-go
 #   BIJI_SERVER_USER / BIJI_SERVER_PASS（默认 biji/biji）
 ```
 
-客户端联调：
+客户端联调（默认值与服务端一致，**无需任何环境变量**）：
 
 ```bash
-BIJI_EDAM_HOST=http://127.0.0.1:8332 \
-BIJI_EDAM_USER=biji BIJI_EDAM_PASS=biji \
-biji sync round --db demo.exb
+biji sync ping            # 免认证握手
+biji sync round --db demo.exb   # 完整同步轮次（连接本服务端）
 ```
 
 **GUI 同步入口**：`biji-gui.exe demo.exb` 启动后点工具栏「同步」按钮——
-客户端按环境凭证自动选择远端（`BIJI_EDAM_TOKEN` 或 `BIJI_EDAM_USER/PASS`
-齐备走本服务端，否则内存 mock 演示闭环）；GUI 与 CLI 共用同一
-`SyncEngine + remote_from_env` 链路。
+GUI 与 CLI 共用同一 `SyncEngine + ServerRemote::connect()` 链路，
+直连本服务端；服务端未启动时状态栏给出联调指引（先启动 biji-server-go）。
 
 UI 层实测（2026-10，Windows UIAutomation Invoke 点击）：未同步库启动 GUI →
 点「同步(3)」→ 状态栏「同步完成：推送 3 条，拉取 0 条（服务器 USN 4）」、
