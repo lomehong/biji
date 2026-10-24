@@ -103,6 +103,19 @@ biji markup 1                               # NodeWebkit 命令通路演示
 biji enml validate note.enml                # DTD 白名单校验
 ```
 
+## CI（GitHub Actions，`.github/workflows/desktop.yml`）
+
+推送到 `main` / 提 PR 即触发，双平台构建桌面客户端并上传产物（Actions 页「Artifacts」下载）：
+
+| 产物 | 运行器 | 目标 | 内容 |
+|---|---|---|---|
+| `biji-desktop-windows-x86_64` | windows-latest | x86_64-pc-windows-msvc（原生） | `biji.exe` + `biji-gui.exe` + README，zip |
+| `biji-desktop-macos-aarch64` | macos-latest | aarch64-apple-darwin（原生） | `biji.app`（ad-hoc 签名）+ `biji` CLI + README，zip |
+| `biji-desktop-macos-x86_64` | macos-latest | x86_64-apple-darwin（交叉编译） | 同上（Intel Mac） |
+
+原生目标同时跑 `cargo test --workspace` 全量测试；`biji-server-go` 在 Linux 作业里构建 + 测试。
+中文字体按平台加载（Windows：msyh 系；macOS：PingFang SC/冬青黑体/Arial Unicode；Linux：Noto CJK）。
+
 ## 尚未复刻（与分析文档 §12 对应，持续收敛中）
 
 1. **PDF 渲染质量上限**（已基本收敛）——按页渲染标注闭环已用 poppler 25.07.0 实测打通（见上方 GUI 验证记录）；残余仅为渲染保真度上限取决于外部渲染器二进制（pdftoppm 150dpi 光栅已满足标注用途，矢量/字体级高质量渲染可经 `BIJI_PDF_RENDER_CMD` 接入任意渲染命令）。

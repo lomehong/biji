@@ -2322,15 +2322,29 @@ fn note_label(uid: i64) -> String {
     format!("biji://note/{uid}")
 }
 
-/// CJK 字体安装：egui 默认字体不含汉字字形。原客户端 UI 字体为微软雅黑，
-/// 故 msyh 优先，且插入 Proportional 队首（拉丁/数字同样走雅黑，贴近原版）。
+/// CJK 字体安装：egui 默认字体不含汉字字形。按平台候选顺序加载系统字体
+/// （Windows：msyh 优先——原客户端 UI 字体为微软雅黑，插 Proportional 队首
+/// 使拉丁/数字同样走雅黑；macOS：PingFang SC → 冬青黑体 → Arial Unicode）。
 fn install_cjk_fonts(ctx: &egui::Context) {
+    #[cfg(target_os = "windows")]
     const CANDIDATES: &[&str] = &[
         "C:\\Windows\\Fonts\\msyh.ttc",
         "C:\\Windows\\Fonts\\simhei.ttf",
         "C:\\Windows\\Fonts\\simsun.ttc",
         "C:\\Windows\\Fonts\\Dengb.ttf",
         "C:\\Windows\\Fonts\\Deng.ttf",
+    ];
+    #[cfg(target_os = "macos")]
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+    ];
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     ];
     for (i, path) in CANDIDATES.iter().enumerate() {
         if let Ok(bytes) = std::fs::read(path) {

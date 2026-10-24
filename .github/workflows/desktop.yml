@@ -1,0 +1,123 @@
+# CI：桌面客户端（Rust workspace desktop/）Windows + macOS 双平台构建。
+# 产物：biji-gui（GUI）与 biji（CLI）二进制，逐平台打包上传 artifact；
+# 另含 biji-server-go 的构建与测试作业（Linux），保证全仓可交付。
+name: 桌面客户端构建
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  desktop:
+    name: 桌面客户端 (${{ matrix.artifact }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x86_64
+            run_tests: true
+          - os: macos-latest # Apple Silicon，原生
+            target: aarch64-apple-darwin
+            artifact: macos-aarch64
+            run_tests: true
+          - os: macos-latest # Intel，从 ARM runner 交叉编译（仅构建）
+            target: x86_64-apple-darwin
+            artifact: macos-x86_64
+            run_tests: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo 产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+          key: ${{ matrix.target }}
+
+      - name: 测试（workspace 全量）
+        if: matrix.run_tests
+        working-directory: desktop
+        run: cargo test --workspace
+
+      - name: 构建（release，GUI + CLI）
+        working-directory: desktop
+        run: cargo build --release -p biji-gui -p biji-cli --target ${{ matrix.target }}
+
+      - name: 打包（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = "biji-${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item desktop/target/${{ matrix.target }}/release/biji.exe $out/
+          Copy-Item desktop/target/${{ matrix.target }}/release/biji-gui.exe $out/
+          Copy-Item desktop/README.md $out/
+          Compress-Archive -Path $out -DestinationPath "$out.zip"
+          Get-Item "$out.zip" | Select-Object Name, Length
+
+      - name: 打包（macOS，.app + CLI）
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          OUT="biji-${{ matrix.artifact }}"
+          APP="biji.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cp "desktop/target/${{ matrix.target }}/release/biji-gui" "$APP/Contents/MacOS/"
+          cp "desktop/target/${{ matrix.target }}/release/biji" .
+          cp desktop/README.md .
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>biji-gui</string>
+            <key>CFBundleIdentifier</key><string>dev.biji.gui</string>
+            <key>CFBundleName</key><string>biji</string>
+            <key>CFBundleDisplayName</key><string>biji 笔记</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # ad-hoc 签名（无证书环境；仅保证本结构完整，Gatekeeper 仍需用户放行）
+          codesign --force --sign - "$APP" || true
+          ditto -c -k --keepParent "$APP" "$OUT.zip"
+          zip -j "$OUT.zip" biji README.md
+          ls -la "$OUT.zip"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: biji-desktop-${{ matrix.artifact }}
+          path: biji-${{ matrix.artifact }}.zip
+          if-no-files-found: error
+
+  server:
+    name: 同步服务端（Go）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+
+      - name: 构建 + 测试
+        working-directory: biji-server-go
+        run: |
+          go build ./...
+          go test ./...
