@@ -43,8 +43,8 @@ pub fn apply(ctx: &Context) {
     v.faint_bg_color = Color32::from_rgb(0xF4, 0xF4, 0xF6);
     v.hyperlink_color = LINK;
     v.selection.bg_fill = GREEN.gamma_multiply(0.22);
-    v.selection.stroke = Stroke::new(1.0, GREEN);
-    v.window_stroke = Stroke::new(1.0, HAIRLINE);
+    v.selection.stroke = Stroke::new(1.0_f32, GREEN);
+    v.window_stroke = Stroke::new(1.0_f32, HAIRLINE);
     v.window_rounding = 6.0.into();
     v.window_shadow = egui::epaint::Shadow::NONE;
     for w in [
@@ -57,12 +57,12 @@ pub fn apply(ctx: &Context) {
         w.rounding = 6.0.into();
     }
     v.widgets.inactive.bg_fill = WHITE;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     v.widgets.hovered.bg_fill = Color32::from_rgb(0xF0, 0xF0, 0xF3);
     v.widgets.active.bg_fill = SEL_BG;
-    v.widgets.active.fg_stroke = Stroke::new(1.0, GREEN_DARK);
+    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, GREEN_DARK);
     // 面板分隔线（egui 浅色默认纯黑，实测在侧栏右缘成粗黑带）改为发丝线
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, HAIRLINE);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, HAIRLINE);
     ctx.set_visuals(v);
     // 间距/字号在 egui 0.29 挂在 Style 上而非 Visuals。
     // 字号比例对位原客户端：正文 15 / 标题 24 / 按钮 14 / 小字 12（egui 默认 12.5/18/12.5/9）。
@@ -103,7 +103,7 @@ pub fn apply_dark(ctx: &Context) {
     v.extreme_bg_color = Color32::from_rgb(0x22, 0x24, 0x28);
     v.faint_bg_color = Color32::from_rgb(0x36, 0x39, 0x3F);
     v.selection.bg_fill = GREEN.gamma_multiply(0.30);
-    v.selection.stroke = Stroke::new(1.0, GREEN);
+    v.selection.stroke = Stroke::new(1.0_f32, GREEN);
     for w in [
         &mut v.widgets.noninteractive,
         &mut v.widgets.inactive,

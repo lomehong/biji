@@ -109,8 +109,15 @@ impl PdfPageRenderer for CommandRenderer {
             .replace("{pdf}", &pdf.to_string_lossy())
             .replace("{page}", &page.to_string())
             .replace("{out}", &out.to_string_lossy());
+        // 模板经平台 shell 执行（Windows: cmd /C；macOS/Linux: sh -c）
+        #[cfg(target_os = "windows")]
         let status = Command::new("cmd")
             .args(["/C", &cmd])
+            .output()
+            .map_err(|e| e.to_string())?;
+        #[cfg(not(target_os = "windows"))]
+        let status = Command::new("sh")
+            .args(["-c", &cmd])
             .output()
             .map_err(|e| e.to_string())?;
         if !status.status.success() {
@@ -157,7 +164,7 @@ mod tests {
 
     #[test]
     fn command_renderer_runs_template() {
-        // 用 cmd 的 copy 命令当最简渲染器：把 fixture PNG 复制到 {out}。
+        // 用平台复制命令当最简渲染器：把 fixture PNG 复制到 {out}。
         let dir = std::env::temp_dir().join("biji-pdf-test");
         std::fs::create_dir_all(&dir).unwrap();
         let fixture = dir.join("fixture.png");
@@ -171,8 +178,13 @@ mod tests {
         std::fs::write(&fixture, png).unwrap();
         let pdf = dir.join("fake.pdf");
         std::fs::write(&pdf, b"%PDF-fake").unwrap();
+        #[cfg(target_os = "windows")]
         let renderer = CommandRenderer {
             template: format!("copy /Y {} {{out}}", fixture.display()),
+        };
+        #[cfg(not(target_os = "windows"))]
+        let renderer = CommandRenderer {
+            template: format!("cp {} {{out}}", fixture.display()),
         };
         let img = renderer.render_page(&pdf, 1).unwrap();
         assert_eq!((img.width(), img.height()), (1, 1));

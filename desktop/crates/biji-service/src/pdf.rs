@@ -93,8 +93,15 @@ impl PdfPageFileRenderer for CommandTemplateFileRenderer {
             .replace("{pdf}", &pdf.to_string_lossy())
             .replace("{page}", &page.to_string())
             .replace("{out}", &out_png.to_string_lossy());
+        // 模板经平台 shell 执行（Windows: cmd /C；macOS/Linux: sh -c）
+        #[cfg(target_os = "windows")]
         let status = Command::new("cmd")
             .args(["/C", &cmd])
+            .output()
+            .map_err(|e| e.to_string())?;
+        #[cfg(not(target_os = "windows"))]
+        let status = Command::new("sh")
+            .args(["-c", &cmd])
             .output()
             .map_err(|e| e.to_string())?;
         if !status.status.success() {
@@ -161,9 +168,11 @@ mod tests {
     fn missing_output_is_error() {
         let dir = std::env::temp_dir().join("biji-svc-pdf-test2");
         std::fs::create_dir_all(&dir).unwrap();
-        let renderer = CommandTemplateFileRenderer {
-            template: "exit /B 0".into(), // 成功退出但不产出 {out}
-        };
+        #[cfg(target_os = "windows")]
+        let template = "exit /B 0".to_string(); // 成功退出但不产出 {out}
+        #[cfg(not(target_os = "windows"))]
+        let template = "true".to_string();
+        let renderer = CommandTemplateFileRenderer { template };
         let out = dir.join("never.png");
         let err = renderer
             .render_to_file(&dir.join("x.pdf"), 1, 0, &out)

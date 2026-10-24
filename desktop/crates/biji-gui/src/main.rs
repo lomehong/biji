@@ -768,7 +768,7 @@ impl BijiApp {
                 // 内边距 10px 与导航行图标左缘对齐）
                 let pill = egui::Frame::default()
                     .fill(theme::WHITE)
-                    .stroke(egui::Stroke::new(1.0, theme::HAIRLINE))
+                    .stroke(egui::Stroke::new(1.0_f32, theme::HAIRLINE))
                     .rounding(15.0)
                     .inner_margin(egui::Margin::symmetric(10.0, 4.0));
                 let pill_inner = pill.show(ui, |ui| {
@@ -969,7 +969,7 @@ impl BijiApp {
                             })
                             .rounding(8.0)
                             .stroke(egui::Stroke::new(
-                                if selected { 2.0 } else { 1.0 },
+                                if selected { 2.0_f32 } else { 1.0_f32 },
                                 if selected {
                                     theme::GREEN_EDGE
                                 } else {
@@ -1092,7 +1092,7 @@ impl BijiApp {
                                                 .color(theme::TEXT),
                                         )
                                         .fill(theme::BG)
-                                        .stroke(egui::Stroke::new(1.0, theme::HAIRLINE))
+                                        .stroke(egui::Stroke::new(1.0_f32, theme::HAIRLINE))
                                         .rounding(12.0),
                                     )
                                     .on_hover_text("在侧栏打开该笔记本")
@@ -1283,7 +1283,7 @@ impl BijiApp {
                     for (t_uid, t_name) in &attached {
                         let chip = egui::Frame::default()
                             .fill(theme::WHITE)
-                            .stroke(egui::Stroke::new(1.0, theme::HAIRLINE))
+                            .stroke(egui::Stroke::new(1.0_f32, theme::HAIRLINE))
                             .rounding(10.0)
                             .inner_margin(egui::Margin::symmetric(8.0, 2.0));
                         chip.show(ui, |ui| {

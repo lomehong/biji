@@ -164,10 +164,10 @@ fn runs_to_job_exact(ui: &egui::Ui, runs: &[Run]) -> Option<egui::text::LayoutJo
         };
         let mut format = egui::TextFormat::simple(egui::FontId::new(run.size, family), color);
         if run.underline || run.link {
-            format.underline = egui::Stroke::new(1.0, color);
+            format.underline = egui::Stroke::new(1.0_f32, color);
         }
         if run.strike {
-            format.strikethrough = egui::Stroke::new(1.0, color);
+            format.strikethrough = egui::Stroke::new(1.0_f32, color);
         }
         format.italics = run.italic;
         job.append(&run.text, 0.0, format);
@@ -199,10 +199,10 @@ fn runs_to_job(ui: &egui::Ui, runs: &[Run]) -> Option<egui::text::LayoutJob> {
         };
         let mut format = egui::TextFormat::simple(egui::FontId::new(run.size, family), color);
         if run.underline || run.link {
-            format.underline = egui::Stroke::new(1.0, color);
+            format.underline = egui::Stroke::new(1.0_f32, color);
         }
         if run.strike {
-            format.strikethrough = egui::Stroke::new(1.0, color);
+            format.strikethrough = egui::Stroke::new(1.0_f32, color);
         }
         format.italics = run.italic;
         job.append(&run.text, 0.0, format);

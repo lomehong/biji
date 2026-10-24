@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
+use ab_glyph::{Font, FontArc, FontVec, PxScale, ScaleFont};
 use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use image::RgbaImage;
 
@@ -453,20 +453,34 @@ fn draw_line(img: &mut RgbaImage, a: [f32; 2], b: [f32; 2], stroke: f32, c: [u8;
 
 static CJK_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
-/// 与 `install_cjk_fonts` 同源的候选列表；供文字栅格化复用。
+/// 与 `install_cjk_fonts` 同源的平台候选列表；供文字栅格化复用。
+/// TTC 集合经 index 加载（ab_glyph `try_from_vec_and_index`）。
 pub fn load_cjk_font() -> Option<&'static FontArc> {
     CJK_FONT
         .get_or_init(|| {
-            const CANDIDATES: &[&str] = &[
-                "C:\\Windows\\Fonts\\simhei.ttf",
-                "C:\\Windows\\Fonts\\msyh.ttc",
-                "C:\\Windows\\Fonts\\simsun.ttc",
-                "C:\\Windows\\Fonts\\Deng.ttf",
+            #[cfg(target_os = "windows")]
+            const CANDIDATES: &[(&str, u32)] = &[
+                ("C:\\Windows\\Fonts\\simhei.ttf", 0),
+                ("C:\\Windows\\Fonts\\msyh.ttc", 0),
+                ("C:\\Windows\\Fonts\\simsun.ttc", 0),
+                ("C:\\Windows\\Fonts\\Deng.ttf", 0),
             ];
-            for path in CANDIDATES {
+            #[cfg(target_os = "macos")]
+            const CANDIDATES: &[(&str, u32)] = &[
+                ("/System/Library/Fonts/PingFang.ttc", 0),
+                ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+                ("/Library/Fonts/Arial Unicode.ttf", 0),
+                ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+            ];
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            const CANDIDATES: &[(&str, u32)] = &[
+                ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+                ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+            ];
+            for (path, index) in CANDIDATES {
                 if let Ok(bytes) = std::fs::read(path) {
-                    if let Ok(f) = FontArc::try_from_vec(bytes) {
-                        return Some(f);
+                    if let Ok(f) = FontVec::try_from_vec_and_index(bytes, *index) {
+                        return Some(FontArc::new(f));
                     }
                 }
             }
@@ -690,7 +704,7 @@ impl AnnotateState {
                         img_to_screen(origin, scale, mx),
                     ),
                     2.0,
-                    Stroke::new(1.5, Color32::from_rgb(255, 210, 0)),
+                    Stroke::new(1.5_f32, Color32::from_rgb(255, 210, 0)),
                 );
             }
         }
@@ -703,7 +717,7 @@ impl AnnotateState {
                         img_to_screen(origin, scale, re),
                     ),
                     0.0,
-                    Stroke::new(1.0, Color32::from_rgb(120, 170, 255)),
+                    Stroke::new(1.0_f32, Color32::from_rgb(120, 170, 255)),
                 );
             }
         }
@@ -731,7 +745,7 @@ impl AnnotateState {
                 let tm = img_to_screen(origin, scale, edge_mid_positions(min, max)[0]);
                 painter.line_segment(
                     [tm, rsp],
-                    Stroke::new(1.0, Color32::from_rgb(190, 120, 255)),
+                    Stroke::new(1.0_f32, Color32::from_rgb(190, 120, 255)),
                 );
                 painter.circle_filled(rsp, 6.0, Color32::from_rgb(190, 120, 255));
             }
