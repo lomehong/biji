@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/biji-enml",
+    "crates/biji-store",
+    "crates/biji-service",
+    "crates/biji-sync",
+    "crates/biji-cli",
+    "crates/biji-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["lomehong"]
+
+[workspace.dependencies]
+rusqlite = { version = "0.32", features = ["bundled", "collation"] }
+thiserror = "1.0"
+roxmltree = "0.20"
+base64 = "0.22"
+sha2 = "0.10"
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
+biji-enml = { path = "crates/biji-enml" }
+biji-store = { path = "crates/biji-store" }
+biji-service = { path = "crates/biji-service" }
+biji-sync = { path = "crates/biji-sync" }
+
+[profile.release]
+lto = "thin"

@@ -1,0 +1,23 @@
+[package]
+name = "biji-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "biji-gui"
+path = "src/main.rs"
+
+[dependencies]
+biji-enml.workspace = true
+biji-service.workspace = true
+biji-store.workspace = true
+biji-sync.workspace = true
+egui = "0.29"
+eframe = "0.29"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+ab_glyph = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true

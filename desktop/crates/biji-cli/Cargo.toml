@@ -1,0 +1,17 @@
+[package]
+name = "biji-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "biji"
+path = "src/main.rs"
+
+[dependencies]
+biji-enml.workspace = true
+biji-service.workspace = true
+biji-store.workspace = true
+biji-sync.workspace = true
+clap.workspace = true

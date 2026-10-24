@@ -1,0 +1,126 @@
+# biji — 印象笔记（Windows v7.4.30.9439）的 Rust 系统性复刻
+
+依据 REA 逆向分析报告（`E:\Development\project\yinxiang-biji-analysis\README.md`，下称**分析文档**）实现的复刻工程。目标不是像素级仿制 UI，而是按分析文档 §9 路线图**从数据模型向上重建**：协议语义、本地存储、正文格式、同步记账全部可溯源到逆向证据。
+
+## 模块布局
+
+```
+crates/
+├─ biji-enml      ENML 2.0 正文格式（解析/校验/清洗/纯文本/序列化）
+├─ biji-store     本地存储（复刻 .exb 核心 schema + NOCASEUTF8 + 附件 blob 库 + USN 日志）
+├─ biji-service   双服务语义（DesktopService 28 方法 + NodeWebkitService 15 命令）
+├─ biji-sync      同步闭环（USN 记账 + 删除账 + EDAM 风格本地服务器 + 双向对账引擎）
+├─ biji-cli       验收入口（bin: biji）
+└─ biji-gui       桌面 GUI（bin: biji-gui，egui/eframe 纯 Rust 单壳）
+```
+
+## GUI（biji-gui）
+
+分析文档 §9.1 的选型映射落地：原"WPF 外壳 + CEF + NW.js 三引擎"收敛为**单一 egui 壳**。GUI 同时扮演原架构两个角色——调用 `NoteService`（原生外壳职责），并以 `MarkupFrontend` 身份消费 `NodeWebkitCommand`（原 NW.js 编辑器职责，进程内通道替代命名管道）。
+
+```bash
+cargo run -p biji-gui -- [可选：库文件路径，默认 ./biji.exb]
+```
+
+已实现（截图实测验证）：
+- **三栏布局**（对位原客户端）：笔记本/标签/回收站侧栏 ↔ 笔记列表（标题+摘要+日期+标签，摘要缓存按 USN 失效）↔ 编辑器
+- **图注标注画布**（分析文档 P2，原 `markup.min.js` 的复刻）：图片附件一键打开标注画布（完整 Markup 命令通路：按钮 → `NoteService.dispatch` → 前端通道 → 画布）；箭头/矩形/文字三工具 + 五色 + 三档线宽 + 撤销/清空/旋转 90°；标注以图片像素坐标存储（窗口缩放无关），双渲染器共享模型——egui painter 实时叠加（编辑态）+ 软件栅格化（`ab_glyph` 中文文字光栅化）合成 PNG 经 `update_resource` 写回资源（原 `updateResource` 语义）。`RotateImage`（90° 倍数）/`ResizeImage`（Lanczos3）/`ClearImage` 命令同步真实现
+- **编辑器**：标题编辑 + ENML 源码编辑 / 富文本预览双模式；2 秒无输入自动落库；Ctrl+S 手动保存
+- **预览态行内块编辑**（所见即所得切片，格式保留）：预览中每个顶层块旁带「✎」按钮，点击以该块内 HTML 片段进入就地多行编辑，完成/取消就地生效；提交按 HTML 解析该片段（sanitize 后 splice 回 ENML 树）并走既有自动保存链路——块内粗斜体/链接等标记得以保留
+- **富文本预览**：`LayoutJob` 多样式段落——标题分级/粗斜下划线/删除线/行内代码/引用块/代码块/有序无序列表/`en-todo` 待办复选框/`en-media` 附件占位/`en-crypt` 锁定占位/表格扁平化
+- **演示模式**：`Present` 命令驱动深色全屏放映（居中大标题 + 纯文本正文 + ←/→ 翻页 + Esc 退出），对位原 `present/` 子应用
+- **标注进阶**：自由画笔（拖拽轨迹折线采样，双渲染器与箭头/矩形/文字一致）、选择/移动/多选/缩放/旋转（⬚ 选择工具：点击选中、Shift 加选、空白处框选、拖拽整体平移、🔍±等比缩放、删除所选；控制把手三级——角点黄=对角锚等比缩放、边中点青=单轴缩放、顶边外移紫点=旋转且枢轴可切换（公共包围盒中心/画布中心外部点，`start_rotation` 参数化入口）；`Annotation.angle` 双渲染器旋转——paint 侧旋转文字经离屏栅格化 + 旋转 Mesh 贴回（绕开 egui TextFormat 无字形旋转限制），rasterize 侧字形像素逐点旋转含 `px_bounds` 偏移修复）、PDF 附件一键进入按页标注（保存产物为新 PNG 资源挂同一条笔记，PDF 本体不改写——对位原客户端"标注层另存"）、JPEG 原格式写回（image/jpeg 资源标注后保持 JPEG 编码与文件名）
+- **P3 GUI 入口**：「💬 聊天」窗口（会话选择/新建、消息列表按时间序、发送输入行——消费 `create_thread`/`post_message`/`list_messages`）；「📦 素材」面板（素材清单 + 一键登记当前笔记附件为素材——消费 `add_material`/`list_materials`）；「🏢 企业空间」面板（空间创建（名称/描述）、列表与成员计数展示、一键以当前用户身份加入——消费 `create_groupspace`/`join_groupspace`/`list_groupspaces`）
+- **特征功能**：全文搜索（标题+正文子串）、回收站（还原/彻底删除+删除账）、笔记本管理（新建/删除级联回收站）、标签过滤、附件导出、账号显示（`user#host` 模型）、同步计数与全轮次同步
+- **CJK 字体**：启动时按候选加载系统字体（msyh → simhei → simsun → Deng），egui 默认字体无汉字字形；msyh（微软雅黑，原客户端 UI 字体）优先且插队首，拉丁/数字同样走雅黑
+- **视觉主题还原**（`theme.rs`，对位原客户端实机截图的程序化取色）：浅色 UI——品牌绿 `#00B870`（新建/同步药丸、侧栏选中态文字、列表日期）、侧栏浅灰 `#ECECF0` + 选中项深灰底绿字、笔记列表白卡圆角发丝边（选中 = 亮绿描边 `#3EE87C` + 浅绿底 `#EEFEF5`，整卡可点）、编辑器纯白无边框大标题、链接经典蓝下划线；标注画布窗口局部深色化（`apply_dark`，对位原 markup 编辑器深底工作区，下帧自动恢复浅色）；演示模式保持深底（原放映子应用同款）；缺字形图标（⬤/⬚/➚/▭/✎/⟳/🔍 在雅黑下为豆腐块）统一替换为安全字形（●/◇/↗/□/✏️/文字/＋－）
+- **结构还原（第二轮）**：菜单栏行（文件/编辑/查看/笔记/格式/工具/帮助 七个真菜单——新建/同步/退出/清搜索/演示/删当前笔记/双模式切换/聊天/素材/企业空间/关于，菜单按钮扁平纯文字 hover 显底）；侧栏顶部「白药丸 + 绿圆＋」新建笔记组合控件 + 企业空间导航行；搜索框归位列首（`搜索笔记 (F6)`，F6 聚焦实测）；列表头 `全部笔记 ▼` + `N条笔记` 原版格式；编辑器元信息行（笔记本 chip 点击跳转侧栏 + 更新日期）+ 标签行（绿色「🏷 添加标签…」下拉真挂载 + 已挂标签 chip 带 ✕ 摘除，`biji-store::note_tags` 实时读关系表，CLI 侧核验计数/缓存三处同步）
+- **精细打磨（第三轮）**：全局字号比例对位原客户端（正文 15 / 标题 24 / 按钮 14 / 小字 12，egui 默认 12.5/18/12.5/9）；笔记卡日期改原版短格式 `YYYY/M/D`（无补零，编辑器元信息仍为完整日期时间）；侧栏「笔记本/标签」分区可折叠（▼/▶ 手风琴，实测折叠隐藏/展开恢复）；滚动条细化 6px
+- **对齐与主题修正（第四轮）**：向 OS 声明浅色主题偏好（`ViewportCommand::SetTheme(Light)`，Windows 标题栏不再跟随系统深色）；侧栏导航行/分区头全部改为**自绘左对齐控件**（egui Button 默认文字居中导致导航行与分区头错位）——图标恒定 x+10、文字恒定 x+30 两条对齐线，八行实测文字起点收敛 ±1px；面板分隔线取 `noninteractive.bg_stroke` 改发丝线色；定位并修掉一个隐性布局缺陷：`add_sized` 在 horizontal 内派生 top_down 子区会把面板右缘撑出贯穿全高的黑带（二分五轮锁定），「＋」改自绘＋interact 实现
+
+GUI 实机验证记录（cua-driver 截图核验）：三栏布局 ✓、中文渲染 ✓、笔记点击→编辑器+预览 ✓、`▶ 演示` → 全屏放映 ✓（即原双 Thrift 通路的进程内闭环：按钮 → `NoteService.dispatch(Present)` → 前端通道 → GUI 消费）。
+视觉主题实机对照 ✓：以原客户端实机截图（登录态 v7.4.30.9439）为基准程序化取色 → biji-gui 重启对照截图——绿药丸新建/同步、灰底侧栏选中态绿字、白卡列表选中亮绿边+浅绿底、绿日期、预览页签绿选中态、深色标注工作区（工具字形与色点全部正常渲染）逐项核对一致；标注交互（前台拖拽箭头、状态栏计数）在新主题下回归通过。
+图注标注端到端实测 ✓：PNG 附件 → 标注按钮 → 画布打开（工具栏/颜色/线宽齐全）→ 前台拖拽绘制箭头（状态栏「标注 1 条」）→ 保存写回 → 资源 1871B→5536B → 独立解码 PNG 在拖拽对应图像坐标检出红色箭头像素。
+
+PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm` 入 PATH）：2 页手写 PDF 附件（1170B，`pdfinfo` 验证合法）→ 附件条「🏷 标注 test-doc.pdf」→ `MarkupPdf(page 1)` → `detect_renderer()` 命中 pdftoppm **按页渲染**（画布标题「test-doc.pdf · 第 1 页」，页面显示第 1 页文字实证按页取页）→ 前台拖拽绘制红色箭头（状态栏「标注 1 条」）→ 💾保存写回 → 新资源 `test-doc-p1-标注.png`（88217B，image/png）挂回同一条笔记 → `res extract` 独立解码核验：完整 150dpi 第 1 页渲染 + 箭头正落拖拽路径。验证数据与脚本在 `spike/demo-pdf/`（`make-test-pdf.py` 可复现 fixture）。
+
+测试：`biji-gui` 含 6 个逻辑测试（日期格式化/前端通道/列表失效/ENML 行内样式切段）；eframe `App` 本体依赖显示器，不在 CI 断言范围。
+
+## 分析文档 → 实现 追溯表
+
+| 分析文档章节 | 原系统事实 | 本实现 | 位置 |
+|---|---|---|---|
+| §5 传输层 | Thrift over 命名管道（`\\.\pipe\yxmarkup` / `\\.\pipe\yinxiang.nwserver`） | 进程内调用：`NoteService` 方法 + `NodeWebkitCommand`→`MarkupFrontend::dispatch`（`biji markup` 可演示命令流） | `biji-service/src/lib.rs` |
+| §5.1 结构体 | `NwNote`/`NwResource`/`NwResourceBase64`/`Display` | `NoteView`/`ResourceData`/`Base64Resource`/`DisplayInfo`（字段一一对应） | `biji-service` |
+| §5.2 DesktopService 28 方法 | 编辑器→壳 | 28 个方法全部有签名级映射；本地可实现的已实现（笔记/资源/锁/账号/试用计数/事件回报），PDF 渲染与分段写回显式 `Unsupported`（P2 项） | `biji-service::NoteService` |
+| §5.3 NodeWebkitService 15 方法 | 壳→编辑器 | 15 个变体的枚举 + LoggingFrontend | `biji-service::NodeWebkitCommand` |
+| §6.1 账号模型 | `user#service_host`；bootstrap 双 profile | `account set/show`；`AnalyticsInfo` 默认值 = 中国区 profile 实测开关 | `biji-service` |
+| §6.2 云端 | `app.yinxiang.com` 等 | `biji-sync::DEFAULT_SERVICE_HOST`；`YinxiangRemote` 为诚实接缝（网络未接通即报 Unsupported） | `biji-sync` |
+| §7.1 目录布局 | `<名>.exb` + `.exb.attachments` | `biji init` 产出 `biji.exb` + `biji.exb.attachments`；blob 两级哈希寻址、内容去重 | `biji-store::attachments_dir_for` |
+| §7.2 格式结论 | `.exb`=SQLite；`NOCASEUTF8` 需应用注册 | rusqlite(bundled SQLite) + 打开时注册同名 collation（测试覆盖大小写折叠排序） | `biji-store::nocase_utf8` |
+| §7.3 数据模型 | 核心四表（`note_attr`/`notebook_attr`/`tag_attr`/`resource_attr`，DDL 逐字段恢复）+ `expunged_items` | 四表 DDL **逐字段复刻**（含 `COLLATE NOCASEUTF8` 列）；`note_content`/`note_tag`/`sync_journal`/`meta` 为标注的扩展表（原存放点未恢复，分析文档 §12） | `biji-store::SCHEMA` |
+| §7.3 标签三处维护 | `note_tag` 关系 + `tag_attr.note_count` + `note_attr.tags` 文本缓存 | `attach_tag`/`detach_tag` 三处同步维护（测试覆盖） | `biji-store` |
+| §7.3 删除账 | `expunged_items`（同步必需） | 彻底删除即记账；`biji note rm --hard` + `sync status` 可对账 | `biji-store` + `biji-sync` |
+| §9.1 正文格式 | ENML 2.0（DTD 在 xml.evernote.com） | `biji-enml`：严格/宽松解析（真实笔记的 HTML 命名实体、碎片、DOCTYPE 全兼容）、白名单校验、script 剪除、纯文本提取 | `biji-enml` |
+| §9.3 风险 2 | USN/CSN 计数模型 | 每次变更加 USN 日志；**完整同步轮次 `sync_round`：pull → apply → push → commit**；`PushPlan` 含变更快照与删除账 | `biji-sync` |
+
+## 同步闭环（本地 EDAM 风格服务器）
+
+`biji-sync` 现包含一个进程内 EDAM 风格服务器与双向对账引擎，同步从"接缝"升级为"可演示闭环"：
+
+- **`MockEdamServer`**：`update_count` 单调递增、每对象独立 usn、expunged 删除账、guid 铸造——与 EDAM 增量拉取模型一致；
+- **`SyncRemote` 双向协议**：`upload(plan, identities)`（guid ↔ 本地 uid 身份解析/铸造，服务器回执分配表）+ `pull(after_usn)`（增量笔记与删除账）；`LocalEdamRemote` 为其本地实现，`YinxiangRemote`（app.yinxiang.com）保持诚实 Unsupported；
+- **`SyncEngine::sync_round`**：pull → apply（`apply_remote_note`/`apply_remote_expunge`，不写本地日志，天然无回声）→ push → commit（同步点只前进不回退）；
+- **对账测试覆盖**：双客户端推拉、更新对账、彻底删除经删除账对账且新客户端绝不复活、双向变更、空轮次幂等、同步点不回退回归。
+
+```bash
+biji sync round --demo   # 与本地 EDAM 服务器跑完整轮次（推送/拉取/删除账对账）
+biji sync status         # 同步点与待推送清单
+```
+
+双客户端互见：A 端 `biji note add` → `sync round --demo` → B 端（另一目录的同库或第二库）`sync round --demo` 即拉到 A 的笔记；彻底删除经删除账对账后对端同步移除。
+
+## 构建与验收
+
+```bash
+cargo build                      # 或 cargo test 全量测试（35 个）
+cargo clippy --workspace --all-targets   # 零警告
+
+# 端到端冒烟（与真实仓库操作完全一致）
+biji init                                   # biji.exb + biji.exb.attachments
+biji nb add 工作 --stack 公司
+echo 正文 | biji note add --title 首页 --notebook 工作   # 输出 biji://note/1
+biji tag add 重点 && biji tag attach 重点 1
+biji note show 1                            # 纯文本渲染
+biji search 正文
+echo 数据 > f.txt && biji res add 1 f.txt && biji res extract 1
+biji sync status && biji sync push --demo   # USN 闭环（真实 EDAM 见下）
+biji markup 1                               # NodeWebkit 命令通路演示
+biji enml validate note.enml                # DTD 白名单校验
+```
+
+## 尚未复刻（与分析文档 §12 对应，持续收敛中）
+
+1. **真实云端同步（传输层与协议已实现并经真实服务器实证，等凭证即通）**——`biji-sync::edam` 已实现 EDAM Thrift 二进制协议 over HTTPS 的同步子集（getNoteStoreUrl / getSyncState / getFilteredSyncChunk 分页拉取 / createNote / updateNote / expungeNote / create·update·expungeNotebook / create·update·expungeTag），`YinxiangRemote` 已实现完整 `SyncRemote`；印象笔记开发者 token 经环境变量 ``BIJI_EDAM_TOKEN`注入即接通真实 `app.yinxiang.com`（可选 `BIJI_EDAM_HOST` 覆盖服务端），未配置时诚实报错并指明变量名——凭证红线：token 只从环境变量读，永不入库/日志。token 申请入口：印象笔记网页端「账号设置 → 开发者 Token」（app.yinxiang.com/api/DeveloperToken.action）。**真实服务器连通性已实证**：`biji sync ping` 免认证握手打通真实 `app.yinxiang.com`（TFramed 请求 + 裸消息响应自适应解析，服务端返回 EDAM 处理器层异常而非 Thrift 协议层错误——证明 Thrift 编码已被真实服务器成功反序列化）；**全链路同步语义由内存 transport 集成测试锚定**（`tests/edam_round.rs`：请求序列/方法名逐条断言、createNote 服务器 guid 经 `record_external` 回填 identity 表、pull 应用远端笔记可检索、第二轮幂等空轮、缺 token 诚实报错）——剩余仅为注入凭证后的认证调用运行时联调（需真实凭证，属用户侧输入）。**凭证两种注入方式二选一**：
+- 开发者 token：`BIJI_EDAM_TOKEN`（网页端「账号设置 → 开发者 Token」创建）；
+- 账号密码：`BIJI_EDAM_USER` + `BIJI_EDAM_PASS`（启动时自动 `UserStore.authenticate` 换取认证 token，EDAM 经典路径，中国区老版服务端可用）。
+**真实联调进度日志（本会话实测）**：对真实 app.yinxiang.com 依次试了帧/非帧发送、有无 evernote_ 前缀、i16/i32 版本参数——服务端对每种组合均返回**可完整解析的结构化 Thrift 异常**（TApplicationException），最终稳定为「EDAM processing error: Message length exceeded: 4」。该错误在认证过滤器层抛出（getNoteStoreUrl 需有效 token），与凭证缺失一致；无真实 token 无法进一步区分协议细节与认证失败。
+
+**真实云端联调三步（token 到手后执行）**：
+
+```bat
+:: 1. 创建 token：印象笔记网页端「账号设置 → 开发者 Token」（app.yinxiang.com/api/DeveloperToken.action）
+:: 2. 注入环境变量（当前终端或 setx 持久化）
+set BIJI_EDAM_TOKEN=S=s1:U=你的用户ID:E=你的过期时间戳
+:: 3. 真实同步（不加 --demo 即走 app.yinxiang.com）
+biji sync round
+```
+若服务端对业务细节有异议，报错前缀 `EDAM 异常:`（或 `云端拒绝:`）可直接用于微调——传输/编解码已被真实服务器双向验证（服务端返回 EDAM 处理器层异常而非 Thrift 协议层错误）。
+2. **PDF 渲染质量上限**（已基本收敛）——按页渲染标注闭环已用 poppler 25.07.0 实测打通（见上方 GUI 验证记录）；残余仅为渲染保真度上限取决于外部渲染器二进制（pdftoppm 150dpi 光栅已满足标注用途，矢量/字体级高质量渲染可经 `BIJI_PDF_RENDER_CMD` 接入任意渲染命令）。
+3. **旁路库格式**（.gdb/.tdb，原私有格式）——不做，复刻自有实现无此包袱。
+4. **富文本编辑深化（大幅收敛）**——**格式工具栏已实现**（第四轮）：源码编辑模式下的 B/I/U/S/H1/H2/代码/待办/链接 九键，作用于 ENML 源码光标选区（`wrap_enml_around_selection` 字符下标安全，CCursorRange 语义经 6 组单测覆盖：ASCII 选区/CJK/空选/无光标/越界钳制/短日期）；插后光标自动落在被包裹内容上。剩余仅为**渲染态直接操作标记**（所见即所得，egui 需自研 galley 光标命中 + 标记树映射），为独立大组件不在本阶段。
+5. **标注旋转深化（已收敛）**——把手旋转（公共中心/外部点枢轴可切换）、paint 侧旋转文字（离屏栅格化 Mesh）、**绕外部点的标注轨道位移**（`rotate_around_canvas` 开启时移动拖拽变为绕画布中心的轨道变换：坐标经 rotate_point 刚体旋转、自身 angle 跟随，跨 ±180° 边界归一）均已实现；剩余仅 paint 侧文字字形直绘（egui TextFormat 限制，保存路径已支持）。
+
+## 法律边界
+
+本项目依据**协议行为与数据格式的静态分析结论**重新实现，未复制、未反编译引用印象笔记的任何二进制代码、资源文件或明文 JS 产物。ENML/DTD、EDAM 协议为 Evernote 公开规范。品牌"印象笔记/Evernote"归其权利方所有。

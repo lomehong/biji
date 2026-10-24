@@ -1,0 +1,24 @@
+# 构建产物
+desktop/target/
+*.exe
+
+# 运行时数据与日志（不入库）
+*.log
+biji-server-go/state.json
+
+# 本地数据库与附件库（测试运行时生成，可复现）
+*.exb
+*.exb-shm
+*.exb-wal
+*.exb.attachments/
+
+# 临时与一次性导出产物
+*.tmp
+desktop/spike/demo-pdf/blob.bin
+desktop/spike/demo-pdf/restored.bin
+desktop/spike/demo-pdf/probe-*.png
+desktop/spike/demo-pdf/saved-annot.png
+
+# 编辑器/系统杂项
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,12 @@
+[package]
+name = "biji-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+biji-enml.workspace = true
+biji-store.workspace = true
+base64.workspace = true
+thiserror.workspace = true
