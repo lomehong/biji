@@ -147,7 +147,7 @@ pub const RENDERER_GUIDANCE: &str =
 mod tests {
     use super::*;
 
-    /// 用 cmd copy 当最简渲染器：把 fixture PNG 复制到 {out}。
+    /// 用平台复制命令当最简渲染器：把 fixture PNG 复制到 {out}。
     #[test]
     fn command_template_renderer_produces_file() {
         let dir = std::env::temp_dir().join("biji-svc-pdf-test");
@@ -157,9 +157,11 @@ mod tests {
         let pdf = dir.join("fake.pdf");
         std::fs::write(&pdf, b"%PDF-fake").unwrap();
         let out = dir.join("page-1.png");
-        let renderer = CommandTemplateFileRenderer {
-            template: format!("copy /Y {} {{out}}", fixture.display()),
-        };
+        #[cfg(target_os = "windows")]
+        let template = format!("copy /Y {} {{out}}", fixture.display());
+        #[cfg(not(target_os = "windows"))]
+        let template = format!("cp {} {{out}}", fixture.display());
+        let renderer = CommandTemplateFileRenderer { template };
         renderer.render_to_file(&pdf, 1, 0, &out).unwrap();
         assert_eq!(std::fs::read(&out).unwrap(), b"\x89PNG-fake-bytes");
     }
