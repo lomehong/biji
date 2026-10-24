@@ -391,7 +391,7 @@ pub struct RemoteEdamNote {
     pub active: bool,
     pub updated: i64,
     pub notebook: Option<String>,
-    /// 附件资源（chunk 携带全量数据；大附件分页拉取为后续项）。
+    /// 附件资源（chunk 只带元数据，body 经 getResource 按需拉取）。
     pub resources: Vec<RemoteEdamResource>,
 }
 
@@ -401,7 +401,9 @@ pub struct RemoteEdamResource {
     pub guid: String,
     pub mime: String,
     pub file_name: String,
-    pub data: Vec<u8>,
+    /// `None` = chunk 元数据态（body 未随行，需 getResource 拉取）；
+    /// `Some(bytes)` = 全量态（getResource 回执或兼容随行携带的旧布局）。
+    pub data: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -622,6 +624,25 @@ impl EdamClient {
         })?;
         Ok(parse_sync_chunk(&fields))
     }
+
+    /// NoteStore.getResource → 附件全量（guid + body + mime + fileName）。
+    /// chunk 只带资源元数据，大附件 body 经此按需拉取（EDAM 分页语义）；
+    /// 参数序对齐 EDAM IDL：f2 guid / f3 withBinary / f4 withData。
+    pub fn get_resource(
+        &self,
+        note_url: &str,
+        guid: &str,
+    ) -> Result<RemoteEdamResource, String> {
+        let fields = self.rpc(note_url, "getResource", 1, |w| {
+            w.field_string(1, &self.token);
+            w.field_string(2, guid);
+            w.field_bool(3, true); // withBinary
+            w.field_bool(4, true); // withData
+            w.field_stop();
+        })?;
+        parse_resource_struct(&TVal::Struct(fields))
+            .ok_or_else(|| "getResource 响应缺 guid".to_string())
+    }
     /// NoteStore.createNote → (guid, usn)。
     pub fn create_note(
         &self,
@@ -802,37 +823,45 @@ fn parse_note_resources(note: &TVal) -> Vec<RemoteEdamResource> {
     let mut out = Vec::new();
     if let Some(list) = note.field(13).and_then(|v| v.as_list()) {
         for r in list {
-            let guid = r
-                .field(1)
-                .and_then(|g| g.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if guid.is_empty() {
-                continue;
+            if let Some(res) = parse_resource_struct(r) {
+                out.push(res);
             }
-            out.push(RemoteEdamResource {
-                guid,
-                mime: r
-                    .field(4)
-                    .and_then(|m| m.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                file_name: r
-                    .field(14)
-                    .and_then(|a| a.field(1))
-                    .and_then(|f| f.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                data: r
-                    .field(3)
-                    .and_then(|d| d.field(1))
-                    .and_then(|b| b.as_bytes())
-                    .unwrap_or_default()
-                    .to_vec(),
-            });
         }
     }
     out
+}
+
+/// 解析单个 Resource STRUCT（chunk 元数据态与 getResource 全量态共用）：
+/// f1 guid / f3 Data{f1 body, f3 size} / f4 mime / f14 attributes{f1 fileName}。
+/// Data 内 f1 body 缺席时 data 为 None（元数据态，body 待按需拉取）。
+fn parse_resource_struct(r: &TVal) -> Option<RemoteEdamResource> {
+    let guid = r
+        .field(1)
+        .and_then(|g| g.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if guid.is_empty() {
+        return None;
+    }
+    Some(RemoteEdamResource {
+        guid,
+        mime: r
+            .field(4)
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        file_name: r
+            .field(14)
+            .and_then(|a| a.field(1))
+            .and_then(|f| f.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        data: r.field(3).and_then(|d| d.field(1)).map(|b| {
+            b.as_bytes()
+                .unwrap_or_default()
+                .to_vec()
+        }),
+    })
 }
 
 pub fn parse_sync_chunk(fields: &[(i16, TVal)]) -> RemoteSyncChunk {
@@ -958,10 +987,11 @@ mod tests {
     use crate::SyncError;
     use crate::SyncRemote;
 
-    /// 镜像 biji-server-go chunk 的 note STRUCT 布局（f13 资源含二进制 body），
-    /// 断言 parse_sync_chunk 解析出字节级保真的附件。
+    /// 镜像 biji-server-go chunk 的 note STRUCT 布局（f13 资源元数据态：
+    /// Data{f3 size} 无 body），断言解析出 guid/mime/fileName 且 data 为 None
+    /// （body 待 getResource 按需拉取）。
     #[test]
-    fn parse_chunk_note_resources_go_layout() {
+    fn parse_chunk_note_resources_metadata_only() {
         let mut w = TWriter::new();
         // note 元素（list 元素直接字段序列，无字段头）
         w.field_string(1, "srv-note-1");
@@ -972,8 +1002,8 @@ mod tests {
         w.field_string(11, "srv-nb-1");
         w.field_list_begin(13, T_STRUCT, 1);
         w.field_string(1, "srv-res-1");
-        w.field_begin(3, T_STRUCT); // Data{body}
-        w.field_bytes(1, &[0u8, 255, 0, 254, 1, 2, 3]);
+        w.field_begin(3, T_STRUCT); // Data{f3 size}（无 f1 body）
+        w.field_i32(3, 7);
         w.field_stop();
         w.field_string(4, "application/octet-stream");
         w.field_begin(14, T_STRUCT); // attributes{fileName}
@@ -995,7 +1025,32 @@ mod tests {
         assert_eq!(rs[0].guid, "srv-res-1");
         assert_eq!(rs[0].file_name, "blob.bin");
         assert_eq!(rs[0].mime, "application/octet-stream");
-        assert_eq!(rs[0].data, vec![0u8, 255, 0, 254, 1, 2, 3], "字节保真");
+        assert_eq!(rs[0].data, None, "chunk 元数据态不应携带 body");
+    }
+
+    /// getResource 回执布局（Data{f1 body} 全量态）：字节级保真。
+    #[test]
+    fn parse_resource_full_body_layout() {
+        let mut w = TWriter::new();
+        w.field_string(1, "srv-res-1");
+        w.field_begin(3, T_STRUCT); // Data{f1 body, f3 size}
+        w.field_bytes(1, &[0u8, 255, 0, 254, 1, 2, 3]);
+        w.field_i32(3, 7);
+        w.field_stop();
+        w.field_string(4, "application/octet-stream");
+        w.field_begin(14, T_STRUCT);
+        w.field_string(1, "blob.bin");
+        w.field_stop();
+        w.field_stop();
+        let fields = read_struct(&w.buf, &mut 0usize).expect("resource 解析失败");
+        let res = parse_resource_struct(&TVal::Struct(fields)).expect("缺 guid");
+        assert_eq!(res.guid, "srv-res-1");
+        assert_eq!(res.file_name, "blob.bin");
+        assert_eq!(
+            res.data,
+            Some(vec![0u8, 255, 0, 254, 1, 2, 3]),
+            "getResource 全量态字节保真"
+        );
     }
     use crate::YinxiangRemote;
 

@@ -225,7 +225,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		return msgFields, unwrapStruct(t, msgFields)
 	}
 
-	var nbGUID, noteGUID string
+	var nbGUID, noteGUID, resGUID string
 	t.Run("createNotebook", func(t *testing.T) {
 		_, inner := noteCall("evernote_createNotebook", func(w *thrift.Writer) {
 			w.FieldBegin(2, thrift.TypeStruct)
@@ -307,7 +307,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 				if got := fieldStr(notes[0].Struct, 11); got != nbGUID {
 					t.Fatalf("note notebookGuid = %q, 期望 %q", got, nbGUID)
 				}
-				// f13 资源回传：guid 非空 + 字节保真
+				// f13 资源回传：元数据态（guid/mime/fileName + Data.size，无 body）
 				var sawRes bool
 				for _, el := range notes[0].Struct {
 					if el.ID == 13 {
@@ -315,21 +315,30 @@ func TestFullEdamRoundTrip(t *testing.T) {
 							t.Fatal("chunk 缺资源")
 						}
 						res := el.Val.List[0].Struct
-						var dataID string
+						var dataSize int64
 						for _, rf := range res {
-							if rf.ID == 1 && rf.Val.Str == "" {
-								t.Fatal("资源 guid 为空")
+							if rf.ID == 1 {
+								resGUID = rf.Val.Str
+								if resGUID == "" {
+									t.Fatal("资源 guid 为空")
+								}
 							}
 							if rf.ID == 3 {
 								for _, df := range rf.Val.Struct {
 									if df.ID == 1 {
-										dataID = df.Val.Str
+										t.Fatalf("chunk 不应携带 body（getResource 按需拉取）: %q", df.Val.Str)
+									}
+									if df.ID == 3 {
+										dataSize = int64(df.Val.I32)
 									}
 								}
 							}
 						}
-						if len(dataID) != 4 || dataID[0] != 0x00 || dataID[1] != 0xff || dataID[2] != 0xfe || dataID[3] != 0x7f {
-							t.Fatalf("资源字节失真: %q", dataID)
+						if dataSize != 4 {
+							t.Fatalf("Data.size = %d, 期望 4", dataSize)
+						}
+						if fieldStr(res, 4) != "application/octet-stream" {
+							t.Fatalf("资源 mime 失真: %+v", res)
 						}
 						sawRes = true
 					}
@@ -348,6 +357,57 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 		if !sawNote || !sawNotebook {
 			t.Fatalf("chunk 缺字段（note=%v notebook=%v）", sawNote, sawNotebook)
+		}
+	})
+	t.Run("getResource 按需取 body", func(t *testing.T) {
+		_, inner := noteCall("evernote_getResource", func(w *thrift.Writer) {
+			w.FieldString(2, resGUID)
+			w.FieldBool(3, true) // withBinary
+			w.FieldBool(4, true) // withData
+		})
+		if got := fieldStr(inner, 1); got != resGUID {
+			t.Fatalf("guid = %q", got)
+		}
+		var body []byte
+		for _, f := range inner {
+			if f.ID == 3 {
+				for _, df := range f.Val.Struct {
+					if df.ID == 1 {
+						body = []byte(df.Val.Str)
+					}
+				}
+			}
+		}
+		if len(body) != 4 || body[0] != 0x00 || body[1] != 0xff || body[2] != 0xfe || body[3] != 0x7f {
+			t.Fatalf("getResource 字节失真: %x", body)
+		}
+	})
+	t.Run("getResource 无 body 开关时不携带 body", func(t *testing.T) {
+		_, inner := noteCall("evernote_getResource", func(w *thrift.Writer) {
+			w.FieldString(2, resGUID)
+			w.FieldBool(3, false)
+			w.FieldBool(4, false)
+		})
+		for _, f := range inner {
+			if f.ID == 3 {
+				for _, df := range f.Val.Struct {
+					if df.ID == 1 {
+						t.Fatal("withBinary/withData 均假时不应携带 body")
+					}
+				}
+			}
+		}
+	})
+	t.Run("getResource 未知 guid 报异常", func(t *testing.T) {
+		body := call(t, srv.ServeNoteStore, "evernote_getResource", func(w *thrift.Writer) {
+			w.FieldString(1, token)
+			w.FieldString(2, "no-such-res")
+			w.FieldBool(3, true)
+			w.FieldBool(4, true)
+		})
+		rd := &thrift.Reader{B: body}
+		if _, mtype, _, _ := rd.Message(); mtype != thrift.Exception {
+			t.Fatal("未知 guid 应返回异常")
 		}
 	})
 	t.Run("expungeNote 裸 i64 + 删除账", func(t *testing.T) {

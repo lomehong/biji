@@ -265,6 +265,13 @@ func (s *Store) ResourcesForNote(noteGUID string) []*Resource {
 	return out
 }
 
+// ResourceForGuid 按 guid 取单个附件（getResource 按需拉取用）；不存在返回 nil。
+func (s *Store) ResourceForGuid(guid string) *Resource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Resources[guid]
+}
+
 // NotebooksSince 返回 usn 大于 after 的笔记本快照。
 func (s *Store) NotebooksSince(after int64) []*Notebook {
 	s.mu.Lock()

@@ -114,7 +114,7 @@ pub struct RemoteNote {
     pub deleted: bool,
     pub updated: u64,
     pub notebook: Option<String>,
-    /// 附件资源（EDAM 携带全量数据；mock 为空）。
+    /// 附件资源（chunk 只带元数据，body 经 `fetch_resource` 按需拉取；mock 为空）。
     pub resources: Vec<edam::RemoteEdamResource>,
 }
 
@@ -219,6 +219,11 @@ pub trait SyncRemote {
     fn upload(&mut self, plan: &PushPlan, identities: &mut IdentityResolver) -> Result<UploadAck>;
     /// 拉取服务器上 usn > after 的笔记变更与删除账。
     fn pull(&mut self, after_usn: u64) -> Result<PullChanges>;
+    /// 按需拉取单个附件的全量数据（chunk 只带元数据 → getResource 取 body）。
+    /// 默认实现返回 `None`：不支持按需拉取的远端（内存 mock）由调用方跳过。
+    fn fetch_resource(&mut self, _guid: &str) -> Result<Option<edam::RemoteEdamResource>> {
+        Ok(None)
+    }
 }
 
 /// 装箱远端同样可作为远端使用（GUI/CLI 组合多个后端时方便）。
@@ -237,6 +242,10 @@ impl SyncRemote for Box<dyn SyncRemote> {
 
     fn pull(&mut self, after_usn: u64) -> Result<PullChanges> {
         (**self).pull(after_usn)
+    }
+
+    fn fetch_resource(&mut self, guid: &str) -> Result<Option<edam::RemoteEdamResource>> {
+        (**self).fetch_resource(guid)
     }
 }
 
@@ -771,6 +780,15 @@ impl SyncRemote for YinxiangRemote {
             expunged,
         })
     }
+
+    fn fetch_resource(&mut self, guid: &str) -> Result<Option<edam::RemoteEdamResource>> {
+        let client = self.require_client()?;
+        let url = self.note_url().to_string();
+        client
+            .get_resource(&url, guid)
+            .map(Some)
+            .map_err(SyncError::Edam)
+    }
 }
 
 // ---------- 引擎 ----------
@@ -962,14 +980,28 @@ impl<'a> SyncEngine<'a> {
                 rn.updated as f64,
                 rn.deleted,
             )?;
-            // 附件落库：所属笔记 guid → 本地 uid，逐资源写 blob + identity
+            // 附件落库：所属笔记 guid → 本地 uid，逐资源写 blob + identity。
+            // chunk 只带元数据：未落库的附件经 getResource 按需取 body
+            // （大附件分页拉取），已落库的附件按 guid 幂等跳过重复下载。
             if let Some(note_uid) = self.store.identity_get_local("note", &rn.guid) {
                 for r in &rn.resources {
-                    if r.data.is_empty() {
+                    let bytes = match &r.data {
+                        Some(d) if !d.is_empty() => d.clone(),
+                        _ => {
+                            if self.store.identity_get_local("resource", &r.guid).is_some() {
+                                continue; // 已落库：不重复下载
+                            }
+                            match remote.fetch_resource(&r.guid)? {
+                                Some(full) => full.data.unwrap_or_default(),
+                                None => continue, // 远端不支持按需拉取（mock）：留待下轮
+                            }
+                        }
+                    };
+                    if bytes.is_empty() {
                         continue;
                     }
                     self.store
-                        .apply_remote_resource(note_uid, &r.guid, &r.file_name, &r.mime, &r.data)?;
+                        .apply_remote_resource(note_uid, &r.guid, &r.file_name, &r.mime, &bytes)?;
                 }
             }
             report.pulled_notes += 1;

@@ -69,7 +69,7 @@ PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm
 `biji-sync` 现包含一个进程内 EDAM 风格服务器与双向对账引擎，同步从"接缝"升级为"可演示闭环"：
 
 - **`MockEdamServer`**：`update_count` 单调递增、每对象独立 usn、expunged 删除账、guid 铸造——与 EDAM 增量拉取模型一致；
-- **`SyncRemote` 双向协议**：`upload(plan, identities)`（guid ↔ 本地 uid 身份解析/铸造，服务器回执分配表）+ `pull(after_usn)`（增量笔记与删除账）；`LocalEdamRemote` 为其本地实现，`YinxiangRemote`（app.yinxiang.com）保持诚实 Unsupported；
+- **`SyncRemote` 双向协议**：`upload(plan, identities)`（guid ↔ 本地 uid 身份解析/铸造，服务器回执分配表）+ `pull(after_usn)`（增量笔记与删除账）+ `fetch_resource(guid)`（chunk 只带附件元数据时经 getResource 按需取 body，已落库附件按 guid 幂等跳过重复下载）；`LocalEdamRemote` 为其本地实现，`YinxiangRemote`（app.yinxiang.com）保持诚实 Unsupported；
 - **`SyncEngine::sync_round`**：pull → apply（`apply_remote_note`/`apply_remote_expunge`，不写本地日志，天然无回声）→ push → commit（同步点只前进不回退）；
 - **对账测试覆盖**：双客户端推拉、更新对账、彻底删除经删除账对账且新客户端绝不复活、双向变更、空轮次幂等、同步点不回退回归。
 

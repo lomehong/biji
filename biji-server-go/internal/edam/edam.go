@@ -271,18 +271,12 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 					if n.NotebookGUID != "" {
 						w.FieldString(11, n.NotebookGUID)
 					}
-					// f13 resources：全量携带（大附件分页拉取为后续项）
+					// f13 resources：chunk 只带元数据（guid/mime/fileName + Data.size），
+					// 大附件 body 经 getResource 按需拉取（EDAM 分页语义）
 					if rs := s.Store.ResourcesForNote(n.GUID); len(rs) > 0 {
 						w.FieldListBegin(13, thrift.TypeStruct, len(rs))
 						for _, r := range rs {
-							w.FieldString(1, r.GUID)
-							w.FieldBegin(3, thrift.TypeStruct) // Data{ body=1 }
-							w.FieldString(1, string(r.Data))
-							w.FieldStop()
-							w.FieldString(4, r.Mime)
-							w.FieldBegin(14, thrift.TypeStruct) // attributes{ fileName=1 }
-							w.FieldString(1, r.FileName)
-							w.FieldStop()
+							writeResourceFields(w, r, false)
 							w.FieldStop()
 						}
 					}
@@ -300,6 +294,19 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 				for _, g := range expGuids {
 					w.String(g)
 				}
+				w.FieldStop()
+			})
+		case "evernote_getResource", "getResource":
+			// 参数：f2 guid, f3 withBinary, f4 withData（EDAM IDL 序；
+			// body 在 withBinary 或 withData 任一为真时携带）
+			guid := str(2)
+			r := s.Store.ResourceForGuid(guid)
+			if r == nil {
+				return exception("EDAMNotFoundException: 附件不存在 " + guid)
+			}
+			withBody := noteBool(args, 3) || noteBool(args, 4)
+			return reply(name, seq, func(w *thrift.Writer) {
+				writeResourceFields(w, r, withBody)
 				w.FieldStop()
 			})
 		case "evernote_createNote", "createNote":
@@ -374,8 +381,12 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 			return exception("未知 NoteStore 方法: " + name)
 		}
 	}()
-	// 写操作落盘（getSyncState/getFilteredSyncChunk 为只读）
-	if name != "evernote_getSyncState" && name != "evernote_getFilteredSyncChunk" {
+	// 只读方法不落盘（getSyncState/getFilteredSyncChunk/getResource）
+	switch name {
+	case "evernote_getSyncState", "getSyncState",
+		"evernote_getFilteredSyncChunk", "getFilteredSyncChunk",
+		"evernote_getResource", "getResource":
+	default:
 		if err := s.Store.Save(s.dataPath); err != nil {
 			log.Printf("[edam] 落盘失败: %v", err)
 		}
@@ -466,6 +477,22 @@ func noteBool(fields []thrift.Field, id int16) bool {
 		}
 	}
 	return false
+}
+
+// writeResourceFields 写 Resource STRUCT 的字段序列（不含首尾 STOP）：
+// 元数据 guid/mime/fileName + Data.size；withBody 时 Data 额外携带 f1 body。
+func writeResourceFields(w *thrift.Writer, r *store.Resource, withBody bool) {
+	w.FieldString(1, r.GUID)
+	w.FieldBegin(3, thrift.TypeStruct) // Data{f1 body, f3 size}
+	if withBody {
+		w.FieldString(1, string(r.Data))
+	}
+	w.FieldI32(3, int32(len(r.Data)))
+	w.FieldStop()
+	w.FieldString(4, r.Mime)
+	w.FieldBegin(14, thrift.TypeStruct) // attributes{f1 fileName}
+	w.FieldString(1, r.FileName)
+	w.FieldStop()
 }
 
 func newGUID() string {

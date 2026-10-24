@@ -86,6 +86,19 @@ fn full_sync_round_against_in_memory_edam() {
                             w.field_bool(9, true); // active
                             w.field_i64(7, 1_700_000_000_000);
                             w.field_string(11, "srv-nb-1");
+                            // f13 资源元数据态：Data{f3 size} 无 body（getResource 按需取）
+                            w.field_list_begin(13, T_STRUCT, 1);
+                            {
+                                w.field_string(1, "srv-res-1");
+                                w.field_begin(3, T_STRUCT);
+                                w.field_i32(3, 7);
+                                w.field_stop();
+                                w.field_string(4, "application/octet-stream");
+                                w.field_begin(14, T_STRUCT);
+                                w.field_string(1, "blob.bin");
+                                w.field_stop();
+                                w.field_stop();
+                            }
                             w.field_stop();
                         }
                         w.field_list_begin(11, biji_sync::edam::T_STRING, 1); // expungedNotes
@@ -94,6 +107,19 @@ fn full_sync_round_against_in_memory_edam() {
                     }
                 })
             }
+            "getResource" => reply("getResource", |w| {
+                // 全量态：Data{f1 body, f3 size}（与 chunk 元数据态互补）
+                w.field_string(1, "srv-res-1");
+                w.field_begin(3, T_STRUCT);
+                w.field_bytes(1, &[0u8, 255, 0, 254, 1, 2, 3]);
+                w.field_i32(3, 7);
+                w.field_stop();
+                w.field_string(4, "application/octet-stream");
+                w.field_begin(14, T_STRUCT);
+                w.field_string(1, "blob.bin");
+                w.field_stop();
+                w.field_stop();
+            }),
             "createNote" => reply("createNote", |w| {
                 w.field_string(1, "srv-new-1");
                 w.field_i32(10, 6); // updateSequenceNum
@@ -171,6 +197,14 @@ fn full_sync_round_against_in_memory_edam() {
     let full = store.get_note(note_uid).expect("笔记缺失");
     assert_eq!(full.note.notebook_uid, Some(nb.uid), "笔记归属未落到远端笔记本");
 
+    // 附件经 getResource 按需拉取并落库（chunk 只带元数据）
+    let res_uid = store
+        .identity_get_local("resource", "srv-res-1")
+        .expect("资源映射缺失");
+    let (meta, bytes) = store.get_resource(res_uid).expect("资源缺失");
+    assert_eq!(meta.file_name, "blob.bin");
+    assert_eq!(bytes, vec![0u8, 255, 0, 254, 1, 2, 3], "按需拉取字节保真");
+
     // ---- 第二轮：无变更，幂等空轮 ----
     let report2 = engine.sync_round(&mut remote).expect("round2");
     assert_eq!(report2.pushed, 0);
@@ -182,7 +216,9 @@ fn full_sync_round_against_in_memory_edam() {
     // 独立解析器交叉验证 createNote 请求：服务器将看到的 wire 内容
     // wire 层级：message f1 = args 容器（内含 f1 token + f2 note 结构体）
     {
-        let (url, body) = &calls[3]; // 第 4 个调用 = createNote
+        // 调用序：getSyncState → chunk → getResource(按需取附件) → createNotebook
+        //        → createNote → getSyncState(上传收尾)
+        let (url, body) = &calls[4]; // 第 5 个调用 = createNote
         assert_eq!(url, note_url);
         assert_eq!(
             i32::from_be_bytes(body[..4].try_into().unwrap()) as usize,
@@ -228,7 +264,7 @@ fn full_sync_round_against_in_memory_edam() {
 
     // getFilteredSyncChunk 请求含 token 与 afterUSN=6（第二轮拉取游标）
     {
-        let (url, body) = &calls[6]; // 第 7 个调用 = round2 的 getFilteredSyncChunk
+        let (url, body) = &calls[7]; // 第 8 个调用 = round2 的 getFilteredSyncChunk
         assert_eq!(url, note_url);
         assert_eq!(
             i32::from_be_bytes(body[..4].try_into().unwrap()) as usize,
@@ -253,6 +289,43 @@ fn full_sync_round_against_in_memory_edam() {
         assert_eq!(token.val, independent::TVal::Str("TEST-TOKEN".into()));
         let after = inner.iter().find(|f| f.id == 2).expect("缺 afterUSN");
         assert_eq!(after.val, independent::TVal::I32(6));
+    }
+
+    // getResource 请求：guid 随行 + withBinary/withData 均真；
+    // 两轮合计仅一次（已落库附件不重复下载）
+    {
+        let get_res: Vec<&(String, Vec<u8>)> = calls
+            .iter()
+            .filter(|(_, b)| request_method_name(b).contains("getResource"))
+            .collect();
+        assert_eq!(get_res.len(), 1, "第二轮不应重复拉取已落库附件");
+        let (url, body) = get_res[0];
+        assert_eq!(url, note_url);
+        let mut p = independent::Parser {
+            b: &body[4..],
+            p: 0,
+        };
+        let (name, _) = p.message().expect("解析失败");
+        assert_eq!(name, "evernote_getResource");
+        let args_container = p.fields().expect("args 解析失败");
+        let args_container = args_container
+            .iter()
+            .find(|f| f.id == 1)
+            .expect("缺 args 容器");
+        let inner = match &args_container.val {
+            independent::TVal::Struct(v) => v,
+            other => panic!("args 容器值非 struct: {other:?}"),
+        };
+        let guid = inner.iter().find(|f| f.id == 2).expect("缺 guid");
+        assert_eq!(guid.val, independent::TVal::Str("srv-res-1".into()));
+        assert!(matches!(
+            inner.iter().find(|f| f.id == 3).map(|f| &f.val),
+            Some(independent::TVal::Bool(true))
+        ));
+        assert!(matches!(
+            inner.iter().find(|f| f.id == 4).map(|f| &f.val),
+            Some(independent::TVal::Bool(true))
+        ));
     }
 }
 #[test]

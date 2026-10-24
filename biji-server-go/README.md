@@ -16,6 +16,7 @@ Rust 客户端 biji sync round
                        createNote / updateNote / expungeNote
                        createNotebook / updateNotebook / expungeNotebook
                        createTag / updateTag / expungeTag
+                       getResource（附件按需取 body）
    ▼
 internal/store  内存模型 + JSON 落盘（updateCount 单调、每对象 USN、删除账）
 ```
@@ -36,6 +37,9 @@ internal/store  内存模型 + JSON 落盘（updateCount 单调、每对象 USN�
 - getFilteredSyncChunk：`f2 chunkHighUSN(i32) / f3 updateCount(i64) /
   f4 notes list<STRUCT{f1 guid, f2 title, f3 content, f7 updated, f9 active}> /
   f11 expungedNotes list<string>`；list 元素不带字段头。
+- getResource：`f2 guid / f3 withBinary / f4 withData`（EDAM IDL 参数序）→
+  `f0 STRUCT{f1 guid, f3 Data{f1 body, f3 size}, f4 mime, f14 attributes}`；
+  `withBinary` 或 `withData` 任一为真时携带 body。
 
 ## 运行
 
@@ -77,13 +81,21 @@ UI 层实测（2026-10，Windows UIAutomation Invoke 点击）：未同步库启
 Resource = f1 guid / f3 Data{f1 body, f3 size, f4 mime} / f4 mime /
 f14 attributes{f1 fileName}，与印象笔记 EDAM IDL 字段号一致）；资源随所属
 笔记整体替换（请求不带 f13 时服务端保留现有资源集）；chunk 的 notes 内
-回传 f13 全量数据（大附件分页拉取为后续项）。附件变更（本地 journal 记
+回传 f13 **元数据态**（guid/mime/fileName + Data.size，无 body），大附件
+body 经 `getResource` 按需拉取（EDAM 分页语义），客户端按 resource guid
+幂等跳过已落库附件。附件变更（本地 journal 记
 resource 条目）触发以所属笔记身份整体重推。Thrift STRING/BINARY 同类型
 码，客户端解析层读原始字节（`TVal::Bytes`）保证二进制保真。
 
 实测记录（2026-10）：12799B 任意字节二进制（含非法 UTF-8 序列）经
 `res add` → `sync round` 上云，sha256 与本地一致；服务器重启后新库拉取，
 `res extract` 导出 sha256 逐字节一致；次轮幂等空轮。
+
+**大附件分页拉取实测（2026-10）**：A 端推送 32KB 二进制（0x00-0xFF 全字节
+序列 ×128）→ B 端全新库 `sync round` 拉取——chunk 只带元数据，服务端日志
+实证 `getResource` 恰好 1 次（B 端按需取体），B 端次轮幂等空轮且**不再发
+getResource**（已落库附件按 guid 跳过重复下载）；`res extract` 导出 sha256
+`e1136025…` 与 A 端原始逐字节一致。
 
 ## 安全
 
