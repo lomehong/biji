@@ -110,6 +110,8 @@ struct EditorState {
     /// 预览态行内编辑：正在编辑的顶层块下标与缓冲。
     preview_editing: Option<usize>,
     preview_buffer: String,
+    /// 渲染态选区（跨帧保持：拖选后移向工具栏期间不丢失）。
+    preview_sel: Option<(usize, usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -314,6 +316,7 @@ impl BijiApp {
                         last_edit: None,
                         preview_editing: None,
                         preview_buffer: String::new(),
+                        preview_sel: None,
                     });
                 }
                 Err(e) => {
@@ -1320,6 +1323,9 @@ impl BijiApp {
                     editing: ed.preview_editing,
                     buffer: ed.preview_buffer.clone(),
                     request_commit: None,
+                    sel: ed.preview_sel,
+                    sel_pieces: Vec::new(),
+                    request_format: None,
                 };
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_space(4.0);
@@ -1353,9 +1359,25 @@ impl BijiApp {
                         }
                     }
                 }
+                // 渲染态选区格式施加：拆分文本节点插入标记元素后整体回写
+                if let Some(fmt) = sess.request_format.take() {
+                    if let Some(doc) = parsed.as_ref() {
+                        let mut doc_mut = doc.clone();
+                        let done = preview::apply_format_edits(&mut doc_mut, &fmt);
+                        if done > 0 {
+                            doc_mut.sanitize();
+                            ed.content = doc_mut.to_xml();
+                            ed.dirty = true;
+                            ed.last_edit = Some(Instant::now());
+                            self.st.status =
+                                format!("选区已施加 <{}>（渲染态直操，{} 处）", fmt.tag, done);
+                        }
+                    }
+                }
                 // 会话状态回写（编辑缓冲供下一帧续用）
                 ed.preview_editing = sess.editing;
                 ed.preview_buffer = sess.buffer;
+                ed.preview_sel = sess.sel;
             } else {
                 // 格式工具行（对位原客户端格式栏；作用于 ENML 源码选区）
                 const FORMATS: &[(&str, &str, &str)] = &[
