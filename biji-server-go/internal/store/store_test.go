@@ -37,7 +37,7 @@ func TestUSNMonotonicAndSince(t *testing.T) {
 
 func TestNotebookTagExpunge(t *testing.T) {
 	s := New()
-	g := s.UpsertNotebook("nb1", "项目")
+	g := s.UpsertNotebook("nb1", "项目", "")
 	if g != 1 {
 		t.Fatalf("notebook usn = %d", g)
 	}
@@ -59,7 +59,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "state.json")
 	s := New()
 	s.UpsertNote("g1", "甲", "<en-note/>", "nb1", true)
-	s.UpsertNotebook("nb1", "项目")
+	s.UpsertNotebook("nb1", "项目", "")
 	if err := s.Save(path); err != nil {
 		t.Fatal(err)
 	}

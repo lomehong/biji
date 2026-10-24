@@ -36,10 +36,14 @@
 **同步服务端**（`biji-server-go/`，Go，详见 [biji-server-go/README.md](biji-server-go/README.md)）：
 
 - EDAM 风格 Thrift over HTTP：UserStore（authenticate/checkVersion）+
-  NoteStore（getSyncState/getFilteredSyncChunk 增量拉取/笔记·笔记本·标签
-  CRUD 与删除账/getResource 附件按需取体）
-- USN 记账（每对象独立 USN，updateCount 单调递增）、JSON 落盘、重启恢复
-- 默认 `127.0.0.1:8332` + `biji/biji`，客户端零配置直连
+  NoteStore（getSyncState/getFilteredSyncChunk 增量拉取 + maxEntries 分页/
+  笔记·笔记本·标签 CRUD（含笔记本 stack）与删除账/getResource 附件按需
+  取体/putResource 附件独立上传/findNotes·getNote·list* 读取 API/
+  笔记版本历史）
+- USN 记账（每对象独立 USN，updateCount 单调递增）、JSON 原子落盘、
+  重启恢复（认证 token 按用户持久化，重启免重登）
+- 默认 `127.0.0.1:8332` + `biji/biji`，客户端零配置直连；
+  `BIJI_SERVER_USERS` 多用户隔离、`-cert/-key` 启用 TLS
 
 **同步语义**（`biji-sync`）：完整轮次 pull → apply → push → commit；
 guid ↔ 本地 uid 双向身份解析；删除账跨端对账（笔记/笔记本/标签）；

@@ -69,11 +69,11 @@ PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm
 
 `biji-sync` 的同步目标分两层：**产品层 = 自研 Go 后端**（`ServerRemote`，真实 HTTP 传输），**演示层 = 进程内 EDAM 风格服务器**（离线演示与测试闭环）：
 
-- **`ServerRemote`（产品同步目标）**：EDAM Thrift over HTTP 客户端（`biji-sync::edam`），连接自研后端 `biji-server-go/`——默认 `http://127.0.0.1:8332` + `biji/biji` 零配置直连（`BIJI_SERVER_URL/USER/PASS` 覆盖），UserStore.authenticate 换认证 token（只存内存）；已实证附件字节保真、getResource 恰好一次、标签/删除账跨端对账；
+- **`ServerRemote`（产品同步目标）**：EDAM Thrift over HTTP 客户端（`biji-sync::edam`），连接自研后端 `biji-server-go/`——默认 `http://127.0.0.1:8332` + `biji/biji` 零配置直连（`BIJI_SERVER_URL/USER/PASS` 覆盖；服务端 `BIJI_SERVER_USERS` 多用户时逐用户独立空间），UserStore.authenticate 换认证 token（服务端按用户持久化，重启免重登）；已实证附件字节保真、getResource 恰好一次、标签/删除账跨端对账、笔记本 stack（f7）往返、putResource 附件快路径（有资源 guid 身份时免整笔记重推）、maxEntries 分页游标续拉（261 条跨页 0.77s 实测）；
 - **`MockEdamServer`**：`update_count` 单调递增、每对象独立 usn、expunged 删除账、guid 铸造——与 EDAM 增量拉取模型一致（`--demo` 离线演示）；
 - **`SyncRemote` 双向协议**：`upload(plan, identities)`（guid ↔ 本地 uid 身份解析/铸造，服务器回执分配表）+ `pull(after_usn)`（增量笔记与删除账）+ `fetch_resource(guid)`（chunk 只带附件元数据时经 getResource 按需取 body，已落库附件按 guid 幂等跳过重复下载）；`LocalEdamRemote` 为 mock 侧实现；
 - **`SyncEngine::sync_round`**：pull → apply（`apply_remote_note`/`apply_remote_expunge`，不写本地日志，天然无回声）→ push → commit（同步点只前进不回退）；
-- **对账测试覆盖**：双客户端推拉、更新对账、彻底删除经删除账对账且新客户端绝不复活、双向变更、空轮次幂等、同步点不回退回归、**标签与笔记本/标签删除账跨端传播**、**推送游标与服务器游标分离（本地 journal usn 与服务器 usn 边界碰撞不漏推）**。
+- **对账测试覆盖**：双客户端推拉、更新对账、彻底删除经删除账对账且新客户端绝不复活、双向变更、空轮次幂等、同步点不回退回归、**标签与笔记本/标签删除账跨端传播**、**推送游标与服务器游标分离（本地 journal usn 与服务器 usn 边界碰撞不漏推）**、**笔记本 stack wire 往返（f7）**、**分页 chunk 游标循环**、**putResource 快路径优先（有身份不整推）**。
 
 ```bash
 biji sync ping            # 与自有后端免认证握手（验证 Thrift 传输）

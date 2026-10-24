@@ -64,6 +64,8 @@ pub struct Change {
     pub content: Option<String>,
     /// notebook/tag 变更的名称快照。
     pub name: Option<String>,
+    /// notebook 变更的分组快照（Some 携带 f7，空串清除；None 不携带）。
+    pub stack: Option<String>,
     /// note 变更的本地笔记本 uid（上云时经 identity 映射为服务器 guid）。
     pub notebook_uid: Option<i64>,
     /// resource 变更载荷：所属笔记 + 该笔记全部附件（含字节）。
@@ -138,6 +140,8 @@ pub struct PullChanges {
 pub struct RemoteNotebook {
     pub guid: String,
     pub name: String,
+    /// 笔记本分组（None = 远端未携带，保持本地现值）。
+    pub stack: Option<String>,
 }
 
 /// 远端标签（拉取方向）。
@@ -401,6 +405,7 @@ impl MockEdamServer {
                     name: None,
                     notebook_uid: None,
                     resource: None,
+                    stack: None,
                 },
                 &guid,
             );
@@ -442,6 +447,7 @@ impl MockEdamServer {
             changes.notebooks.push(RemoteNotebook {
                 guid: guid.clone(),
                 name: name.clone(),
+                stack: None,
             });
         }
         let mut tags: Vec<(&String, &(String, u64))> = self
@@ -643,12 +649,35 @@ impl SyncRemote for ServerRemote {
                     }
                 }
                 "resource" => {
-                    // 附件变更：以所属笔记身份重推（全量附件随笔记上云，整体替换）。
-                    // 资源不持独立 guid，也不进 identity（journal 游标天然防重推）。
+                    // 附件变更优先走 putResource 快路径：该资源已有服务端 guid
+                    // （上一轮 pull 经 chunk 元数据建立 identity）时单传字节，
+                    // 不重推整条笔记。失败/无身份则回退全量重推。
                     let Some(payload) = &ch.resource else { continue };
                     let Some(note_guid) = identities.lookup("note", payload.note_uid) else {
                         continue; // 所属笔记尚未上云（journal 序保证先笔记后附件）
                     };
+                    if let Some(res_guid) = identities.lookup("resource", ch.item_uid) {
+                        if let Some(item) = payload
+                            .items
+                            .iter()
+                            .find(|it| it.local_uid == ch.item_uid)
+                        {
+                            if client
+                                .put_resource(
+                                    &url,
+                                    &res_guid,
+                                    &note_guid,
+                                    &item.bytes,
+                                    &item.mime,
+                                    &item.file_name,
+                                )
+                                .is_ok()
+                            {
+                                continue; // 快路径成功：跳过整笔记重推
+                            }
+                        }
+                    }
+                    // 回退：以所属笔记身份重推（全量附件随笔记上云，整体替换）
                     let nb_guid = payload
                         .notebook_uid
                         .and_then(|uid| identities.lookup("notebook", uid));
@@ -665,13 +694,14 @@ impl SyncRemote for ServerRemote {
                 }
                 "notebook" => {
                     let name = ch.name.as_deref().unwrap_or("");
+                    let stack = ch.stack.as_deref();
                     if let Some(guid) = &guid_existing {
                         client
-                            .update_named(&url, "updateNotebook", guid, name)
+                            .update_notebook(&url, guid, name, stack)
                             .map_err(SyncError::Edam)?;
                     } else {
                         let guid = client
-                            .create_named(&url, "createNotebook", name)
+                            .create_notebook(&url, name, stack)
                             .map_err(SyncError::Edam)?;
                         identities.record_external("notebook", ch.item_uid, &guid);
                     }
@@ -730,6 +760,7 @@ impl SyncRemote for ServerRemote {
                 chunk_notebooks.push(RemoteNotebook {
                     guid: nb.guid.clone(),
                     name: nb.name.clone(),
+                    stack: if nb.stack.is_empty() { None } else { Some(nb.stack.clone()) },
                 });
             }
             for tg in &chunk.tags {
@@ -838,14 +869,14 @@ impl<'a> SyncEngine<'a> {
         let since = self.journal_push_mark();
         let mut changes = Vec::new();
         for e in self.store.sync_journal_since(since)? {
-            let (title, content, name, notebook_uid, resource) = match e.kind.as_str() {
+            let (title, content, name, notebook_uid, resource, stack) = match e.kind.as_str() {
                 "note" => {
                     let (t, c, nb) = self
                         .store
                         .get_note(e.item_uid)
                         .map(|f| (Some(f.note.title), Some(f.enml), f.note.notebook_uid))
                         .unwrap_or((None, None, None));
-                    (t, c, None, nb, None)
+                    (t, c, None, nb, None, None)
                 }
                 "notebook" => (
                     None,
@@ -857,6 +888,12 @@ impl<'a> SyncEngine<'a> {
                     }),
                     None,
                     None,
+                    // 分组快照：Some("") 清除分组，Some(s) 设置，None 不携带
+                    self.store
+                        .notebook_stack(e.item_uid)
+                        .ok()
+                        .flatten()
+                        .map(|s| s.unwrap_or_default()),
                 ),
                 "tag" => (
                     None,
@@ -864,6 +901,7 @@ impl<'a> SyncEngine<'a> {
                     self.store.list_tags().ok().and_then(|ts| {
                         ts.into_iter().find(|t| t.uid == e.item_uid).map(|t| t.name)
                     }),
+                    None,
                     None,
                     None,
                 ),
@@ -884,6 +922,7 @@ impl<'a> SyncEngine<'a> {
                             .filter_map(|r| {
                                 let bytes = self.store.get_resource(r.uid).ok()?.1;
                                 Some(edam::ResourceUploadItem {
+                                    local_uid: r.uid,
                                     file_name: r.file_name,
                                     mime: r.mime,
                                     bytes,
@@ -898,9 +937,9 @@ impl<'a> SyncEngine<'a> {
                             items,
                         })
                     });
-                    (None, None, None, None, payload)
+                    (None, None, None, None, payload, None)
                 }
-                _ => (None, None, None, None, None),
+                _ => (None, None, None, None, None, None),
             };
             changes.push(Change {
                 kind: e.kind,
@@ -912,6 +951,7 @@ impl<'a> SyncEngine<'a> {
                 name,
                 notebook_uid,
                 resource,
+                stack,
             });
         }
         let expunged = self
@@ -967,7 +1007,8 @@ impl<'a> SyncEngine<'a> {
         let pulls = remote.pull(self.last_synced_usn() as u64)?;
         // 先对齐远端笔记本/标签（guid ↔ 本地 uid），笔记归属翻译才有依据
         for nb in &pulls.notebooks {
-            self.store.apply_remote_notebook(&nb.guid, &nb.name)?;
+            self.store
+                .apply_remote_notebook(&nb.guid, &nb.name, nb.stack.as_deref())?;
         }
         for tg in &pulls.tags {
             self.store.apply_remote_tag(&tg.guid, &tg.name)?;

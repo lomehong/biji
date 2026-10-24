@@ -466,3 +466,268 @@ mod independent {
         }
     }
 }
+
+// ---- S1/S2/S3 服务端补齐对应的客户端锚定测试 ----
+
+/// 请求体解码到顶层字段（剥帧 + 消息头 + args 壳 f1 → 内层字段）。
+fn request_args_fields(body: &[u8]) -> Vec<independent::Field> {
+    let msg: &[u8] = if body.first() == Some(&0x80) {
+        body
+    } else {
+        &body[4..]
+    };
+    let mut p = independent::Parser { b: msg, p: 0 };
+    let _ = p.message().expect("消息头解析失败");
+    let fields = p.fields().expect("args 解析失败");
+    // args 容器：message f1 = struct
+    fields
+        .iter()
+        .find(|f| f.id == 1)
+        .map(|f| match &f.val {
+            independent::TVal::Struct(inner) => inner.clone(),
+            _ => vec![],
+        })
+        .unwrap_or_default()
+}
+
+fn tval_str(v: &independent::TVal) -> Option<&str> {
+    match v {
+        independent::TVal::Str(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+type CallLog = std::rc::Rc<std::cell::RefCell<Vec<(String, Vec<u8>)>>>;
+
+/// S1：createNotebook 请求携带 f7 stack；updateNotebook 空串清除。
+#[test]
+fn notebook_stack_round_trips_on_wire() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("st.exb");
+    let store = Store::open(&db).unwrap();
+    store.create_notebook("工作", Some("公司")).unwrap();
+
+    let calls: CallLog = Default::default();
+    let calls_in = calls.clone();
+    let transport = move |_url: &str, body: &[u8]| -> Result<Vec<u8>, String> {
+        let method = request_method_name(body);
+        calls_in.borrow_mut().push((method.clone(), body.to_vec()));
+        Ok(match method.as_str() {
+            "getNoteStoreUrl" => reply("getNoteStoreUrl", |w| {
+                w.field_string(0, "http://test/edam/note");
+            }),
+            "getSyncState" => reply("getSyncState", |w| {
+                w.field_i64(3, 1);
+            }),
+            "getFilteredSyncChunk" => reply("getFilteredSyncChunk", |w| {
+                w.field_i32(2, 1);
+                w.field_i64(3, 1);
+                w.field_stop();
+            }),
+            "createNotebook" => reply("createNotebook", |w| {
+                w.field_string(1, "nb-stack-1");
+                w.field_i32(5, 1);
+            }),
+            other => return Err(format!("unexpected: {other}")),
+        })
+    };
+    let mut remote = ServerRemote::with_token("http://t", Some("T".into()));
+    remote.set_transport("T", std::rc::Rc::new(transport), "http://test/edam/note".into());
+    SyncEngine::new(&store).sync_round(&mut remote).unwrap();
+
+    // 请求 wire 断言：createNotebook 的 notebook 结构含 f2 name + f7 stack
+    let create = calls
+        .borrow()
+        .iter()
+        .find(|(m, _)| m == "createNotebook")
+        .map(|(_, b)| b.clone())
+        .expect("缺 createNotebook 调用");
+    let args = request_args_fields(&create);
+    let nb = args
+        .iter()
+        .find(|f| f.id == 2)
+        .map(|f| match &f.val {
+            independent::TVal::Struct(inner) => inner.clone(),
+            _ => vec![],
+        })
+        .unwrap_or_default();
+    assert!(nb
+        .iter()
+        .any(|f| f.id == 2 && tval_str(&f.val) == Some("工作")));
+    assert!(nb
+        .iter()
+        .any(|f| f.id == 7 && tval_str(&f.val) == Some("公司")));
+}
+
+/// S1：pull 方向 chunk f5 notebooks 带 f7 → 本地 notebook_attr.stack 落库。
+#[test]
+fn pulled_notebook_stack_lands_in_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("st2.exb");
+    let store = Store::open(&db).unwrap();
+    let note_url = "http://test/edam/note";
+    let transport = move |_url: &str, body: &[u8]| -> Result<Vec<u8>, String> {
+        Ok(match request_method_name(body).as_str() {
+            "getNoteStoreUrl" => reply("getNoteStoreUrl", |w| {
+                w.field_string(0, note_url);
+            }),
+            "getSyncState" => reply("getSyncState", |w| {
+                w.field_i64(3, 2);
+            }),
+            "getFilteredSyncChunk" => {
+                let mut w = TWriter::new();
+                w.message_begin("getFilteredSyncChunk", MSG_REPLY, 1);
+                w.field_begin(0, T_STRUCT);
+                w.field_i32(2, 2);
+                w.field_i64(3, 2);
+                // f5 notebooks：一条带 stack
+                w.field_list_begin(5, T_STRUCT, 1);
+                w.field_string(1, "nb-remote-1");
+                w.field_string(2, "远端本");
+                w.field_string(7, "远端分组");
+                w.field_i32(5, 1);
+                w.field_stop();
+                w.field_stop();
+                w.u8(0);
+                w.buf
+            }
+            other => return Err(format!("unexpected: {other}")),
+        })
+    };
+    let mut remote = ServerRemote::with_token("http://t", Some("T".into()));
+    remote.set_transport("T", std::rc::Rc::new(transport), note_url.into());
+    SyncEngine::new(&store).sync_round(&mut remote).unwrap();
+
+    let nbs = store.list_notebooks().unwrap();
+    let nb = nbs.iter().find(|n| n.name == "远端本").expect("笔记本未落库");
+    assert_eq!(store.notebook_stack(nb.uid).unwrap().flatten(), Some("远端分组".to_string()));
+}
+
+/// S3：分页拉取循环——两页截断 chunk + 终页，全部笔记落库。
+#[test]
+fn paginated_chunks_are_looped_until_caught_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pg.exb");
+    let store = Store::open(&db).unwrap();
+    let note_url = "http://test/edam/note";
+    let page = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let page_in = page.clone();
+    let note_at = |w: &mut TWriter, guid: &str, title: &str| {
+        w.field_string(1, guid);
+        w.field_string(2, title);
+        w.field_string(3, "<en-note>x</en-note>");
+        w.field_bool(9, true);
+        w.field_i64(7, 5);
+        w.field_stop();
+    };
+    let transport = move |_url: &str, body: &[u8]| -> Result<Vec<u8>, String> {
+        Ok(match request_method_name(body).as_str() {
+            "getNoteStoreUrl" => reply("getNoteStoreUrl", |w| {
+                w.field_string(0, note_url);
+            }),
+            "getSyncState" => reply("getSyncState", |w| {
+                w.field_i64(3, 10);
+            }),
+            "getFilteredSyncChunk" => {
+                page_in.set(page_in.get() + 1);
+                let mut w = TWriter::new();
+                w.message_begin("getFilteredSyncChunk", MSG_REPLY, 1);
+                w.field_begin(0, T_STRUCT);
+                match page_in.get() {
+                    1 => {
+                        // 截断页：high=5（< updateCount=10），notes n1 n2
+                        w.field_i32(2, 5);
+                        w.field_i64(3, 10);
+                        w.field_list_begin(4, T_STRUCT, 2);
+                        note_at(&mut w, "n1", "第一页一");
+                        note_at(&mut w, "n2", "第一页二");
+                    }
+                    _ => {
+                        // 终页：high=10 = updateCount
+                        w.field_i32(2, 10);
+                        w.field_i64(3, 10);
+                        w.field_list_begin(4, T_STRUCT, 1);
+                        note_at(&mut w, "n3", "第二页三");
+                    }
+                }
+                w.field_stop();
+                w.u8(0);
+                w.buf
+            }
+            other => return Err(format!("unexpected: {other}")),
+        })
+    };
+    let mut remote = ServerRemote::with_token("http://t", Some("T".into()));
+    remote.set_transport("T", std::rc::Rc::new(transport), note_url.into());
+    let report = SyncEngine::new(&store).sync_round(&mut remote).unwrap();
+
+    assert_eq!(page.get(), 2, "应恰好两轮拉取");
+    assert_eq!(report.pulled_notes, 3);
+    assert!(store.search_notes("第一页").unwrap().len() == 2);
+    assert!(store.search_notes("第二页").unwrap().len() == 1);
+}
+
+/// S2：资源变更走 putResource 快路径（有资源身份时不重推整笔记）。
+#[test]
+fn resource_change_prefers_put_resource_fast_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pr.exb");
+    let store = Store::open(&db).unwrap();
+    // 造一条已有远端身份的笔记 + 资源（模拟上一轮 pull 后的状态）
+    store
+        .apply_remote_note(
+            "note-g-1",
+            "带附件",
+            "<en-note>带附件</en-note>",
+            Some("云端"),
+            0.0,
+            false,
+        )
+        .unwrap();
+    let uid = store.search_notes("带附件").unwrap()[0].uid;
+    store
+        .apply_remote_resource(uid, "res-g-1", "a.bin", "application/octet-stream", b"OLD")
+        .unwrap();
+    let res_uid = store.list_resources(uid).unwrap()[0].uid;
+    store.replace_resource_bytes(res_uid, b"NEWBYTES").unwrap();
+
+    let note_url = "http://test/edam/note";
+    let saw_put = std::rc::Rc::new(std::cell::Cell::new(false));
+    let saw_update_note = std::rc::Rc::new(std::cell::Cell::new(false));
+    let saw_put_in = saw_put.clone();
+    let saw_update_in = saw_update_note.clone();
+    let transport = move |_url: &str, body: &[u8]| -> Result<Vec<u8>, String> {
+        Ok(match request_method_name(body).as_str() {
+            "getNoteStoreUrl" => reply("getNoteStoreUrl", |w| {
+                w.field_string(0, note_url);
+            }),
+            "getSyncState" => reply("getSyncState", |w| {
+                w.field_i64(3, 5);
+            }),
+            "getFilteredSyncChunk" => reply("getFilteredSyncChunk", |w| {
+                w.field_i32(2, 5);
+                w.field_i64(3, 5);
+                w.field_stop();
+            }),
+            "putResource" => {
+                saw_put_in.set(true);
+                reply_raw("putResource", |w| {
+                    w.field_i64(0, 6);
+                })
+            }
+            "updateNote" => {
+                saw_update_in.set(true);
+                reply_raw("updateNote", |w| {
+                    w.field_i32(0, 6);
+                })
+            }
+            other => return Err(format!("unexpected: {other}")),
+        })
+    };
+    let mut remote = ServerRemote::with_token("http://t", Some("T".into()));
+    remote.set_transport("T", std::rc::Rc::new(transport), note_url.into());
+    SyncEngine::new(&store).sync_round(&mut remote).unwrap();
+
+    assert!(saw_put.get(), "应调用 putResource 快路径");
+    assert!(!saw_update_note.get(), "有资源身份时不应整笔记重推");
+}

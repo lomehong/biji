@@ -331,14 +331,30 @@ impl Store {
 
     // ---------- 远端变更应用（pull 方向；不写本地日志，服务器是该变更的事实源） ----------
 
-    /// 按 guid 应用远端笔记本：本地已有 identity 映射则改名对齐，
+    /// 按 guid 应用远端笔记本：本地已有 identity 映射则改名/分组对齐，
     /// 否则按名建库（远端创建，非本地）并登记映射。幂等。
-    pub fn apply_remote_notebook(&self, guid: &str, name: &str) -> Result<()> {
+    /// stack：Some 更新分组（空串清除），None 保持本地现值。
+    pub fn apply_remote_notebook(
+        &self,
+        guid: &str,
+        name: &str,
+        stack: Option<&str>,
+    ) -> Result<()> {
         if let Some(uid) = self.identity_get_local("notebook", guid) {
-            self.conn.execute(
-                "UPDATE notebook_attr SET name = ?2, date_updated = date_updated WHERE uid = ?1",
-                params![uid, name],
-            )?;
+            match stack {
+                Some(s) => {
+                    self.conn.execute(
+                        "UPDATE notebook_attr SET name = ?2, stack = ?3 WHERE uid = ?1",
+                        params![uid, name, s],
+                    )?;
+                }
+                None => {
+                    self.conn.execute(
+                        "UPDATE notebook_attr SET name = ?2 WHERE uid = ?1",
+                        params![uid, name],
+                    )?;
+                }
+            }
             return Ok(());
         }
         // 同名本地笔记本直接认领（避免重名重复建库）
@@ -354,14 +370,33 @@ impl Store {
             Some(u) => u,
             None => {
                 self.conn.execute(
-                    "INSERT INTO notebook_attr(name, date_created, date_updated, note_count, is_local) VALUES (?1, strftime('%s','now'), strftime('%s','now'), 0, 0)",
-                    params![name],
+                    "INSERT INTO notebook_attr(name, stack, date_created, date_updated, note_count, is_local) VALUES (?1, ?2, strftime('%s','now'), strftime('%s','now'), 0, 0)",
+                    params![name, stack.unwrap_or("")],
                 )?;
                 self.conn.last_insert_rowid()
             }
         };
+        if let Some(s) = stack {
+            self.conn.execute(
+                "UPDATE notebook_attr SET stack = ?2 WHERE uid = ?1",
+                params![uid, s],
+            )?;
+        }
         self.identity_set("notebook", uid, guid)?;
         Ok(())
+    }
+
+    /// 笔记本分组快照（推送计划用）。
+    /// 外层 None = 无此笔记本；内层 None = 分组列为 NULL（推送时按空串清除）。
+    pub fn notebook_stack(&self, uid: i64) -> Result<Option<Option<String>>> {
+        self.conn
+            .query_row(
+                "SELECT stack FROM notebook_attr WHERE uid = ?1",
+                params![uid],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// 按 guid 应用远端标签：本地已有 identity 映射则改名对齐，否则按名
@@ -1034,21 +1069,21 @@ impl Store {
 
     /// 整体替换附件内容（内容寻址换新 blob，size/hash 同步维护）。
     pub fn replace_resource_bytes(&self, uid: i64, bytes: &[u8]) -> Result<()> {
+        let hash = format!("{:x}", Sha256::digest(bytes));
         let old_hash: Option<String> = self
             .conn
             .query_row(
                 "UPDATE resource_attr SET hash = ?2, size = ?3, date_updated = ?4 WHERE uid = ?1 RETURNING hash",
-                params![uid, format!("{:x}", Sha256::digest(bytes)), bytes.len() as i64, now_epoch()],
+                params![uid, &hash, bytes.len() as i64, now_epoch()],
                 |r| r.get(0),
             )
             .optional()?;
         if old_hash.is_none() {
             return Err(StoreError::NotFound(uid));
         }
-        self.write_blob(
-            &format!("{:x}", Sha256::digest(bytes)),
-            bytes,
-        )?;
+        self.write_blob(&hash, bytes)?;
+        // 字节替换即资源变更：记 journal（否则标注写回类更新永不被推送）
+        self.journal("resource", uid, "update")?;
         Ok(())
     }
 

@@ -382,11 +382,12 @@ pub struct RemoteSyncChunk {
     pub expunged_tag_guids: Vec<String>,
 }
 
-/// 远端笔记本（wire 层）。
+/// 远端笔记本（wire 层；stack 为分组，对位 EDAM Notebook.stack f7）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteEdamNotebook {
     pub guid: String,
     pub name: String,
+    pub stack: String,
 }
 
 /// 远端标签（wire 层）。
@@ -759,6 +760,97 @@ impl EdamClient {
     }
 
     /// createNotebook / createTag → guid；updateNotebook / updateTag → usn。
+    /// NoteStore.createNotebook → 新笔记本 guid；stack Some 时携带分组（f7）。
+    pub fn create_notebook(
+        &self,
+        note_url: &str,
+        name: &str,
+        stack: Option<&str>,
+    ) -> Result<String, String> {
+        let fields = self.rpc(note_url, "createNotebook", 1, |w| {
+            w.field_string(1, &self.token);
+            w.field_struct_begin(2);
+            {
+                w.field_string(2, name);
+                if let Some(s) = stack {
+                    w.field_string(7, s);
+                }
+                w.field_stop();
+            }
+            w.field_stop();
+        })?;
+        fields
+            .iter()
+            .find(|(id, _)| *id == 1)
+            .and_then(|(_, g)| g.as_str())
+            .map(|g| g.to_string())
+            .ok_or_else(|| "createNotebook 响应缺 guid".into())
+    }
+
+    /// NoteStore.updateNotebook → usn；stack Some 时更新分组（空串清除），
+    /// None 不携带 f7（服务端保持原分组）。
+    pub fn update_notebook(
+        &self,
+        note_url: &str,
+        guid: &str,
+        name: &str,
+        stack: Option<&str>,
+    ) -> Result<u64, String> {
+        let fields = self.rpc(note_url, "updateNotebook", 1, |w| {
+            w.field_string(1, &self.token);
+            w.field_string(2, guid);
+            w.field_struct_begin(3);
+            {
+                w.field_string(1, guid);
+                w.field_string(2, name);
+                if let Some(s) = stack {
+                    w.field_string(7, s);
+                }
+                w.field_stop();
+            }
+            w.field_stop();
+        })?;
+        fields
+            .iter()
+            .find(|(id, _)| *id == 0)
+            .and_then(|(_, v)| v.as_i64())
+            .map(|v| v as u64)
+            .ok_or_else(|| "updateNotebook 响应缺 usn".into())
+    }
+
+    /// NoteStore.putResource（本仓库协议扩展）：单附件上传，不动笔记其余
+    /// 附件。客户端以既有资源 guid 上传（首推经整笔记替换，guid 由 pull 建立）。
+    /// 参数：f2 guid / f3 noteGuid / f4 Data{f1 body} / f5 mime / f6 fileName
+    /// → 裸 f0 i64 usn。
+    pub fn put_resource(
+        &self,
+        note_url: &str,
+        guid: &str,
+        note_guid: &str,
+        bytes: &[u8],
+        mime: &str,
+        file_name: &str,
+    ) -> Result<u64, String> {
+        let fields = self.rpc(note_url, "putResource", 1, |w| {
+            w.field_string(1, &self.token);
+            w.field_string(2, guid);
+            w.field_string(3, note_guid);
+            w.field_struct_begin(4); // Data{f1 body, f3 size}
+            w.field_bytes(1, bytes);
+            w.field_i32(3, bytes.len() as i32);
+            w.field_stop();
+            w.field_string(5, mime);
+            w.field_string(6, file_name);
+            w.field_stop();
+        })?;
+        fields
+            .iter()
+            .find(|(id, _)| *id == 0)
+            .and_then(|(_, v)| v.as_i64())
+            .map(|v| v as u64)
+            .ok_or_else(|| "putResource 响应缺 usn".into())
+    }
+
     pub fn create_named(&self, note_url: &str, method: &str, name: &str) -> Result<String, String> {
         let fields = self.rpc(note_url, method, 1, |w| {
             w.field_string(1, &self.token);
@@ -807,6 +899,8 @@ impl EdamClient {
 /// 上行附件资源（createNote/updateNote 的 f13 元素）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResourceUploadItem {
+    /// 本地资源 uid（putResource 快路径按变更资源定位条目）。
+    pub local_uid: i64,
     pub file_name: String,
     pub mime: String,
     pub bytes: Vec<u8>,
@@ -958,6 +1052,11 @@ pub fn parse_sync_chunk(fields: &[(i16, TVal)]) -> RemoteSyncChunk {
                                 name: nb
                                     .field(2) // Notebook.name
                                     .and_then(|n| n.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                stack: nb
+                                    .field(7) // Notebook.stack（分组）
+                                    .and_then(|v| v.as_str())
                                     .unwrap_or_default()
                                     .to_string(),
                             });

@@ -13,11 +13,14 @@ Rust 客户端 biji sync round
    │  （BIJI_SERVER_URL / BIJI_SERVER_USER / BIJI_SERVER_PASS 覆盖）
    ▼
 /edam/user   UserStore：checkVersion / authenticate / getNoteStoreUrl
-/edam/note   NoteStore：getSyncState / getFilteredSyncChunk
+/edam/note   NoteStore：getSyncState / getFilteredSyncChunk（分页）
                        createNote / updateNote / expungeNote
                        createNotebook / updateNotebook / expungeNotebook
                        createTag / updateTag / expungeTag
-                       getResource（附件按需取 body）
+                       getResource / putResource（附件按需取体 / 独立上传）
+                       getNote / findNotes / getNotebook / getTag
+                       listNotebooks / listTags（读取 API）
+                       listNoteVersions / getNoteVersion（版本历史）
    ▼
 internal/store  内存模型 + JSON 落盘（updateCount 单调、每对象 USN、删除账）
 ```
@@ -33,13 +36,31 @@ internal/store  内存模型 + JSON 落盘（updateCount 单调、每对象 USN�
 - 请求：`message f1 = args 容器 STRUCT`，容器内 `f1 = authenticationToken`，
   业务参数从 `f2` 起（如 createNote `f2 = Note{f2 title, f3 content, f9 active}`）。
 - 响应：单层 result struct（`message f0 = STRUCT{业务字段}`）；
-  updateNote / updateNotebook / updateTag 返回裸 `f0 i32`，
+  updateNote / updateNotebook / updateTag / putResource 返回裸 `f0 i32/i64`，
   expunge 系列返回裸 `f0 i64`（与公开 EDAM IDL 规范一致）。
-- getFilteredSyncChunk：`f2 chunkHighUSN(i32) / f3 updateCount(i64) /
+- getFilteredSyncChunk：`f2 afterUSN(i32) / f3 maxEntries(i32, 0=不限)` →
+  `f2 chunkHighUSN(i32) / f3 updateCount(i64) /
   f4 notes list<STRUCT{f1 guid, f2 title, f3 content, f7 updated, f9 active}> /
-  f5 notebooks / f6 tags（Tag: f1 guid, f2 name）/
+  f5 notebooks（Notebook: f1 guid, f2 name, f5 usn, **f7 stack**）/ f6 tags（Tag: f1 guid, f2 name）/
   f11 expungedNotes / f12 expungedNotebooks / f13 expungedTags（list<string>）；
+  **分页**：notes 按 USN 升序截断到 maxEntries，截断时 chunkHighUSN =
+  最后一条已含笔记的 USN（< updateCount），客户端以该值游标续拉直至
+  chunkHighUSN == updateCount；其余集合按 (afterUSN, chunkHighUSN] 过滤。
   list 元素不带字段头。
+- 笔记本 stack（f7）：createNotebook / updateNotebook 携带 `f7 stack`——
+  请求缺省 f7 = 保留现值，空串 = 清除分组；chunk 与 getNotebook 均回传。
+- putResource（本后端扩展，独立上传附件，免去整笔记重推）：
+  `f2 guid / f3 noteGuid / f4 Data{f1 body, f3 size} / f5 mime / f6 fileName`
+  → 裸 `f0 i64 usn`。guid 与既有资源冲突且 noteGuid 不同时拒绝（返回 0）；
+  客户端在资源已有服务器 guid 身份时走此快路径，否则回退整笔记重推。
+- 读取 API：getNote（`f2 guid / f3 withContent / f4 withResourcesData`）、
+  findNotes（`f3 filter{f1 words, f3 offset, f4 maxNotes}` →
+  `f0 STRUCT{f1 totalNotes i32, f2 list{f1 guid, f2 title, f3 usn}}`，词间 AND）、
+  listNotebooks / listTags（`f2` 缺省全量；list 直接在 `f0`）、
+  getNotebook / getTag（`f2 guid`）、
+  listNoteVersions（`f2 guid` → `f0 STRUCT{f1 totalVersions, f2 list{
+  f1 usn, f2 updated, f3 title}}`）与 getNoteVersion（`f2 guid / f3 usn` →
+  含正文的历史快照）。服务器保留每笔记最近 10 个版本快照。
 - getResource：`f2 guid / f3 withBinary / f4 withData`（EDAM IDL 参数序）→
   `f0 STRUCT{f1 guid, f3 Data{f1 body, f3 size}, f4 mime, f14 attributes}`；
   `withBinary` 或 `withData` 任一为真时携带 body。
@@ -51,6 +72,11 @@ go build -o biji-server-go.exe ./cmd/biji-server-go
 ./biji-server-go.exe -addr 127.0.0.1:8332 -data state.json
 # 凭证经环境变量注入（默认仅供本机联调）：
 #   BIJI_SERVER_USER / BIJI_SERVER_PASS（默认 biji/biji）
+# 多用户隔离（逗号分隔，各用户独立 updateCount / 笔记空间 / 状态文件
+# state.<user>.json，单用户时仍为 state.json）：
+#   BIJI_SERVER_USERS="alice:a1,bob:b2"
+# TLS（自签或正式证书均可，缺省明文 HTTP）：
+#   ./biji-server-go.exe -cert cert.pem -key key.pem
 ```
 
 客户端联调（默认值与服务端一致，**无需任何环境变量**）：
@@ -107,7 +133,21 @@ getResource**（已落库附件按 guid 跳过重复下载）；`res extract` �
 （渲染器接缝产出 PNG，CLI `biji res render <uid> --page N` 实测 poppler
 25.07 渲染 928×1200 合法 PNG）。
 
-## 安全
+**服务端补齐实测（2026-10，Go 7 项特性测试 + Rust 4 项锚定测试 + 真实进程 E2E）**：
+笔记本 stack 经 createNotebook f7 上云、chunk 回传落库（缺省保留/空串清除）；
+putResource 独立上传（含跨笔记 guid 冲突拒绝）；getFilteredSyncChunk
+maxEntries=3 分 3 页拉全 7 条；alice/bob 双账号各自独立 updateCount 与
+状态文件、互不可见；token 跨重启有效；findNotes/getNote/listNotebooks/
+listTags/getNotebook 与笔记版本历史（含旧版本正文回读）全通；原子落盘无
+`.tmp` 残留。真实进程 E2E：零配置启动 → `sync ping` 握手 → 推送笔记+附件 →
+新库拉回附件逐字节一致；alice 推送 1 条后 bob 拉取 0 条（隔离）、alice
+第二台新库拉回自己的 1 条；自签证书 `-cert/-key` 启动 TLSv1.3 握手成功；
+推送 260 条后新库跨页拉取 261 条仅 0.77s。
 
-凭证只从环境变量读（`BIJI_SERVER_USER/PASS`），token 仅存内存会话表，
-永不写入代码、日志或文档；state.json 只含笔记数据，不含凭证。
+## 安全与可靠性
+
+凭证只从环境变量读（`BIJI_SERVER_USER/PASS`、多用户 `BIJI_SERVER_USERS`），
+永不写入代码、日志或文档；状态文件只含笔记数据与**认证 token**，
+不含任何密码——token 按用户持久化（重启不失效，客户端免重复登录），
+重启后按用户索引恢复。落盘为**原子写**（先写 `*.tmp` 再 rename），
+进程中断不会留下半截状态文件。
