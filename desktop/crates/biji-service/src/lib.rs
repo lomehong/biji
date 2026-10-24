@@ -3,7 +3,7 @@
 //! 对应分析文档 §5（Thrift IPC 协议完整规范）：
 //! - `DesktopService`（原 `\\.\pipe\yxmarkup`，编辑器→原生，28 方法）→
 //!   [`NoteService`] 的固有方法；
-//! - `NodeWebkitService`（原 `\\.\pipe\yinxiang.nwserver`，原生→编辑器，15 方法）→
+//! - `NodeWebkitService`（原壳↔编辑器 NW 命名管道服务，原生→编辑器，15 方法）→
 //!   [`NodeWebkitCommand`] 枚举 + [`MarkupFrontend`] trait（原生侧主动派发命令）；
 //! - 原编辑器对壳的窗口状态回报 → [`DesktopEvent`] 事件流。
 //!
@@ -110,8 +110,7 @@ pub struct UserInfo {
     pub email: Option<String>,
 }
 
-/// 业务开关（原 `getAnalyticsInfo` 返回值；默认值取分析文档 §6.1
-/// 印象笔记中国区 bootstrap profile 的实测配置）。
+/// 业务开关（原 `getAnalyticsInfo` 返回值；默认值对齐自有后端部署）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnalyticsInfo {
     pub service_host: String,
@@ -126,9 +125,9 @@ pub struct AnalyticsInfo {
 impl Default for AnalyticsInfo {
     fn default() -> Self {
         AnalyticsInfo {
-            service_host: "app.yinxiang.com".into(),
-            marketing_url: "https://www.yinxiang.com".into(),
-            support_url: "https://help.yinxiang.com/hc/".into(),
+            service_host: "server.biji".into(),
+            marketing_url: "https://github.com/lomehong/biji".into(),
+            support_url: "https://github.com/lomehong/biji/issues".into(),
             enable_shared_notebooks: true,
             enable_single_note_sharing: false,
             enable_gift_subscriptions: false,
@@ -205,7 +204,7 @@ pub enum NodeWebkitCommand {
     Quit,
 }
 
-/// 编辑器前端需实现的命令入口（对位原 `\\.\pipe\yinxiang.nwserver` 服务端）。
+/// 编辑器前端需实现的命令入口（对位原壳↔编辑器 NW 命名管道服务端）。
 pub trait MarkupFrontend {
     fn dispatch(&mut self, cmd: NodeWebkitCommand);
 }
@@ -326,7 +325,7 @@ impl NoteService {
             service_host: self
                 .store
                 .meta_get("service_host")
-                .unwrap_or_else(|| "app.yinxiang.com".into()),
+                .unwrap_or_else(|| "server.biji".into()),
             email: self.store.meta_get("email"),
         })
     }
@@ -996,15 +995,15 @@ mod tests {
     #[test]
     fn account_and_analytics() {
         let svc = service();
-        svc.set_account("lome", "app.yinxiang.com", Some("lome@example.com")).unwrap();
+        svc.set_account("lome", "server.biji", Some("lome@example.com")).unwrap();
         let user = svc.get_current_user_info().unwrap();
         assert_eq!(user.username, "lome");
-        assert_eq!(user.service_host, "app.yinxiang.com");
+        assert_eq!(user.service_host, "server.biji");
         assert_eq!(user.email.as_deref(), Some("lome@example.com"));
 
         // 默认业务开关 = 分析文档 §6.1 中国区 profile 实测值。
         let info = svc.get_analytics_info().unwrap();
-        assert_eq!(info.service_host, "app.yinxiang.com");
+        assert_eq!(info.service_host, "server.biji");
         assert!(info.enable_shared_notebooks);
         assert!(!info.enable_single_note_sharing);
         assert!(!info.enable_gift_subscriptions);

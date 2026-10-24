@@ -119,13 +119,13 @@ func (s *Server) ServeUserStore(w http.ResponseWriter, r *http.Request) {
 	}
 	var out []byte
 	switch name {
-	case "evernote_checkVersion", "checkVersion":
+	case "checkVersion":
 		out = reply(name, seq, func(w *thrift.Writer) {
 			w.FieldBegin(0, thrift.TypeBool)
 			w.U8(1) // 兼容
 			w.FieldStop()
 		})
-	case "evernote_authenticate", "authenticate":
+	case "authenticate":
 		user, pass := str(1), str(2)
 		if user == s.User && pass == s.Pass {
 			tok := newToken()
@@ -141,7 +141,7 @@ func (s *Server) ServeUserStore(w http.ResponseWriter, r *http.Request) {
 		} else {
 			out = exception("EDAMUserException: 认证失败")
 		}
-	case "evernote_getNoteStoreUrl", "getNoteStoreUrl":
+	case "getNoteStoreUrl":
 		// 参数容器 f1 = authenticationToken（与 authenticate 的 user=f1 同层）
 		tok := str(1)
 		if !s.validToken(tok) {
@@ -242,11 +242,11 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 			_ = b
 		}(nil)
 		switch name {
-		case "evernote_getSyncState", "getSyncState":
+		case "getSyncState":
 			return reply(name, seq, func(w *thrift.Writer) {
 				w.FieldI64(3, s.Store.UpdateCount)
 			})
-		case "evernote_getFilteredSyncChunk", "getFilteredSyncChunk":
+		case "getFilteredSyncChunk":
 			after := i32i64(2)
 			return reply(name, seq, func(w *thrift.Writer) {
 				notes := s.Store.NotesSince(after)
@@ -318,7 +318,7 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 				}
 				w.FieldStop()
 			})
-		case "evernote_getResource", "getResource":
+		case "getResource":
 			// 参数：f2 guid, f3 withBinary, f4 withData（EDAM IDL 序；
 			// body 在 withBinary 或 withData 任一为真时携带）
 			guid := str(2)
@@ -331,7 +331,7 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 				writeResourceFields(w, r, withBody)
 				w.FieldStop()
 			})
-		case "evernote_createNote", "createNote":
+		case "createNote":
 			note := strArgStruct(args, 2)
 			guid := newGUID()
 			usn := s.Store.UpsertNote(guid, noteStr(note, 2), noteStr(note, 3), noteStr(note, 11), noteBool(note, 9))
@@ -343,7 +343,7 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 				w.FieldString(1, guid)
 				w.FieldI32(10, int32(usn))
 			})
-		case "evernote_updateNote", "updateNote":
+		case "updateNote":
 			note := strArgStruct(args, 2)
 			guid := noteStr(note, 1)
 			usn := s.Store.UpsertNote(guid, noteStr(note, 2), noteStr(note, 3), noteStr(note, 11), noteBool(note, 9))
@@ -353,12 +353,12 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 			return replyRaw(name, seq, func(w *thrift.Writer) {
 				w.FieldI32(0, int32(usn))
 			})
-		case "evernote_expungeNote", "expungeNote":
+		case "expungeNote":
 			usn := s.Store.ExpungeNote(str(2))
 			return replyRaw(name, seq, func(w *thrift.Writer) {
 				w.FieldI64(0, usn)
 			})
-		case "evernote_createNotebook", "createNotebook":
+		case "createNotebook":
 			nb := structArg(2)
 			guid := newGUID()
 			usn := s.Store.UpsertNotebook(guid, noteStr(nb, 2))
@@ -367,19 +367,19 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 				w.FieldString(1, guid)
 				w.FieldI32(5, int32(usn))
 			})
-		case "evernote_updateNotebook", "updateNotebook":
+		case "updateNotebook":
 			guid := str(2)
 			nb := structArg(3)
 			usn := s.Store.UpsertNotebook(guid, noteStr(nb, 2))
 			return replyRaw(name, seq, func(w *thrift.Writer) {
 				w.FieldI32(0, int32(usn))
 			})
-		case "evernote_expungeNotebook", "expungeNotebook":
+		case "expungeNotebook":
 			usn := s.Store.ExpungeNotebook(str(2))
 			return replyRaw(name, seq, func(w *thrift.Writer) {
 				w.FieldI64(0, usn)
 			})
-		case "evernote_createTag", "createTag":
+		case "createTag":
 			tg := structArg(2)
 			guid := newGUID()
 			_ = s.Store.UpsertTag(guid, noteStr(tg, 2))
@@ -387,14 +387,14 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 			return reply(name, seq, func(w *thrift.Writer) {
 				w.FieldString(1, guid)
 			})
-		case "evernote_updateTag", "updateTag":
+		case "updateTag":
 			guid := str(2)
 			tg := structArg(3)
 			usn := s.Store.UpsertTag(guid, noteStr(tg, 2))
 			return replyRaw(name, seq, func(w *thrift.Writer) {
 				w.FieldI32(0, int32(usn))
 			})
-		case "evernote_expungeTag", "expungeTag":
+		case "expungeTag":
 			usn := s.Store.ExpungeTag(str(2))
 			return replyRaw(name, seq, func(w *thrift.Writer) {
 				w.FieldI64(0, usn)
@@ -405,9 +405,7 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 	}()
 	// 只读方法不落盘（getSyncState/getFilteredSyncChunk/getResource）
 	switch name {
-	case "evernote_getSyncState", "getSyncState",
-		"evernote_getFilteredSyncChunk", "getFilteredSyncChunk",
-		"evernote_getResource", "getResource":
+	case "getSyncState", "getFilteredSyncChunk", "getResource":
 	default:
 		if err := s.Store.Save(s.dataPath); err != nil {
 			log.Printf("[edam] 落盘失败: %v", err)

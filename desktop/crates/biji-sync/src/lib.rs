@@ -9,8 +9,8 @@
 //! - `SyncEngine::sync_round` 跑通 **pull → apply → push → commit** 全轮次，
 //!   双客户端经由同一服务器即可互见对方的笔记、更新与删除。
 //!
-//! 同步远端是**自研后端 biji-server-go**（`ServerRemote`，EDAM Thrift over
-//! HTTP——协议对位印象笔记，服务端即本仓库 `biji-server-go/`）：
+//! 同步远端是**自研后端 biji-server-go**（`ServerRemote`，EDAM 风格
+//! Thrift over HTTP，服务端即本仓库 `biji-server-go/`）：
 //! 默认 `http://127.0.0.1:8332` + `biji/biji`，开箱直连，零环境变量；
 //! [`MockEdamServer`]/[`LocalEdamRemote`] 保留为离线演示（CLI `--demo`）与测试闭环。
 

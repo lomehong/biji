@@ -1,10 +1,10 @@
-//! biji-gui——印象笔记复刻的桌面 GUI（egui/eframe，纯 Rust 单壳）。
+//! biji-gui——biji 笔记的桌面 GUI（egui/eframe，纯 Rust 单壳）。
 //!
 //! 对应分析文档 §9.1 选型映射："WPF 外壳 + CEF + NW.js 三引擎"收敛为
 //! 单一现代壳；GUI 同时扮演原架构中的两个角色：
 //! - 原生外壳：调用 `NoteService`（原 DesktopService 通路）；
 //! - NW.js 编辑器：实现 `MarkupFrontend` 消费 `NodeWebkitCommand`
-//!   （原 `\\.\pipe\yinxiang.nwserver` 命令通路，本实现为进程内通道），
+//!   （原壳↔编辑器 NW 命令通路，本实现为进程内通道），
 //!   `Present` 命令驱动全屏演示模式（原演示子应用的对位物）。
 //!
 //! 中文字体：egui 默认字体无 CJK 字形，启动时按候选顺序加载系统字体
@@ -45,7 +45,7 @@ fn main() -> ExitCode {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([960.0, 600.0])
-            .with_title("biji — 印象笔记复刻"),
+            .with_title("biji 笔记"),
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -701,7 +701,7 @@ impl BijiApp {
                     ui.menu_button(menu_text("帮助(H)"), |ui| {
                         if ui.button("关于 biji").clicked() {
                             self.st.status =
-                                "biji — 印象笔记（v7.4.30.9439）复刻 · Rust/egui · ENML 存储 · USN 同步 · 双服务语义"
+                                "biji 笔记 · Rust/egui · ENML 存储 · USN 同步（自有后端） · 双服务语义"
                                     .into();
                             ui.close_menu();
                         }
@@ -1066,7 +1066,7 @@ impl BijiApp {
                     ui.add_space(80.0);
                     ui.label(egui::RichText::new("选择或新建一条笔记").size(20.0).weak());
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Evernote 复刻 · ENML 存储 · USN 同步").weak());
+                    ui.label(egui::RichText::new("biji · ENML 存储 · USN 同步（自有后端）").weak());
                 });
                 return;
             };

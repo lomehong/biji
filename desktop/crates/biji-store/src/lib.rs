@@ -1,4 +1,4 @@
-//! 本地存储层：复刻印象笔记 Windows 客户端 `.exb` 主库的核心数据模型。
+//! 本地存储层：`.exb` 主库的核心数据模型（对位原 Windows 笔记客户端）。
 //!
 //! 对应分析文档 §7（本地数据存储）：
 //! - 核心四表 `notebook_attr` / `note_attr` / `tag_attr` / `resource_attr`
@@ -146,7 +146,7 @@ pub enum ListNotes {
 }
 
 const SCHEMA: &str = r#"
--- ===== 核心表：DDL 取自印象笔记 .exb 真实 schema（分析文档 §7.3）=====
+-- ===== 核心表：DDL 取自原客户端 .exb 真实 schema（分析文档 §7.3）=====
 CREATE TABLE IF NOT EXISTS notebook_attr (uid INTEGER PRIMARY KEY, name TEXT DEFAULT NULL COLLATE NOCASEUTF8, stack TEXT DEFAULT NULL COLLATE NOCASEUTF8, restrictions INTEGER DEFAULT NULL, can_move_to_container_status INTEGER DEFAULT NULL, flags INTEGER DEFAULT NULL, date_created REAL DEFAULT NULL, date_updated REAL DEFAULT NULL, date_last_chosen REAL DEFAULT NULL, item_color INTEGER DEFAULT NULL, item_style INTEGER DEFAULT NULL, note_count INTEGER DEFAULT NULL, is_local INTEGER DEFAULT NULL, is_linked INTEGER DEFAULT NULL, is_offline INTEGER DEFAULT NULL, is_accessible INTEGER DEFAULT NULL, business_id INTEGER DEFAULT NULL, shared_notebook_guid TEXT DEFAULT NULL, business_notebook_owner TEXT DEFAULT NULL COLLATE NOCASEUTF8, linked_notebook_username TEXT DEFAULT NULL COLLATE NOCASEUTF8, linked_notebook_userid INTEGER DEFAULT NULL, workspace TEXT DEFAULT NULL COLLATE NOCASEUTF8, workspace_uid INTEGER DEFAULT NULL, is_workspace_backing INTEGER DEFAULT NULL, in_workspace INTEGER DEFAULT NULL, groupspace TEXT DEFAULT NULL COLLATE NOCASEUTF8, groupspace_uid INTEGER DEFAULT NULL, is_groupspace_backing INTEGER DEFAULT NULL, in_groupspace INTEGER DEFAULT NULL, is_privacy INTEGER DEFAULT NULL);
 CREATE TABLE IF NOT EXISTS note_attr (uid INTEGER PRIMARY KEY, title TEXT DEFAULT NULL COLLATE NOCASEUTF8, author TEXT DEFAULT NULL COLLATE NOCASEUTF8, creator_id INTEGER DEFAULT NULL, last_edited_by TEXT DEFAULT NULL COLLATE NOCASEUTF8, last_editor_id INTEGER DEFAULT NULL, notebook TEXT DEFAULT NULL COLLATE NOCASEUTF8, notebook_uid INTEGER DEFAULT NULL, tags TEXT DEFAULT NULL COLLATE NOCASEUTF8, date_created REAL DEFAULT NULL, date_updated REAL DEFAULT NULL, date_deleted REAL DEFAULT NULL, date_subject REAL DEFAULT NULL, date_share REAL DEFAULT NULL, source TEXT DEFAULT NULL COLLATE NOCASEUTF8, source_url TEXT DEFAULT NULL COLLATE NOCASEUTF8, source_app TEXT DEFAULT NULL COLLATE NOCASEUTF8, latitude REAL DEFAULT NULL, longitude REAL DEFAULT NULL, altitude REAL DEFAULT NULL, geo_address TEXT DEFAULT NULL COLLATE NOCASEUTF8, geo_country TEXT DEFAULT NULL COLLATE NOCASEUTF8, geo_adminlevel1 TEXT DEFAULT NULL COLLATE NOCASEUTF8, geo_adminlevel2 TEXT DEFAULT NULL COLLATE NOCASEUTF8, geo_adminlevel3 TEXT DEFAULT NULL COLLATE NOCASEUTF8, reminder_order REAL DEFAULT NULL, reminder_time REAL DEFAULT NULL, reminder_done_time REAL DEFAULT NULL, place_name TEXT DEFAULT NULL COLLATE NOCASEUTF8, content_class TEXT DEFAULT NULL COLLATE NOCASEUTF8, title_quality INTEGER DEFAULT NULL, restrictions INTEGER DEFAULT NULL, flags INTEGER DEFAULT NULL, local_flags INTEGER DEFAULT NULL, has_encryption INTEGER DEFAULT NULL, has_todo INTEGER DEFAULT NULL, is_deleted INTEGER DEFAULT NULL, is_linked INTEGER DEFAULT NULL, is_shared INTEGER DEFAULT NULL, is_published INTEGER DEFAULT NULL, shared_with_business INTEGER DEFAULT NULL, shared_via_messaging INTEGER DEFAULT NULL, partial_sync INTEGER DEFAULT NULL, sync_required INTEGER DEFAULT NULL, has_sync_error_info INTEGER DEFAULT NULL, size INTEGER DEFAULT NULL);
 CREATE TABLE IF NOT EXISTS tag_attr (uid INTEGER PRIMARY KEY, parent_uid INTEGER DEFAULT NULL, name TEXT DEFAULT NULL COLLATE NOCASEUTF8, date_created REAL DEFAULT NULL, date_updated REAL DEFAULT NULL, item_color INTEGER DEFAULT NULL, item_style INTEGER DEFAULT NULL, local_flags INTEGER DEFAULT NULL, subtag_count INTEGER DEFAULT NULL, note_count INTEGER DEFAULT NULL, is_linked INTEGER DEFAULT NULL, business_id INTEGER DEFAULT NULL);
@@ -1418,8 +1418,8 @@ mod tests {
     fn groupspace_membership_and_count() {
         let s = store();
         let gs = s.create_groupspace("产品团队", Some("迭代协作")).unwrap();
-        s.join_groupspace(gs, "alice#app.yinxiang.com", 1).unwrap();
-        s.join_groupspace(gs, "bob#app.yinxiang.com", 0).unwrap();
+        s.join_groupspace(gs, "alice#server.biji", 1).unwrap();
+        s.join_groupspace(gs, "bob#server.biji", 0).unwrap();
         let list = s.list_groupspaces().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "产品团队");

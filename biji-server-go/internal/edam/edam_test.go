@@ -14,7 +14,7 @@ import (
 // 镜像客户端断言：checkVersion 免认证可达、authenticate 账密换 token、
 // getSyncState 的 updateCount 编码在字段 3。
 func TestCheckVersionReplyMirror(t *testing.T) {
-	out := reply("evernote_checkVersion", 1, func(w *thrift.Writer) {
+	out := reply("checkVersion", 1, func(w *thrift.Writer) {
 		w.FieldBegin(0, thrift.TypeBool)
 		w.U8(1) // 兼容
 		w.FieldStop()
@@ -24,7 +24,7 @@ func TestCheckVersionReplyMirror(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name != "evernote_checkVersion" {
+	if name != "checkVersion" {
 		t.Fatalf("name %q", name)
 	}
 	if mtype != thrift.Reply {
@@ -48,7 +48,7 @@ func TestCheckVersionReplyMirror(t *testing.T) {
 
 func TestSyncStateUpdateCountField3(t *testing.T) {
 	var w thrift.Writer
-	w.MessageBegin("evernote_getSyncState", thrift.Reply, 1)
+	w.MessageBegin("getSyncState", thrift.Reply, 1)
 	w.FieldBegin(0, thrift.TypeStruct)
 	w.FieldI64(3, 6)
 	w.FieldStop()
@@ -178,7 +178,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 
 	var token string
 	t.Run("authenticate", func(t *testing.T) {
-		_, fields := parseReply(t, call(t, srv.ServeUserStore, "evernote_authenticate", func(w *thrift.Writer) {
+		_, fields := parseReply(t, call(t, srv.ServeUserStore, "authenticate", func(w *thrift.Writer) {
 			w.FieldString(1, "u")
 			w.FieldString(2, "p")
 		}))
@@ -188,7 +188,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("authenticate 拒绝错密码", func(t *testing.T) {
-		body := call(t, srv.ServeUserStore, "evernote_authenticate", func(w *thrift.Writer) {
+		body := call(t, srv.ServeUserStore, "authenticate", func(w *thrift.Writer) {
 			w.FieldString(1, "u")
 			w.FieldString(2, "wrong")
 		})
@@ -199,7 +199,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 	})
 
 	t.Run("getNoteStoreUrl", func(t *testing.T) {
-		_, fields := parseReply(t, call(t, srv.ServeUserStore, "evernote_getNoteStoreUrl", func(w *thrift.Writer) {
+		_, fields := parseReply(t, call(t, srv.ServeUserStore, "getNoteStoreUrl", func(w *thrift.Writer) {
 			w.FieldString(1, token)
 		}))
 		if got := fieldStr(unwrapStruct(t, fields), 0); got != "http://x/edam/note" {
@@ -207,7 +207,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("getNoteStoreUrl 拒绝无效 token", func(t *testing.T) {
-		body := call(t, srv.ServeUserStore, "evernote_getNoteStoreUrl", func(w *thrift.Writer) {
+		body := call(t, srv.ServeUserStore, "getNoteStoreUrl", func(w *thrift.Writer) {
 			w.FieldString(1, "bogus")
 		})
 		rd := &thrift.Reader{B: body}
@@ -227,7 +227,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 
 	var nbGUID, noteGUID, resGUID, tagGUID string
 	t.Run("createNotebook", func(t *testing.T) {
-		_, inner := noteCall("evernote_createNotebook", func(w *thrift.Writer) {
+		_, inner := noteCall("createNotebook", func(w *thrift.Writer) {
 			w.FieldBegin(2, thrift.TypeStruct)
 			w.FieldString(2, "项目")
 			w.FieldStop()
@@ -241,7 +241,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("updateNotebook 裸 i32", func(t *testing.T) {
-		msgFields, _ := noteCall("evernote_updateNotebook", func(w *thrift.Writer) {
+		msgFields, _ := noteCall("updateNotebook", func(w *thrift.Writer) {
 			w.FieldString(2, nbGUID)
 			w.FieldBegin(3, thrift.TypeStruct)
 			w.FieldString(2, "项目改")
@@ -255,7 +255,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("createNote", func(t *testing.T) {
-		_, inner := noteCall("evernote_createNote", func(w *thrift.Writer) {
+		_, inner := noteCall("createNote", func(w *thrift.Writer) {
 			w.FieldBegin(2, thrift.TypeStruct)
 			w.FieldString(2, "标题")
 			w.FieldString(3, "<en-note>正文</en-note>")
@@ -285,11 +285,11 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("getSyncState 与块拉取", func(t *testing.T) {
-		_, inner := noteCall("evernote_getSyncState", func(w *thrift.Writer) {})
+		_, inner := noteCall("getSyncState", func(w *thrift.Writer) {})
 		if fieldI64(inner, 3) == 0 {
 			t.Fatalf("缺 updateCount f3: %+v", inner)
 		}
-		_, chunk := noteCall("evernote_getFilteredSyncChunk", func(w *thrift.Writer) {
+		_, chunk := noteCall("getFilteredSyncChunk", func(w *thrift.Writer) {
 			w.FieldI32(2, 0)
 		})
 		if fieldI64(chunk, 3) == 0 {
@@ -360,7 +360,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("getResource 按需取 body", func(t *testing.T) {
-		_, inner := noteCall("evernote_getResource", func(w *thrift.Writer) {
+		_, inner := noteCall("getResource", func(w *thrift.Writer) {
 			w.FieldString(2, resGUID)
 			w.FieldBool(3, true) // withBinary
 			w.FieldBool(4, true) // withData
@@ -383,7 +383,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("getResource 无 body 开关时不携带 body", func(t *testing.T) {
-		_, inner := noteCall("evernote_getResource", func(w *thrift.Writer) {
+		_, inner := noteCall("getResource", func(w *thrift.Writer) {
 			w.FieldString(2, resGUID)
 			w.FieldBool(3, false)
 			w.FieldBool(4, false)
@@ -399,7 +399,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("getResource 未知 guid 报异常", func(t *testing.T) {
-		body := call(t, srv.ServeNoteStore, "evernote_getResource", func(w *thrift.Writer) {
+		body := call(t, srv.ServeNoteStore, "getResource", func(w *thrift.Writer) {
 			w.FieldString(1, token)
 			w.FieldString(2, "no-such-res")
 			w.FieldBool(3, true)
@@ -411,7 +411,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("expungeNote 裸 i64 + 删除账", func(t *testing.T) {
-		msgFields, _ := noteCall("evernote_expungeNote", func(w *thrift.Writer) {
+		msgFields, _ := noteCall("expungeNote", func(w *thrift.Writer) {
 			w.FieldString(2, noteGUID)
 		})
 		if got := fieldI64(msgFields, 0); got == 0 {
@@ -422,7 +422,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("createTag", func(t *testing.T) {
-		_, inner := noteCall("evernote_createTag", func(w *thrift.Writer) {
+		_, inner := noteCall("createTag", func(w *thrift.Writer) {
 			w.FieldBegin(2, thrift.TypeStruct)
 			w.FieldString(2, "重要")
 			w.FieldStop()
@@ -434,7 +434,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 	})
 	t.Run("chunk 回传 tags 与标签/笔记本删除账", func(t *testing.T) {
 		// 删除前：f6 tags 应回传标签本体
-		_, chunk := noteCall("evernote_getFilteredSyncChunk", func(w *thrift.Writer) {
+		_, chunk := noteCall("getFilteredSyncChunk", func(w *thrift.Writer) {
 			w.FieldI32(2, 0)
 		})
 		sawTag := false
@@ -452,13 +452,13 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		}
 
 		// 删除标签 + 笔记本 → f13/f12 删除账，f6 不再回传已删标签
-		noteCall("evernote_expungeTag", func(w *thrift.Writer) {
+		noteCall("expungeTag", func(w *thrift.Writer) {
 			w.FieldString(2, tagGUID)
 		})
-		noteCall("evernote_expungeNotebook", func(w *thrift.Writer) {
+		noteCall("expungeNotebook", func(w *thrift.Writer) {
 			w.FieldString(2, nbGUID)
 		})
-		_, chunk2 := noteCall("evernote_getFilteredSyncChunk", func(w *thrift.Writer) {
+		_, chunk2 := noteCall("getFilteredSyncChunk", func(w *thrift.Writer) {
 			w.FieldI32(2, 0)
 		})
 		sawExpTag, sawExpNb := false, false

@@ -1,6 +1,6 @@
-# biji — 印象笔记（Windows v7.4.30.9439）的 Rust 系统性复刻
+# biji — 自研笔记应用（Rust 桌面端 + Go 同步服务端）
 
-依据 REA 逆向分析报告（`E:\Development\project\yinxiang-biji-analysis\README.md`，下称**分析文档**）实现的复刻工程。目标不是像素级仿制 UI，而是按分析文档 §9 路线图**从数据模型向上重建**：协议语义、本地存储、正文格式、同步记账全部可溯源到逆向证据。
+依据对原 Windows 笔记客户端（v7.4.30.9439）的静态逆向分析报告（下称**分析文档**）独立实现的笔记应用工程。目标不是像素级仿制 UI，而是按分析文档 §9 路线图**从数据模型向上重建**：协议语义、本地存储、正文格式、同步记账全部可溯源到分析证据。
 
 ## 模块布局
 
@@ -51,18 +51,18 @@ PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm
 
 | 分析文档章节 | 原系统事实 | 本实现 | 位置 |
 |---|---|---|---|
-| §5 传输层 | Thrift over 命名管道（`\\.\pipe\yxmarkup` / `\\.\pipe\yinxiang.nwserver`） | 进程内调用：`NoteService` 方法 + `NodeWebkitCommand`→`MarkupFrontend::dispatch`（`biji markup` 可演示命令流） | `biji-service/src/lib.rs` |
+| §5 传输层 | Thrift over 命名管道（标注编辑器管道 / 壳↔编辑器 NW 管道） | 进程内调用：`NoteService` 方法 + `NodeWebkitCommand`→`MarkupFrontend::dispatch`（`biji markup` 可演示命令流） | `biji-service/src/lib.rs` |
 | §5.1 结构体 | `NwNote`/`NwResource`/`NwResourceBase64`/`Display` | `NoteView`/`ResourceData`/`Base64Resource`/`DisplayInfo`（字段一一对应） | `biji-service` |
 | §5.2 DesktopService 28 方法 | 编辑器→壳 | 28 个方法全部有签名级映射且**全部真实现**：笔记/资源/锁/账号/试用计数/事件回报、分段写回（`updateResource` offset 定位拼接/`createNoteFromResource` 分段装配幂等）、PDF 分页渲染（`renderPage`/`renderPages` 经渲染器接缝产出 PNG 文件，与 GUI 标注画布共享 `BIJI_PDF_RENDER_CMD`→pdftoppm 约定，CLI `res render` 可实测） | `biji-service::NoteService` |
 | §5.3 NodeWebkitService 15 方法 | 壳→编辑器 | 15 个变体的枚举 + LoggingFrontend | `biji-service::NodeWebkitCommand` |
 | §6.1 账号模型 | `user#service_host`；bootstrap 双 profile | `account set/show`；`AnalyticsInfo` 默认值 = 中国区 profile 实测开关 | `biji-service` |
-| §6.2 云端 | `app.yinxiang.com` 等 | 协议对位但不连官方云：同步目标为自研后端 biji-server-go（`ServerRemote`，默认 `http://127.0.0.1:8332` 零配置直连） | `biji-sync` |
+| §6.2 云端 | 原厂托管服务端 | 协议对位但不连官方云：同步目标为自研后端 biji-server-go（`ServerRemote`，默认 `http://127.0.0.1:8332` 零配置直连） | `biji-sync` |
 | §7.1 目录布局 | `<名>.exb` + `.exb.attachments` | `biji init` 产出 `biji.exb` + `biji.exb.attachments`；blob 两级哈希寻址、内容去重 | `biji-store::attachments_dir_for` |
 | §7.2 格式结论 | `.exb`=SQLite；`NOCASEUTF8` 需应用注册 | rusqlite(bundled SQLite) + 打开时注册同名 collation（测试覆盖大小写折叠排序） | `biji-store::nocase_utf8` |
 | §7.3 数据模型 | 核心四表（`note_attr`/`notebook_attr`/`tag_attr`/`resource_attr`，DDL 逐字段恢复）+ `expunged_items` | 四表 DDL **逐字段复刻**（含 `COLLATE NOCASEUTF8` 列）；`note_content`/`note_tag`/`sync_journal`/`meta` 为标注的扩展表（原存放点未恢复，分析文档 §12） | `biji-store::SCHEMA` |
 | §7.3 标签三处维护 | `note_tag` 关系 + `tag_attr.note_count` + `note_attr.tags` 文本缓存 | `attach_tag`/`detach_tag` 三处同步维护（测试覆盖） | `biji-store` |
 | §7.3 删除账 | `expunged_items`（同步必需） | 彻底删除即记账；`biji note rm --hard` + `sync status` 可对账 | `biji-store` + `biji-sync` |
-| §9.1 正文格式 | ENML 2.0（DTD 在 xml.evernote.com） | `biji-enml`：严格/宽松解析（真实笔记的 HTML 命名实体、碎片、DOCTYPE 全兼容）、白名单校验、script 剪除、纯文本提取 | `biji-enml` |
+| §9.1 正文格式 | ENML 2.0 公开 DTD | `biji-enml`：严格/宽松解析（真实笔记的 HTML 命名实体、碎片、DOCTYPE 全兼容）、白名单校验、script 剪除、纯文本提取 | `biji-enml` |
 | §9.3 风险 2 | USN/CSN 计数模型 | 每次变更加 USN 日志；**完整同步轮次 `sync_round`：pull → apply → push → commit**；`PushPlan` 含变更快照与删除账 | `biji-sync` |
 
 ## 同步闭环（自有后端 biji-server-go + 本地 EDAM 风格演示）
@@ -112,4 +112,4 @@ biji enml validate note.enml                # DTD 白名单校验
 
 ## 法律边界
 
-本项目依据**协议行为与数据格式的静态分析结论**重新实现，未复制、未反编译引用印象笔记的任何二进制代码、资源文件或明文 JS 产物。ENML/DTD、EDAM 协议为 Evernote 公开规范。品牌"印象笔记/Evernote"归其权利方所有。
+本项目为独立实现的笔记应用，依据对协议行为与数据格式的静态分析结论重新实现，未复制、未反编译引用任何第三方二进制代码、资源文件或明文 JS 产物。ENML/DTD 为公开格式规范；所有第三方商标归其权利方所有。

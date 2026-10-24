@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "biji",
     version,
-    about = "印象笔记复刻（Rust 实现）——数据模型 / ENML / 双服务语义 / USN 同步骨架"
+    about = "biji 笔记（Rust 实现）——数据模型 / ENML / 双服务语义 / USN 同步（自有后端）"
 )]
 struct Cli {
     /// 库文件路径（默认 ./biji.exb，附件目录自动推导为 biji.exb.attachments，
@@ -166,12 +166,12 @@ enum SyncCmd {
         #[arg(long)]
         demo: bool,
     },
-    /// 仅推送（默认指向印象笔记中国区 EDAM 接缝）
+    /// 仅推送（默认连接自有后端 biji-server-go）
     Push {
         #[arg(long)]
         demo: bool,
     },
-    /// 免认证握手：对真实印象笔记服务端验证 Thrift 传输（无需凭证）
+    /// 免认证握手：对自有后端验证 Thrift 传输（无需凭证）
     Ping,
 }
 
@@ -179,7 +179,7 @@ enum SyncCmd {
 enum AccountCmd {
     Set {
         user: String,
-        #[arg(default_value = "app.yinxiang.com")]
+        #[arg(default_value = "http://127.0.0.1:8332")]
         host: String,
         email: Option<String>,
     },
@@ -237,7 +237,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 trigger,
             });
             svc.dispatch(NodeWebkitCommand::FocusMarkupWindow);
-            println!("已派发 NodeWebkitCommand（原 \\\\.\\pipe\\yinxiang.nwserver 通路）：");
+            println!("已派发 NodeWebkitCommand（原壳↔编辑器 NW 通路）：");
             println!("（本实现中命令打印到 stdout，等价于原编辑器进程消费命令）");
         }
         Command::Sync { cmd } => sync(&cli.db, cmd)?,

@@ -1,7 +1,7 @@
 //! EDAM/Thrift 传输——**自研后端 biji-server-go**（本仓库 `biji-server-go/`）。
 //!
-//! Evernote Cloud API 的 Thrift 二进制协议 over HTTP 的最小子集实现
-//! （协议对位印象笔记，连接目标是我们自己的服务端），覆盖同步引擎
+//! EDAM 风格 Thrift 二进制协议 over HTTP 的最小子集实现
+//! （连接目标是自研后端 biji-server-go），覆盖同步引擎
 //! 所需的调用：getNoteStoreUrl / getSyncState / getFilteredSyncChunk /
 //! createNote / updateNote / expungeNote / createNotebook / updateNotebook /
 //! expungeNotebook / createTag / updateTag / expungeTag。
@@ -182,10 +182,9 @@ impl TWriter {
     }
 
     /// 完整 RPC 消息：message_begin + 参数 struct + stop。
-    /// Evernote 云端要求方法名带 `evernote_` 前缀（防扫描，分析文档 §4.3）。
+    /// 方法名直用裸名（自有后端 biji-server-go 按裸名路由）。
     pub fn call(&mut self, method: &str, seqid: i32, args: impl FnOnce(&mut TWriter)) {
-        let wire_name = format!("evernote_{method}");
-        self.message_begin(&wire_name, MSG_CALL, seqid);
+        self.message_begin(method, MSG_CALL, seqid);
         self.field_begin(1, T_STRUCT); // args
         args(self);
         self.field_stop(); // args struct
@@ -315,7 +314,7 @@ fn read_value(buf: &[u8], pos: &mut usize, ttype: u8) -> Option<TVal> {
     }
 }
 
-// ---------- EDAM 字段号（evernote-thrift 公开定义的同步子集） ----------
+// ---------- EDAM 字段号（公开 IDL 规范定义的同步子集） ----------
 
 mod note_fields {
     pub const GUID: i16 = 1;
@@ -832,7 +831,7 @@ fn write_resources(w: &mut TWriter, items: &[ResourceUploadItem]) {
 
 /// 从 getFilteredSyncChunk 结果 struct 解析同步块（纯函数，单测直接覆盖）。
 /// 解析 Note STRUCT 内 f13 resources list（Resource: f1 guid, f3 Data{f1 body},
-/// f4 mime, f14 attributes{f1 fileName}；与印象笔记 EDAM IDL 字段号一致）。
+/// f4 mime, f14 attributes{f1 fileName}；与 EDAM IDL（公开规范）字段号一致）。
 fn parse_note_resources(note: &TVal) -> Vec<RemoteEdamResource> {
     let mut out = Vec::new();
     if let Some(list) = note.field(13).and_then(|v| v.as_list()) {

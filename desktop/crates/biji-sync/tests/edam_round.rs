@@ -51,10 +51,7 @@ fn full_sync_round_against_in_memory_edam() {
     let note_url = "http://test/edam/note";
     let calls_in: CallLog = calls.clone();
     let transport = move |url: &str, body: &[u8]| -> Result<Vec<u8>, String> {
-        let method = request_method_name(body)
-            .strip_prefix("evernote_")
-            .unwrap_or(&request_method_name(body))
-            .to_string();
+        let method = request_method_name(body).to_string();
         calls_in.borrow_mut().push((url.to_string(), body.to_vec()));
         Ok(match method.as_str() {
             "getNoteStoreUrl" => reply("getNoteStoreUrl", |w| {
@@ -150,7 +147,7 @@ fn full_sync_round_against_in_memory_edam() {
                 w.field_string(1, "srv-tag-x");
             }),
             other => {
-                let stripped = other.strip_prefix("evernote_").unwrap_or(other);
+                let stripped = other;
                 return Err(format!("unexpected call: {stripped}"));
             }
         })
@@ -256,7 +253,7 @@ fn full_sync_round_against_in_memory_edam() {
             p: 0,
         };
         let (name, mtype) = p.message().expect("解析失败");
-        assert_eq!(name, "evernote_createNote");
+        assert_eq!(name, "createNote");
         assert_eq!(mtype, 1); // CALL
         let args_container = p.fields().expect("args 解析失败");
         let args_container = args_container
@@ -302,7 +299,7 @@ fn full_sync_round_against_in_memory_edam() {
             p: 0,
         };
         let (name, _) = p.message().expect("解析失败");
-        assert_eq!(name, "evernote_getFilteredSyncChunk");
+        assert_eq!(name, "getFilteredSyncChunk");
         let args_container = p.fields().expect("args 解析失败");
         let args_container = args_container
             .iter()
@@ -333,7 +330,7 @@ fn full_sync_round_against_in_memory_edam() {
             p: 0,
         };
         let (name, _) = p.message().expect("解析失败");
-        assert_eq!(name, "evernote_getResource");
+        assert_eq!(name, "getResource");
         let args_container = p.fields().expect("args 解析失败");
         let args_container = args_container
             .iter()

@@ -1,6 +1,6 @@
-//! ENML 2.0（Evernote Markup Language）解析、校验、清洗与序列化。
+//! ENML 2.0 笔记正文标记语言（公开规范）的解析、校验、清洗与序列化。
 //!
-//! 对应分析文档 §6.2（ENML DTD）与 §9.1（正文格式复刻）：印象笔记正文的
+//! 对应分析文档 §6.2（ENML DTD）与 §9.1（正文格式）：笔记正文的
 //! 标准格式是 ENML——受 DTD 约束的 XHTML 子集，根元素 `en-note`，
 //! 扩展元素 `en-media`（附件占位）、`en-crypt`（加密段）、`en-todo`（待办）、
 //! `en-codeblock`（代码块）。

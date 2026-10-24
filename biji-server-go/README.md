@@ -2,7 +2,7 @@
 
 自研笔记服务端：用 Golang 实现 EDAM（Thrift 二进制 over HTTP）同步子集，
 对接 Rust 复刻客户端（`biji-cli` / `biji-gui` 的 `biji-sync::edam`），
-**是本产品唯一的同步后端——客户端不连接印象官方云**。
+**是本产品唯一的同步后端——客户端不连接任何第三方云服务**。
 
 ## 架构
 
@@ -34,7 +34,7 @@ internal/store  内存模型 + JSON 落盘（updateCount 单调、每对象 USN�
   业务参数从 `f2` 起（如 createNote `f2 = Note{f2 title, f3 content, f9 active}`）。
 - 响应：单层 result struct（`message f0 = STRUCT{业务字段}`）；
   updateNote / updateNotebook / updateTag 返回裸 `f0 i32`，
-  expunge 系列返回裸 `f0 i64`（与印象笔记 EDAM IDL 一致）。
+  expunge 系列返回裸 `f0 i64`（与公开 EDAM IDL 规范一致）。
 - getFilteredSyncChunk：`f2 chunkHighUSN(i32) / f3 updateCount(i64) /
   f4 notes list<STRUCT{f1 guid, f2 title, f3 content, f7 updated, f9 active}> /
   f5 notebooks / f6 tags（Tag: f1 guid, f2 name）/
@@ -80,7 +80,7 @@ UI 层实测（2026-10，Windows UIAutomation Invoke 点击）：未同步库启
 
 **附件资源闭环**：createNote/updateNote 携带 `Note.resources`（f13，
 Resource = f1 guid / f3 Data{f1 body, f3 size, f4 mime} / f4 mime /
-f14 attributes{f1 fileName}，与印象笔记 EDAM IDL 字段号一致）；资源随所属
+f14 attributes{f1 fileName}，与公开 EDAM IDL 字段号一致）；资源随所属
 笔记整体替换（请求不带 f13 时服务端保留现有资源集）；chunk 的 notes 内
 回传 f13 **元数据态**（guid/mime/fileName + Data.size，无 body），大附件
 body 经 `getResource` 按需拉取（EDAM 分页语义），客户端按 resource guid
