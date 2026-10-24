@@ -252,10 +252,16 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 				notes := s.Store.NotesSince(after)
 				high := s.Store.UpdateCount
 				nbs := s.Store.NotebooksSince(after)
-				var expGuids []string
+				tgs := s.Store.TagsSince(after)
+				var expNoteGuids, expNbGuids, expTagGuids []string
 				for _, e := range s.Store.ExpungedSince(after) {
-					if e.Kind == "note" {
-						expGuids = append(expGuids, e.GUID)
+					switch e.Kind {
+					case "note":
+						expNoteGuids = append(expNoteGuids, e.GUID)
+					case "notebook":
+						expNbGuids = append(expNbGuids, e.GUID)
+					case "tag":
+						expTagGuids = append(expTagGuids, e.GUID)
 					}
 				}
 				w.FieldI32(2, int32(high))
@@ -290,8 +296,24 @@ func (s *Server) ServeNoteStore(w http.ResponseWriter, r *http.Request) {
 					w.FieldI32(5, int32(nb.USN))
 					w.FieldStop()
 				}
-				w.FieldListBegin(11, thrift.TypeString, len(expGuids))
-				for _, g := range expGuids {
+				// f6 tags：标签跨端传播（Tag: f1 guid, f2 name）
+				w.FieldListBegin(6, thrift.TypeStruct, len(tgs))
+				for _, tg := range tgs {
+					w.FieldString(1, tg.GUID)
+					w.FieldString(2, tg.Name)
+					w.FieldStop()
+				}
+				// f11/f12/f13 删除账（笔记/笔记本/标签）
+				w.FieldListBegin(11, thrift.TypeString, len(expNoteGuids))
+				for _, g := range expNoteGuids {
+					w.String(g)
+				}
+				w.FieldListBegin(12, thrift.TypeString, len(expNbGuids))
+				for _, g := range expNbGuids {
+					w.String(g)
+				}
+				w.FieldListBegin(13, thrift.TypeString, len(expTagGuids))
+				for _, g := range expTagGuids {
 					w.String(g)
 				}
 				w.FieldStop()

@@ -336,7 +336,10 @@ mod sync_chunk_fields {
     pub const UPDATE_COUNT: i16 = 3;
     pub const NOTES: i16 = 4;
     pub const NOTEBOOKS: i16 = 5; // SyncChunk.notebooks
+    pub const TAGS: i16 = 6; // SyncChunk.tags（镜像本仓库 notebooks=f5 的布局约定）
     pub const EXPUNGED_NOTES: i16 = 11;
+    pub const EXPUNGED_NOTEBOOKS: i16 = 12;
+    pub const EXPUNGED_TAGS: i16 = 13;
 }
 
 mod sync_chunk_filter_fields {
@@ -373,12 +376,23 @@ pub struct RemoteSyncChunk {
     pub notes: Vec<RemoteEdamNote>,
     /// 远端笔记本（guid + 名称）。
     pub notebooks: Vec<RemoteEdamNotebook>,
+    /// 远端标签（guid + 名称）。
+    pub tags: Vec<RemoteEdamTag>,
     pub expunged_note_guids: Vec<String>,
+    pub expunged_notebook_guids: Vec<String>,
+    pub expunged_tag_guids: Vec<String>,
 }
 
 /// 远端笔记本（wire 层）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteEdamNotebook {
+    pub guid: String,
+    pub name: String,
+}
+
+/// 远端标签（wire 层）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteEdamTag {
     pub guid: String,
     pub name: String,
 }
@@ -872,7 +886,10 @@ pub fn parse_sync_chunk(fields: &[(i16, TVal)]) -> RemoteSyncChunk {
         update_count: 0,
         notes: Vec::new(),
         notebooks: Vec::new(),
+        tags: Vec::new(),
         expunged_note_guids: Vec::new(),
+        expunged_notebook_guids: Vec::new(),
+        expunged_tag_guids: Vec::new(),
     };
     {
         let fields = &container;
@@ -948,11 +965,50 @@ pub fn parse_sync_chunk(fields: &[(i16, TVal)]) -> RemoteSyncChunk {
                         }
                     }
                 }
+                sync_chunk_fields::TAGS => {
+                    if let Some(tgs) = v.as_list() {
+                        for tg in tgs {
+                            let guid = tg
+                                .field(1) // Tag.guid
+                                .and_then(|g| g.as_str())
+                                .unwrap_or_default();
+                            if guid.is_empty() {
+                                continue;
+                            }
+                            chunk.tags.push(RemoteEdamTag {
+                                guid: guid.to_string(),
+                                name: tg
+                                    .field(2) // Tag.name
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
                 sync_chunk_fields::EXPUNGED_NOTES => {
                     if let Some(guids) = v.as_list() {
                         for g in guids {
                             if let Some(guid) = g.as_str() {
                                 chunk.expunged_note_guids.push(guid.to_string());
+                            }
+                        }
+                    }
+                }
+                sync_chunk_fields::EXPUNGED_NOTEBOOKS => {
+                    if let Some(guids) = v.as_list() {
+                        for g in guids {
+                            if let Some(guid) = g.as_str() {
+                                chunk.expunged_notebook_guids.push(guid.to_string());
+                            }
+                        }
+                    }
+                }
+                sync_chunk_fields::EXPUNGED_TAGS => {
+                    if let Some(guids) = v.as_list() {
+                        for g in guids {
+                            if let Some(guid) = g.as_str() {
+                                chunk.expunged_tag_guids.push(guid.to_string());
                             }
                         }
                     }

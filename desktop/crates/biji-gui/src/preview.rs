@@ -354,19 +354,55 @@ fn render_block(ui: &mut egui::Ui, el: &Element) {
 }
 
 /// 预览态行内块编辑会话（所见即所得最小切片：
-/// 点击块旁「✎」以纯文本编辑该块，完成后该块转为纯文本段落）。
+/// 点击块旁「✎」编辑该块 HTML 片段，格式保留；编辑中可经格式工具栏
+/// 直接对选区施加标记（B/I/U/S/代码/链接），不接触标记源码）。
 #[derive(Debug, Default)]
 pub struct PreviewSession {
     /// 正在行内编辑的顶层块下标。
     pub editing: Option<usize>,
-    /// 编辑中的纯文本缓冲。
+    /// 编辑中的片段缓冲（块内 HTML）。
     pub buffer: String,
-    /// 完成编辑时产出：(块下标, 新纯文本)。由调用方写回 ENML 树。
+    /// 完成编辑时产出：(块下标, 新片段)。由调用方写回 ENML 树。
     pub request_commit: Option<(usize, String)>,
 }
 
-/// 交互式渲染：每个顶层块旁带「✎」编辑按钮；编辑中的块显示纯文本
-/// 多行编辑器与 完成/取消 按钮。块内容变更经 `request_commit` 产出。
+/// 就地片段编辑器的稳定 id（选区状态读写锚点）。
+fn frag_editor_id() -> egui::Id {
+    egui::Id::new("preview-frag-edit")
+}
+
+/// 格式工具栏：作用于片段缓冲当前选区（所见即所得切片——渲染态点 ✎
+/// 后直接对所见文本施加标记，无需理解 HTML 源码）。
+fn frag_format_toolbar(ui: &mut egui::Ui, ses: &mut PreviewSession) {
+    const FORMATS: &[(&str, &str, &str)] = &[
+        ("B", "<b>", "</b>"),
+        ("I", "<i>", "</i>"),
+        ("U", "<u>", "</u>"),
+        ("S", "<s>", "</s>"),
+        ("代码", "<code>", "</code>"),
+        ("链接", "<a href=\"\">", "</a>"),
+    ];
+    let selection = egui::TextEdit::load_state(ui.ctx(), frag_editor_id())
+        .as_ref()
+        .and_then(|st| st.cursor.char_range());
+    ui.horizontal(|ui| {
+        for (label, open, close) in FORMATS {
+            if ui.small_button(*label).clicked() {
+                let (newc, newr) =
+                    crate::util::wrap_enml_around_selection(&ses.buffer, selection, open, close);
+                ses.buffer = newc;
+                if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), frag_editor_id()) {
+                    st.cursor.set_char_range(Some(newr));
+                    egui::TextEdit::store_state(ui.ctx(), frag_editor_id(), st);
+                }
+            }
+        }
+        ui.label(egui::RichText::new("格式作用于选区").weak().small());
+    });
+}
+
+/// 交互式渲染：每个顶层块旁带「✎」编辑按钮；编辑中的块显示片段编辑器
+/// （带格式工具栏）与 完成/取消 按钮。块内容变更经 `request_commit` 产出。
 pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSession) {
     let children = doc.root.children.clone();
     for (i, child) in children.iter().enumerate() {
@@ -386,7 +422,12 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
                         .small(),
                 );
             });
-            ui.add(egui::TextEdit::multiline(&mut ses.buffer).desired_width(ui.available_width()));
+            frag_format_toolbar(ui, ses);
+            ui.add(
+                egui::TextEdit::multiline(&mut ses.buffer)
+                    .id(frag_editor_id())
+                    .desired_width(ui.available_width()),
+            );
             ui.add_space(6.0);
             continue;
         }

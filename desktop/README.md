@@ -26,7 +26,7 @@ cargo run -p biji-gui -- [可选：库文件路径，默认 ./biji.exb]
 - **三栏布局**（对位原客户端）：笔记本/标签/回收站侧栏 ↔ 笔记列表（标题+摘要+日期+标签，摘要缓存按 USN 失效）↔ 编辑器
 - **图注标注画布**（分析文档 P2，原 `markup.min.js` 的复刻）：图片附件一键打开标注画布（完整 Markup 命令通路：按钮 → `NoteService.dispatch` → 前端通道 → 画布）；箭头/矩形/文字三工具 + 五色 + 三档线宽 + 撤销/清空/旋转 90°；标注以图片像素坐标存储（窗口缩放无关），双渲染器共享模型——egui painter 实时叠加（编辑态）+ 软件栅格化（`ab_glyph` 中文文字光栅化）合成 PNG 经 `update_resource` 写回资源（原 `updateResource` 语义）。`RotateImage`（90° 倍数）/`ResizeImage`（Lanczos3）/`ClearImage` 命令同步真实现
 - **编辑器**：标题编辑 + ENML 源码编辑 / 富文本预览双模式；2 秒无输入自动落库；Ctrl+S 手动保存
-- **预览态行内块编辑**（所见即所得切片，格式保留）：预览中每个顶层块旁带「✎」按钮，点击以该块内 HTML 片段进入就地多行编辑，完成/取消就地生效；提交按 HTML 解析该片段（sanitize 后 splice 回 ENML 树）并走既有自动保存链路——块内粗斜体/链接等标记得以保留
+- **预览态行内块编辑**（所见即所得切片，格式保留）：预览中每个顶层块旁带「✎」按钮，点击以该块内 HTML 片段进入就地多行编辑（**带格式工具栏**：B/I/U/S/代码/链接 六键作用于编辑缓冲选区——所见文本直接施加标记，无需理解 HTML 源码），完成/取消就地生效；提交按 HTML 解析该片段（sanitize 后 splice 回 ENML 树）并走既有自动保存链路——块内粗斜体/链接等标记得以保留
 - **富文本预览**：`LayoutJob` 多样式段落——标题分级/粗斜下划线/删除线/行内代码/引用块/代码块/有序无序列表/`en-todo` 待办复选框/`en-media` 附件占位/`en-crypt` 锁定占位/表格扁平化
 - **演示模式**：`Present` 命令驱动深色全屏放映（居中大标题 + 纯文本正文 + ←/→ 翻页 + Esc 退出），对位原 `present/` 子应用
 - **标注进阶**：自由画笔（拖拽轨迹折线采样，双渲染器与箭头/矩形/文字一致）、选择/移动/多选/缩放/旋转（⬚ 选择工具：点击选中、Shift 加选、空白处框选、拖拽整体平移、🔍±等比缩放、删除所选；控制把手三级——角点黄=对角锚等比缩放、边中点青=单轴缩放、顶边外移紫点=旋转且枢轴可切换（公共包围盒中心/画布中心外部点，`start_rotation` 参数化入口）；`Annotation.angle` 双渲染器旋转——paint 侧旋转文字经离屏栅格化 + 旋转 Mesh 贴回（绕开 egui TextFormat 无字形旋转限制），rasterize 侧字形像素逐点旋转含 `px_bounds` 偏移修复）、PDF 附件一键进入按页标注（保存产物为新 PNG 资源挂同一条笔记，PDF 本体不改写——对位原客户端"标注层另存"）、JPEG 原格式写回（image/jpeg 资源标注后保持 JPEG 编码与文件名）
@@ -52,7 +52,7 @@ PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm
 |---|---|---|---|
 | §5 传输层 | Thrift over 命名管道（`\\.\pipe\yxmarkup` / `\\.\pipe\yinxiang.nwserver`） | 进程内调用：`NoteService` 方法 + `NodeWebkitCommand`→`MarkupFrontend::dispatch`（`biji markup` 可演示命令流） | `biji-service/src/lib.rs` |
 | §5.1 结构体 | `NwNote`/`NwResource`/`NwResourceBase64`/`Display` | `NoteView`/`ResourceData`/`Base64Resource`/`DisplayInfo`（字段一一对应） | `biji-service` |
-| §5.2 DesktopService 28 方法 | 编辑器→壳 | 28 个方法全部有签名级映射；本地可实现的已实现（笔记/资源/锁/账号/试用计数/事件回报），PDF 渲染与分段写回显式 `Unsupported`（P2 项） | `biji-service::NoteService` |
+| §5.2 DesktopService 28 方法 | 编辑器→壳 | 28 个方法全部有签名级映射且**全部真实现**：笔记/资源/锁/账号/试用计数/事件回报、分段写回（`updateResource` offset 定位拼接/`createNoteFromResource` 分段装配幂等）、PDF 分页渲染（`renderPage`/`renderPages` 经渲染器接缝产出 PNG 文件，与 GUI 标注画布共享 `BIJI_PDF_RENDER_CMD`→pdftoppm 约定，CLI `res render` 可实测） | `biji-service::NoteService` |
 | §5.3 NodeWebkitService 15 方法 | 壳→编辑器 | 15 个变体的枚举 + LoggingFrontend | `biji-service::NodeWebkitCommand` |
 | §6.1 账号模型 | `user#service_host`；bootstrap 双 profile | `account set/show`；`AnalyticsInfo` 默认值 = 中国区 profile 实测开关 | `biji-service` |
 | §6.2 云端 | `app.yinxiang.com` 等 | `biji-sync::DEFAULT_SERVICE_HOST`；`YinxiangRemote` 为诚实接缝（网络未接通即报 Unsupported） | `biji-sync` |
@@ -71,7 +71,7 @@ PDF 按页标注（markupPdf）端到端实测 ✓（poppler 25.07.0，`pdftoppm
 - **`MockEdamServer`**：`update_count` 单调递增、每对象独立 usn、expunged 删除账、guid 铸造——与 EDAM 增量拉取模型一致；
 - **`SyncRemote` 双向协议**：`upload(plan, identities)`（guid ↔ 本地 uid 身份解析/铸造，服务器回执分配表）+ `pull(after_usn)`（增量笔记与删除账）+ `fetch_resource(guid)`（chunk 只带附件元数据时经 getResource 按需取 body，已落库附件按 guid 幂等跳过重复下载）；`LocalEdamRemote` 为其本地实现，`YinxiangRemote`（app.yinxiang.com）保持诚实 Unsupported；
 - **`SyncEngine::sync_round`**：pull → apply（`apply_remote_note`/`apply_remote_expunge`，不写本地日志，天然无回声）→ push → commit（同步点只前进不回退）；
-- **对账测试覆盖**：双客户端推拉、更新对账、彻底删除经删除账对账且新客户端绝不复活、双向变更、空轮次幂等、同步点不回退回归。
+- **对账测试覆盖**：双客户端推拉、更新对账、彻底删除经删除账对账且新客户端绝不复活、双向变更、空轮次幂等、同步点不回退回归、**标签与笔记本/标签删除账跨端传播**、**推送游标与服务器游标分离（本地 journal usn 与服务器 usn 边界碰撞不漏推）**。
 
 ```bash
 biji sync round --demo   # 与本地 EDAM 服务器跑完整轮次（推送/拉取/删除账对账）
@@ -118,7 +118,7 @@ biji sync round
 若服务端对业务细节有异议，报错前缀 `EDAM 异常:`（或 `云端拒绝:`）可直接用于微调——传输/编解码已被真实服务器双向验证（服务端返回 EDAM 处理器层异常而非 Thrift 协议层错误）。
 2. **PDF 渲染质量上限**（已基本收敛）——按页渲染标注闭环已用 poppler 25.07.0 实测打通（见上方 GUI 验证记录）；残余仅为渲染保真度上限取决于外部渲染器二进制（pdftoppm 150dpi 光栅已满足标注用途，矢量/字体级高质量渲染可经 `BIJI_PDF_RENDER_CMD` 接入任意渲染命令）。
 3. **旁路库格式**（.gdb/.tdb，原私有格式）——不做，复刻自有实现无此包袱。
-4. **富文本编辑深化（大幅收敛）**——**格式工具栏已实现**（第四轮）：源码编辑模式下的 B/I/U/S/H1/H2/代码/待办/链接 九键，作用于 ENML 源码光标选区（`wrap_enml_around_selection` 字符下标安全，CCursorRange 语义经 6 组单测覆盖：ASCII 选区/CJK/空选/无光标/越界钳制/短日期）；插后光标自动落在被包裹内容上。剩余仅为**渲染态直接操作标记**（所见即所得，egui 需自研 galley 光标命中 + 标记树映射），为独立大组件不在本阶段。
+4. **富文本编辑深化（大幅收敛）**——源码编辑模式的**格式工具栏**（B/I/U/S/H1/H2/代码/待办/链接 九键，`wrap_enml_around_selection` 6 组单测）与**预览态就地编辑格式工具栏**（B/I/U/S/代码/链接作用于片段缓冲选区，2026-10 实机核验：✎ → B 键 → 缓冲出现 `<b>` 包裹 → ✓ 完成 → ENML 落库自动保存全链闭环）均已实现。剩余仅为**渲染态直接选区操作**（预览渲染上直接框选文字施加标记，egui 需自研 galley 光标命中 + 标记树映射），为独立大组件不在本阶段。
 5. **标注旋转深化（已收敛）**——把手旋转（公共中心/外部点枢轴可切换）、paint 侧旋转文字（离屏栅格化 Mesh）、**绕外部点的标注轨道位移**（`rotate_around_canvas` 开启时移动拖拽变为绕画布中心的轨道变换：坐标经 rotate_point 刚体旋转、自身 angle 跟随，跨 ±180° 边界归一）均已实现；剩余仅 paint 侧文字字形直绘（egui TextFormat 限制，保存路径已支持）。
 
 ## 法律边界

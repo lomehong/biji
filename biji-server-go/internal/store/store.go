@@ -285,6 +285,19 @@ func (s *Store) NotebooksSince(after int64) []*Notebook {
 	return out
 }
 
+// TagsSince 返回 usn 大于 after 的标签快照。
+func (s *Store) TagsSince(after int64) []*Tag {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Tag
+	for _, tg := range s.Tags {
+		if tg.USN > after {
+			out = append(out, tg)
+		}
+	}
+	return out
+}
+
 // ExpungedSince 返回 usn 大于 after 的删除账条目。
 func (s *Store) ExpungedSince(after int64) []Expunged {
 	s.mu.Lock()

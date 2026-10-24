@@ -78,6 +78,16 @@ fn full_sync_round_against_in_memory_edam() {
                             w.field_i32(5, 1);
                             w.field_stop();
                         }
+                        // f6 tags：标签跨端传播（Tag: f1 guid, f2 name）
+                        w.field_list_begin(6, T_STRUCT, 1);
+                        {
+                            w.field_string(1, "srv-tag-1");
+                            w.field_string(2, "远端标签");
+                            w.field_stop();
+                        }
+                        // f12 expungedNotebooks：笔记本删除账
+                        w.field_list_begin(12, biji_sync::edam::T_STRING, 1);
+                        w.string("srv-nb-expunged-1");
                         w.field_list_begin(4, T_STRUCT, 1); // notes
                         {
                             w.field_string(1, "srv-note-1");
@@ -188,6 +198,20 @@ fn full_sync_round_against_in_memory_edam() {
         .into_iter()
         .find(|nb| nb.name == "远端笔记本")
         .expect("远端笔记本未对齐");
+    // f6 标签已跨端传播并登记 identity
+    let tg = store
+        .list_tags()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.name == "远端标签")
+        .expect("远端标签未落库");
+    assert_eq!(
+        store.identity_get_local("tag", "srv-tag-1"),
+        Some(tg.uid),
+        "标签 guid 映射缺失"
+    );
+    // f12 笔记本删除账已对账（未知 guid 幂等无操作，此处验证通路不 panic）
+    assert!(store.identity_get_local("notebook", "srv-nb-expunged-1").is_none());
     assert_eq!(
         store.identity_get_local("notebook", "srv-nb-1"),
         Some(nb.uid),

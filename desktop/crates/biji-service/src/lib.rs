@@ -12,8 +12,10 @@
 //! `biji://resource/<uid>`，对位原 `resourceUrl`/`noteLink`）。
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
+
+pub mod pdf;
 
 use base64::Engine as _;
 use biji_store::{
@@ -39,6 +41,8 @@ pub enum ServiceError {
     Io(#[from] std::io::Error),
     #[error("ENML 错误: {0}")]
     Enml(String),
+    #[error("PDF 渲染错误: {0}")]
+    Render(String),
 }
 
 // ---------- 协议数据结构（对位原 Thrift struct） ----------
@@ -246,6 +250,12 @@ pub struct NoteService {
     locks: RefCell<HashSet<i64>>,
     events: RefCell<Vec<DesktopEvent>>,
     opener: OpenTarget,
+    /// 分段写回的段装配缓冲（createNoteFromResource：调用方 resource uid → 已装配字节）。
+    resource_assemblies: RefCell<HashMap<i64, Vec<u8>>>,
+    /// createNoteFromResource 的幂等登记（resource uid → (note uid, resource uid)）。
+    created_from_resource: RefCell<HashMap<i64, (i64, i64)>>,
+    /// 注入的 PDF 渲染器（测试用）；None 时按环境约定探测。
+    pdf_renderer: RefCell<Option<std::rc::Rc<dyn pdf::PdfPageFileRenderer>>>,
 }
 
 impl NoteService {
@@ -256,11 +266,23 @@ impl NoteService {
             locks: RefCell::new(HashSet::new()),
             events: RefCell::new(Vec::new()),
             opener: Box::new(system_opener),
+            resource_assemblies: RefCell::new(HashMap::new()),
+            created_from_resource: RefCell::new(HashMap::new()),
+            pdf_renderer: RefCell::new(None),
         }
     }
 
     pub fn with_opener(mut self, opener: OpenTarget) -> NoteService {
         self.opener = opener;
+        self
+    }
+
+    /// 注入 PDF 渲染器（测试）；未注入时按环境约定探测。
+    pub fn with_pdf_renderer(
+        mut self,
+        renderer: std::rc::Rc<dyn pdf::PdfPageFileRenderer>,
+    ) -> NoteService {
+        self.pdf_renderer = RefCell::new(Some(renderer));
         self
     }
 
@@ -385,30 +407,65 @@ impl NoteService {
         Ok(())
     }
 
-    /// 写回附件。原协议的 `offset` 支持分段写：v0 仅支持 offset=0 整体替换。
+    /// 写回附件。原协议的 `offset` 定位写入位置（分析文档 §5.2
+    /// 「写回附件（offset 定位）」）：offset=0 为整体替换（v0 语义）；
+    /// offset>0 为分段写——`resource.bytes` 拼接进现有内容的 `offset` 处
+    /// （越界补零、末端自然延长）后整体落库。
     pub fn update_resource(&self, resource: ResourceData, offset: u64) -> Result<()> {
         let uid = self.resolve_resource(&resource_url(resource.uid))?;
-        if offset != 0 {
-            return Err(ServiceError::Unsupported("分段写回（offset>0）"));
+        if offset == 0 {
+            self.store.replace_resource_bytes(uid, &resource.bytes)?;
+            return Ok(());
         }
-        self.store.replace_resource_bytes(uid, &resource.bytes)?;
+        let (_, current) = self.store.get_resource(uid)?;
+        let mut content = current;
+        let start = offset as usize;
+        let end = start + resource.bytes.len();
+        if content.len() < end {
+            content.resize(end, 0); // 段间空隙补零（offset 定位语义）
+        }
+        content[start..end].copy_from_slice(&resource.bytes);
+        self.store.replace_resource_bytes(uid, &content)?;
         Ok(())
     }
 
     /// 由附件新建笔记：正文为指向该资源的 `en-media` 占位（对位原语义）。
+    /// `offset>0` 为分段装配：段按 offset 拼进装配缓冲，每次调用后以当前
+    /// 装配结果 upsert 笔记（同一 resource uid 幂等指向同一条笔记与资源）。
     pub fn create_note_from_resource(
         &self,
         resource: ResourceData,
         offset: u64,
     ) -> Result<i64> {
-        if offset != 0 {
-            return Err(ServiceError::Unsupported("分段写回（offset>0）"));
+        // 段装配：offset 定位段在整体内容中的位置
+        {
+            let mut assemblies = self.resource_assemblies.borrow_mut();
+            let buf = assemblies.entry(resource.uid).or_default();
+            let start = offset as usize;
+            let end = start + resource.bytes.len();
+            if buf.len() < end {
+                buf.resize(end, 0);
+            }
+            buf[start..end].copy_from_slice(&resource.bytes);
+        }
+        let assembled = self
+            .resource_assemblies
+            .borrow()
+            .get(&resource.uid)
+            .cloned()
+            .unwrap_or_default();
+
+        // 幂等 upsert：后续段只替换既有资源内容，不另建笔记
+        if let Some(&(note_uid, res_uid)) = self.created_from_resource.borrow().get(&resource.uid)
+        {
+            self.store.replace_resource_bytes(res_uid, &assembled)?;
+            return Ok(note_uid);
         }
         let note_uid = self.store.create_note(&NoteDraft {
             title: resource.filename.clone(),
             enml: format!(
                 "<en-note><en-media hash=\"{}\" type=\"{}\"/></en-note>",
-                short_hash(&resource.bytes),
+                short_hash(&assembled),
                 escape_attr_min(&resource.mime),
             ),
             author: None,
@@ -417,26 +474,62 @@ impl NoteService {
             content_class: None,
             notebook_uid: None,
         })?;
-        self.store
-            .add_resource(note_uid, &resource.filename, &resource.mime, &resource.bytes)?;
+        let res_uid = self.store.add_resource(
+            note_uid,
+            &resource.filename,
+            &resource.mime,
+            &assembled,
+        )?;
+        self.created_from_resource
+            .borrow_mut()
+            .insert(resource.uid, (note_uid, res_uid));
         Ok(note_uid)
     }
 
-    /// PDF 分页渲染。依赖 PDF 引擎（分析文档 P2），v0 明确不支持。
+    /// PDF 分页渲染（文件产物版）：第 `page_num` 页渲染为 PNG 写入临时
+    /// 目录，返回 PNG 文件路径（编辑器按 URL 引用渲染产物）。
+    /// `width`/`height` 取长边作为渲染缩放目标；渲染器探测与 GUI 标注画布
+    /// 共享同一约定（`BIJI_PDF_RENDER_CMD` → PATH 上的 pdftoppm）。
     pub fn render_page(
         &self,
-        _resource_url: &str,
+        resource_url: &str,
         _offset: u64,
-        _width: i32,
-        _height: i32,
-        _page_num: i32,
+        width: i32,
+        height: i32,
+        page_num: i32,
     ) -> Result<String> {
-        Err(ServiceError::Unsupported("PDF 渲染（P2）"))
+        let uid = self.resolve_resource(resource_url)?;
+        let (_, bytes) = self.store.get_resource(uid)?;
+        let renderer: std::rc::Rc<dyn pdf::PdfPageFileRenderer> = self
+            .pdf_renderer
+            .borrow()
+            .as_ref()
+            .map(std::rc::Rc::clone)
+            .or_else(|| pdf::detect_file_renderer().map(std::rc::Rc::from))
+            .ok_or(ServiceError::Unsupported(pdf::RENDERER_GUIDANCE))?;
+        let dir = tempfile_dir()?;
+        let pdf_path = dir.join(format!("biji-render-{uid}.pdf"));
+        std::fs::write(&pdf_path, &bytes)?;
+        let out_png = dir.join(format!(
+            "biji-render-{uid}-p{page_num}-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        let scale_to = width.max(height);
+        renderer
+            .render_to_file(&pdf_path, page_num.max(1) as u32, scale_to, &out_png)
+            .map_err(ServiceError::Render)?;
+        Ok(out_png.to_string_lossy().into_owned())
     }
 
+    /// 批量渲染：多个 PDF 附件各渲染首页，返回 PNG 路径列表（与单个
+    /// 调用方约定的顺序一致）。
     pub fn render_pages(&self, urls: &[String]) -> Result<Vec<String>> {
-        let _ = urls;
-        Err(ServiceError::Unsupported("PDF 渲染（P2）"))
+        urls.iter()
+            .map(|url| self.render_page(url, 0, 0, 0, 1))
+            .collect()
     }
 
     // ----- 笔记 -----
@@ -741,10 +834,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(svc.get_resource(&url).unwrap().bytes, b"NEW");
-        assert!(matches!(
-            svc.update_resource(ResourceData { uid: ruid, mime: String::new(), filename: String::new(), bytes: vec![] }, 5),
-            Err(ServiceError::Unsupported(_))
-        ));
+
+        // offset>0 分段写：段拼接进现有内容（offset 定位）
+        svc.update_resource(
+            ResourceData { uid: ruid, mime: "image/png".into(), filename: "pic.png".into(), bytes: b"XY".to_vec() },
+            1,
+        )
+        .unwrap();
+        assert_eq!(svc.get_resource(&url).unwrap().bytes, b"NXY");
+        // 越界段：末端补零延长
+        svc.update_resource(
+            ResourceData { uid: ruid, mime: "image/png".into(), filename: "pic.png".into(), bytes: b"Z".to_vec() },
+            6,
+        )
+        .unwrap();
+        assert_eq!(svc.get_resource(&url).unwrap().bytes, b"NXY\0\0\0Z");
     }
 
     #[test]
@@ -760,10 +864,29 @@ mod tests {
         assert_eq!(view.title, "照片.jpg");
         assert!(view.html.contains("en-media"));
         assert_eq!(svc.get_resources(note_uid).unwrap().len(), 1);
-        assert!(matches!(
-            svc.create_note_from_resource(ResourceData { uid: 0, mime: String::new(), filename: String::new(), bytes: vec![] }, 9),
-            Err(ServiceError::Unsupported(_))
-        ));
+
+        // 分段装配：offset>0 的段拼接进整体内容，同一 uid 幂等指向同一笔记/资源
+        let note_uid2 = svc
+            .create_note_from_resource(
+                ResourceData { uid: 0, mime: "image/jpeg".into(), filename: "照片.jpg".into(), bytes: vec![4, 5] },
+                3,
+            )
+            .unwrap();
+        assert_eq!(note_uid2, note_uid, "后续段不应另建笔记");
+        let resources = svc.get_resources(note_uid).unwrap();
+        assert_eq!(resources.len(), 1, "后续段不应另建资源");
+        assert_eq!(resources[0].1.bytes, vec![1, 2, 3, 4, 5], "装配内容失真");
+        // 段间空隙补零：offset 8 起写一段
+        svc.create_note_from_resource(
+            ResourceData { uid: 0, mime: "image/jpeg".into(), filename: "照片.jpg".into(), bytes: vec![9] },
+            8,
+        )
+        .unwrap();
+        assert_eq!(
+            svc.get_resources(note_uid).unwrap()[0].1.bytes,
+            vec![1, 2, 3, 4, 5, 0, 0, 0, 9],
+            "空隙补零失真"
+        );
     }
 
     #[test]
@@ -777,11 +900,51 @@ mod tests {
     }
 
     #[test]
-    fn render_page_unsupported() {
-        let svc = service();
+    fn render_page_writes_png_via_injected_renderer() {
+        struct FakeRenderer {
+            pub pages: std::cell::RefCell<Vec<u32>>,
+        }
+        impl pdf::PdfPageFileRenderer for FakeRenderer {
+            fn render_to_file(
+                &self,
+                _pdf: &std::path::Path,
+                page: u32,
+                _scale_to: i32,
+                out_png: &std::path::Path,
+            ) -> std::result::Result<(), String> {
+                self.pages.borrow_mut().push(page);
+                std::fs::write(out_png, b"\x89PNG-fake").map_err(|e| e.to_string())
+            }
+            fn describe(&self) -> String {
+                "fake".into()
+            }
+        }
+        let fake = std::rc::Rc::new(FakeRenderer {
+            pages: std::cell::RefCell::new(Vec::new()),
+        });
+        let svc = service().with_pdf_renderer(fake.clone());
+        let note = svc.create_note("n", "<en-note/>", None).unwrap();
+        let ruid = svc
+            .store()
+            .add_resource(note, "doc.pdf", "application/pdf", b"%PDF-fake")
+            .unwrap();
+        let url = resource_url(ruid);
+
+        // 单页渲染：page_num 透传，产出 PNG 文件路径
+        let path = svc.render_page(&url, 0, 800, 600, 2).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG-fake");
+        assert_eq!(*fake.pages.borrow(), vec![2]);
+
+        // 批量渲染：每个附件渲染首页
+        let paths = svc.render_pages(std::slice::from_ref(&url)).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), b"\x89PNG-fake");
+        assert_eq!(*fake.pages.borrow(), vec![2, 1]);
+
+        // 不存在的资源诚实报错（Store 层 NotFound 透传）
         assert!(matches!(
-            svc.render_page(&resource_url(1), 0, 0, 0, 1),
-            Err(ServiceError::Unsupported("PDF 渲染（P2）"))
+            svc.render_page(&resource_url(999), 0, 0, 0, 1),
+            Err(ServiceError::Store(StoreError::NotFound(999)))
         ));
     }
 

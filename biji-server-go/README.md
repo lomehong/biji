@@ -36,7 +36,9 @@ internal/store  内存模型 + JSON 落盘（updateCount 单调、每对象 USN�
   expunge 系列返回裸 `f0 i64`（与印象笔记 EDAM IDL 一致）。
 - getFilteredSyncChunk：`f2 chunkHighUSN(i32) / f3 updateCount(i64) /
   f4 notes list<STRUCT{f1 guid, f2 title, f3 content, f7 updated, f9 active}> /
-  f11 expungedNotes list<string>`；list 元素不带字段头。
+  f5 notebooks / f6 tags（Tag: f1 guid, f2 name）/
+  f11 expungedNotes / f12 expungedNotebooks / f13 expungedTags（list<string>）；
+  list 元素不带字段头。
 - getResource：`f2 guid / f3 withBinary / f4 withData`（EDAM IDL 参数序）→
   `f0 STRUCT{f1 guid, f3 Data{f1 body, f3 size}, f4 mime, f14 attributes}`；
   `withBinary` 或 `withData` 任一为真时携带 body。
@@ -96,6 +98,15 @@ resource 条目）触发以所属笔记身份整体重推。Thrift STRING/BINARY
 实证 `getResource` 恰好 1 次（B 端按需取体），B 端次轮幂等空轮且**不再发
 getResource**（已落库附件按 guid 跳过重复下载）；`res extract` 导出 sha256
 `e1136025…` 与 A 端原始逐字节一致。
+
+**标签与删除账跨端闭环（2026-10）**：chunk 回传 f6 tags 与 f12/f13
+笔记本/标签删除账——A 端 `tag add 重要` → C 端全新库 `sync round` 拉取
+「标签 1 条」清单可见；A 端 `tag rm 重要`（删除账）→ C 端对账「删除 1 条」
+标签移除。配套修复客户端**推送游标与服务器游标分离**（本地 journal usn 与
+服务器回执 usn 在边界值碰撞时删除账曾漏推，现以独立 journal 水位推进，
+回归测试锁定）。`renderPage`/`renderPages` 已在客户端 biji-service 落地
+（渲染器接缝产出 PNG，CLI `biji res render <uid> --page N` 实测 poppler
+25.07 渲染 928×1200 合法 PNG）。
 
 ## 安全
 

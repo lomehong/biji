@@ -96,6 +96,7 @@ enum TagCmd {
     Add { name: String },
     List,
     Attach { name: String, note_uid: i64 },
+    Rm { name: String },
 }
 
 #[derive(Subcommand)]
@@ -143,6 +144,16 @@ enum ResCmd {
         uid: i64,
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// PDF 附件分页渲染（对位 DesktopService.renderPage；产出 PNG 路径）
+    Render {
+        uid: i64,
+        #[arg(long, default_value_t = 1)]
+        page: i32,
+        #[arg(long, default_value_t = 0)]
+        width: i32,
+        #[arg(long, default_value_t = 0)]
+        height: i32,
     },
 }
 
@@ -297,6 +308,17 @@ fn tag(db: &Path, cmd: TagCmd) -> Result<(), String> {
             svc.store().attach_tag(note_uid, tag.uid).map_err(|e| e.to_string())?;
             println!("已给笔记 {note_uid} 打标签「{name}」");
         }
+        TagCmd::Rm { name } => {
+            let tag = svc
+                .store()
+                .list_tags()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|t| t.name == name)
+                .ok_or_else(|| format!("标签不存在：{name}"))?;
+            svc.store().delete_tag(tag.uid).map_err(|e| e.to_string())?;
+            println!("tag {} 已删除（进入删除账）：{name}", tag.uid);
+        }
     }
     Ok(())
 }
@@ -415,6 +437,13 @@ fn res(db: &Path, cmd: ResCmd) -> Result<(), String> {
             std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
             println!("已导出 {}B → {}", bytes.len(), target.display());
         }
+        ResCmd::Render { uid, page, width, height } => {
+            let url = format!("biji://resource/{uid}");
+            let path = svc
+                .render_page(&url, 0, width, height, page)
+                .map_err(|e| e.to_string())?;
+            println!("已渲染第 {page} 页 → {path}");
+        }
     }
     Ok(())
 }
@@ -454,8 +483,8 @@ fn sync(db: &Path, cmd: SyncCmd) -> Result<(), String> {
             match engine.sync_round(&mut remote) {
                 Ok(r) => {
                     println!(
-                        "同步轮次完成：推送 {} 条，拉取笔记 {} 条、删除 {} 条，服务器 USN {}",
-                        r.pushed, r.pulled_notes, r.pulled_expunged, r.server_usn
+                        "同步轮次完成：推送 {} 条，拉取笔记 {} 条、标签 {} 条、删除 {} 条，服务器 USN {}",
+                        r.pushed, r.pulled_notes, r.pulled_tags, r.pulled_expunged, r.server_usn
                     );
                 }
                 Err(biji_sync::SyncError::Unsupported(msg)) => {

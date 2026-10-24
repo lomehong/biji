@@ -364,6 +364,38 @@ impl Store {
         Ok(())
     }
 
+    /// 按 guid 应用远端标签：本地已有 identity 映射则改名对齐，否则按名
+    /// 建库（远端创建）并登记映射；同名本地标签直接认领。幂等。
+    pub fn apply_remote_tag(&self, guid: &str, name: &str) -> Result<()> {
+        if let Some(uid) = self.identity_get_local("tag", guid) {
+            self.conn.execute(
+                "UPDATE tag_attr SET name = ?2, date_updated = date_updated WHERE uid = ?1",
+                params![uid, name],
+            )?;
+            return Ok(());
+        }
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT uid FROM tag_attr WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let uid = match existing {
+            Some(u) => u,
+            None => {
+                self.conn.execute(
+                    "INSERT INTO tag_attr(parent_uid, name, date_created, date_updated, note_count) VALUES (NULL, ?1, strftime('%s','now'), strftime('%s','now'), 0)",
+                    params![name],
+                )?;
+                self.conn.last_insert_rowid()
+            }
+        };
+        self.identity_set("tag", uid, guid)?;
+        Ok(())
+    }
+
     /// 按 guid upsert 远端笔记。`notebook` 提供名称时自动落到同名笔记本（缺失则创建）。
     pub fn apply_remote_note(
         &self,
@@ -601,6 +633,27 @@ impl Store {
         self.refresh_note_tags_text(note_uid)?;
         self.touch_note(note_uid)?;
         self.journal("tag", tag_uid, "detach")?;
+        Ok(())
+    }
+
+    /// 删除标签：解除全部笔记关联并刷新 tags 文本缓存，移除标签行，
+    /// 写删除账（对位 delete_notebook 的删除账语义）。
+    pub fn delete_tag(&self, uid: i64) -> Result<()> {
+        let note_ids: Vec<i64> = {
+            let mut stmt =
+                self.conn
+                    .prepare("SELECT note_uid FROM note_tag WHERE tag_uid = ?1")?;
+            let rows = stmt.query_map(params![uid], |r| r.get(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        self.conn
+            .execute("DELETE FROM note_tag WHERE tag_uid = ?1", params![uid])?;
+        for note_uid in note_ids {
+            self.refresh_note_tags_text(note_uid)?;
+        }
+        self.conn
+            .execute("DELETE FROM tag_attr WHERE uid = ?1", params![uid])?;
+        self.expunge_record(uid, "tag")?;
         Ok(())
     }
 

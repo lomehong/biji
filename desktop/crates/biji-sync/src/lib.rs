@@ -47,6 +47,8 @@ pub const EDAM_PASS_ENV: &str = "BIJI_EDAM_PASS";
 pub const EDAM_HOST_ENV: &str = "BIJI_EDAM_HOST";
 
 const LAST_USN_KEY: &str = "sync.last_usn";
+/// 推送侧本地 journal 水位（与服务器同步点分离，见 `journal_push_mark`）。
+const JOURNAL_MARK_KEY: &str = "sync.journal_mark";
 
 // ---------- 推送/拉取数据模型 ----------
 
@@ -125,6 +127,8 @@ pub struct PullChanges {
     pub notes: Vec<RemoteNote>,
     /// 远端笔记本（EDAM：服务器 guid + 名称；mock 为空 Vec）。
     pub notebooks: Vec<RemoteNotebook>,
+    /// 远端标签（EDAM：服务器 guid + 名称）。
+    pub tags: Vec<RemoteTag>,
     /// `(guid, kind)`。
     pub expunged: Vec<(String, String)>,
 }
@@ -136,10 +140,18 @@ pub struct RemoteNotebook {
     pub name: String,
 }
 
+/// 远端标签（拉取方向）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteTag {
+    pub guid: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SyncReport {
     pub pushed: usize,
     pub pulled_notes: usize,
+    pub pulled_tags: usize,
     pub pulled_expunged: usize,
     pub server_usn: u64,
 }
@@ -273,8 +285,8 @@ struct ServerExpunged {
 pub struct MockEdamServer {
     update_count: u64,
     notes: HashMap<String, ServerNote>,
-    notebooks: HashMap<String, String>,
-    tags: HashMap<String, String>,
+    notebooks: HashMap<String, (String, u64)>,
+    tags: HashMap<String, (String, u64)>,
     expunged: Vec<ServerExpunged>,
 }
 
@@ -345,9 +357,9 @@ impl MockEdamServer {
                 });
             }
             ("notebook", _) => {
+                let usn = self.next_usn();
                 self.notebooks
-                    .insert(guid.to_string(), ch.name.clone().unwrap_or_default());
-                self.next_usn();
+                    .insert(guid.to_string(), (ch.name.clone().unwrap_or_default(), usn));
             }
             ("tag", "expunge") => {
                 let usn = self.next_usn();
@@ -359,9 +371,9 @@ impl MockEdamServer {
                 });
             }
             ("tag", _) => {
+                let usn = self.next_usn();
                 self.tags
-                    .insert(guid.to_string(), ch.name.clone().unwrap_or_default());
-                self.next_usn();
+                    .insert(guid.to_string(), (ch.name.clone().unwrap_or_default(), usn));
             }
             _ => {
                 // resource 等未建模种类：仅推进 USN 记账。
@@ -402,7 +414,6 @@ impl MockEdamServer {
             usn: self.update_count,
             ..Default::default()
         };
-        changes.notebooks = Vec::new();
         let mut notes: Vec<&ServerNote> = self
             .notes
             .values()
@@ -418,6 +429,31 @@ impl MockEdamServer {
                 updated: n.usn,
                 notebook: None,
                 resources: Vec::new(),
+            });
+        }
+        // 笔记本/标签按 usn 增量回传（名称 + guid，与 EDAM chunk 语义一致）
+        let mut notebooks: Vec<(&String, &(String, u64))> = self
+            .notebooks
+            .iter()
+            .filter(|(_, (_, usn))| *usn > after_usn)
+            .collect();
+        notebooks.sort_by_key(|(_, (_, usn))| *usn);
+        for (guid, (name, _)) in notebooks {
+            changes.notebooks.push(RemoteNotebook {
+                guid: guid.clone(),
+                name: name.clone(),
+            });
+        }
+        let mut tags: Vec<(&String, &(String, u64))> = self
+            .tags
+            .iter()
+            .filter(|(_, (_, usn))| *usn > after_usn)
+            .collect();
+        tags.sort_by_key(|(_, (_, usn))| *usn);
+        for (guid, (name, _)) in tags {
+            changes.tags.push(RemoteTag {
+                guid: guid.clone(),
+                name: name.clone(),
             });
         }
         for ex in &self.expunged {
@@ -733,6 +769,7 @@ impl SyncRemote for YinxiangRemote {
         let url = self.note_url().to_string();
         let mut notes = Vec::new();
         let mut chunk_notebooks = Vec::new();
+        let mut chunk_tags = Vec::new();
         let mut expunged = Vec::new();
         let mut usn = after_usn;
         let server_usn = client.get_sync_state(&url).map_err(SyncError::Edam)?;
@@ -759,14 +796,29 @@ impl SyncRemote for YinxiangRemote {
                     name: nb.name.clone(),
                 });
             }
+            for tg in &chunk.tags {
+                chunk_tags.push(RemoteTag {
+                    guid: tg.guid.clone(),
+                    name: tg.name.clone(),
+                });
+            }
             for guid in &chunk.expunged_note_guids {
                 expunged.push((guid.clone(), "note".to_string()));
+            }
+            for guid in &chunk.expunged_notebook_guids {
+                expunged.push((guid.clone(), "notebook".to_string()));
+            }
+            for guid in &chunk.expunged_tag_guids {
+                expunged.push((guid.clone(), "tag".to_string()));
             }
             usn = usn.max(chunk.chunk_high_usn).max(chunk.update_count);
             if chunk.chunk_high_usn >= server_usn
                 || chunk.notes.is_empty()
                     && chunk.expunged_note_guids.is_empty()
+                    && chunk.expunged_notebook_guids.is_empty()
+                    && chunk.expunged_tag_guids.is_empty()
                     && chunk.notebooks.is_empty()
+                    && chunk.tags.is_empty()
             {
                 break;
             }
@@ -777,6 +829,7 @@ impl SyncRemote for YinxiangRemote {
             usn,
             notes,
             notebooks: chunk_notebooks,
+            tags: chunk_tags,
             expunged,
         })
     }
@@ -809,13 +862,44 @@ impl<'a> SyncEngine<'a> {
             .unwrap_or(0)
     }
 
+    /// 推送侧本地 journal 水位（与服务器域的 [`LAST_USN_KEY`] 分离——
+    /// 两域计数独立，共用一个游标会在边界 USN 上漏推条目：
+    /// 本地 journal usn=6 的删除账被服务器回执 usn=6 的同步点越过）。
+    /// 未记录时回退旧语义（服务器同步点，兼容既有库）。
+    pub fn journal_push_mark(&self) -> i64 {
+        self.store
+            .meta_get(JOURNAL_MARK_KEY)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| self.last_synced_usn())
+    }
+
+    /// 推送成功后推进本地 journal 水位：取计划内条目的最大本地 USN
+    /// （只前进不回退；空计划不推进——未见过更高的条目不能越过）。
+    fn mark_journal_pushed(&self, plan: &PushPlan) -> Result<()> {
+        let high = plan
+            .changes
+            .iter()
+            .map(|c| c.usn)
+            .chain(plan.expunged.iter().map(|e| e.usn))
+            .max()
+            .unwrap_or(i64::MIN);
+        if high == i64::MIN {
+            return Ok(());
+        }
+        let next = high.max(self.journal_push_mark());
+        self.store.meta_set(JOURNAL_MARK_KEY, &next.to_string())?;
+        Ok(())
+    }
+
     pub fn pending_count(&self) -> Result<usize> {
-        Ok(self.store.sync_journal_since(self.last_synced_usn())?.len())
+        Ok(self.store.sync_journal_since(self.journal_push_mark())?.len())
     }
 
     /// 汇总上次同步点之后的全部变更与删除（含标题/正文/名称快照）。
+    /// 推送侧游标用本地 journal 水位（`journal_push_mark`），
+    /// 与服务器域同步点分离，避免两域边界 USN 互噬漏推。
     pub fn plan_push(&self) -> Result<PushPlan> {
-        let since = self.last_synced_usn();
+        let since = self.journal_push_mark();
         let mut changes = Vec::new();
         for e in self.store.sync_journal_since(since)? {
             let (title, content, name, notebook_uid, resource) = match e.kind.as_str() {
@@ -934,6 +1018,7 @@ impl<'a> SyncEngine<'a> {
             self.store.identity_set(kind, *uid, guid)?;
         }
         self.commit_push(ack.usn)?;
+        self.mark_journal_pushed(&plan)?;
         Ok(count)
     }
 
@@ -944,9 +1029,13 @@ impl<'a> SyncEngine<'a> {
         // 1. pull & apply
         let mut report = SyncReport::default();
         let pulls = remote.pull(self.last_synced_usn() as u64)?;
-        // 先对齐远端笔记本（guid ↔ 本地 uid），笔记归属翻译才有依据
+        // 先对齐远端笔记本/标签（guid ↔ 本地 uid），笔记归属翻译才有依据
         for nb in &pulls.notebooks {
             self.store.apply_remote_notebook(&nb.guid, &nb.name)?;
+        }
+        for tg in &pulls.tags {
+            self.store.apply_remote_tag(&tg.guid, &tg.name)?;
+            report.pulled_tags += 1;
         }
         for rn in &pulls.notes {
             // 归属双语义：EDAM 远端给服务器笔记本 guid（identity 反查本地名），
@@ -1029,6 +1118,7 @@ impl<'a> SyncEngine<'a> {
             }
         };
         self.commit_push(ack.usn)?;
+        self.mark_journal_pushed(&plan)?;
         report.server_usn = ack.usn;
         Ok(report)
     }
@@ -1220,6 +1310,93 @@ mod tests {
         assert!(!server.borrow().notebooks.is_empty());
         assert!(!server.borrow().tags.is_empty());
         let _ = eb;
+    }
+
+    /// 回归：本地 journal usn 与服务器域同步点在边界 USN 碰撞时，
+    /// 删除账不得被同步点越过漏推（推送游标与服务器游标分离）。
+    #[test]
+    fn journal_mark_survives_server_usn_boundary() {
+        let server = server();
+        let s = store();
+        let mut ra = LocalEdamRemote::new(server.clone());
+
+        // 一条笔记上云（journal 水位推进到 1）
+        let note_uid = s.create_note(&note_draft("边界", "正文")).unwrap();
+        let tag_uid = s.create_tag("边界标签", None).unwrap();
+        let _ = note_uid;
+        SyncEngine::new(&s).sync_round(&mut ra).unwrap();
+
+        // 外力把服务器域同步点推到 6（对位真实服务器多对象 USN 领先场景）
+        s.meta_set("sync.last_usn", "6").unwrap();
+        // 本地计数器推进到 5，使下一条 journal（删除账）恰好落在 usn=6
+        for i in 0..3 {
+            s.create_tag(&format!("计数{i}"), None).unwrap();
+        }
+        s.delete_tag(tag_uid).unwrap();
+        let mark_before = s.meta_get("sync.journal_mark");
+        assert_eq!(mark_before.as_deref(), Some("2"), "首轮后 journal 水位应为 2");
+
+        // 修复前：plan_push 以服务器同步点 6 为界，usn=6 的删除账被漏推
+        let report = SyncEngine::new(&s).sync_round(&mut ra).unwrap();
+        assert!(report.pushed >= 1, "边界 USN 删除账未被推送");
+
+        // B 端对账后标签消失
+        let s_b = store();
+        let mut rb2 = LocalEdamRemote::new(server.clone());
+        SyncEngine::new(&s_b).sync_round(&mut rb2).unwrap();
+        assert!(
+            !s_b.list_tags().unwrap().iter().any(|t| t.name == "边界标签"),
+            "删除账未跨端对账"
+        );
+    }
+
+    /// 标签与笔记本跨端传播 + 删除账对账：A 建标签/笔记本 → B 拉到；
+    /// A 删除 → B 经删除账移除，且绝不复活。
+    #[test]
+    fn tags_and_notebook_tag_expunge_propagate() {
+        let server = server();
+        let s_a = store();
+        let s_b = store();
+        let mut ra = LocalEdamRemote::new(server.clone());
+        let mut rb = LocalEdamRemote::new(server.clone());
+
+        // A：建标签 + 笔记本 → 上云
+        let tag_uid = s_a.create_tag("重要", None).unwrap();
+        let nb_uid = s_a.create_notebook("项目", None).unwrap();
+        SyncEngine::new(&s_a).sync_round(&mut ra).unwrap();
+
+        // B：拉取 → 标签与笔记本均已落库且 identity 登记
+        let rb_report = SyncEngine::new(&s_b).sync_round(&mut rb).unwrap();
+        assert!(rb_report.pulled_tags >= 1, "标签未跨端传播");
+        assert!(s_b.list_tags().unwrap().iter().any(|t| t.name == "重要"));
+        assert!(s_b
+            .list_notebooks()
+            .unwrap()
+            .iter()
+            .any(|nb| nb.name == "项目"));
+        let tag_guid = s_a.identity_get_guid("tag", tag_uid).unwrap();
+        let nb_guid = s_a.identity_get_guid("notebook", nb_uid).unwrap();
+        assert!(s_b.identity_get_local("tag", &tag_guid).is_some());
+        assert!(s_b.identity_get_local("notebook", &nb_guid).is_some());
+
+        // A：删标签 + 删笔记本（删除账）→ 上云
+        s_a.delete_tag(tag_uid).unwrap();
+        s_a.delete_notebook(nb_uid).unwrap();
+        SyncEngine::new(&s_a).sync_round(&mut ra).unwrap();
+
+        // B：再同步 → 两对象被删除账移除
+        SyncEngine::new(&s_b).sync_round(&mut rb).unwrap();
+        assert!(
+            !s_b.list_tags().unwrap().iter().any(|t| t.name == "重要"),
+            "标签删除未跨端对账"
+        );
+        assert!(
+            !s_b.list_notebooks()
+                .unwrap()
+                .iter()
+                .any(|nb| nb.name == "项目"),
+            "笔记本删除未跨端对账"
+        );
     }
 
     #[test]

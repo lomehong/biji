@@ -738,8 +738,8 @@ impl BijiApp {
         match engine.sync_round(&mut remote) {
             Ok(r) => {
                 self.st.status = format!(
-                    "同步完成：推送 {} 条，拉取 {} 条（服务器 USN {}）",
-                    r.pushed, r.pulled_notes, r.server_usn
+                    "同步完成：推送 {} 条，拉取笔记 {} 条、标签 {} 条、删除 {} 条（服务器 USN {}）",
+                    r.pushed, r.pulled_notes, r.pulled_tags, r.pulled_expunged, r.server_usn
                 );
                 self.refresh_rows();
             }

@@ -225,7 +225,7 @@ func TestFullEdamRoundTrip(t *testing.T) {
 		return msgFields, unwrapStruct(t, msgFields)
 	}
 
-	var nbGUID, noteGUID, resGUID string
+	var nbGUID, noteGUID, resGUID, tagGUID string
 	t.Run("createNotebook", func(t *testing.T) {
 		_, inner := noteCall("evernote_createNotebook", func(w *thrift.Writer) {
 			w.FieldBegin(2, thrift.TypeStruct)
@@ -427,8 +427,63 @@ func TestFullEdamRoundTrip(t *testing.T) {
 			w.FieldString(2, "重要")
 			w.FieldStop()
 		})
-		if fieldStr(inner, 1) == "" {
+		tagGUID = fieldStr(inner, 1)
+		if tagGUID == "" {
 			t.Fatalf("缺 tag guid: %+v", inner)
+		}
+	})
+	t.Run("chunk 回传 tags 与标签/笔记本删除账", func(t *testing.T) {
+		// 删除前：f6 tags 应回传标签本体
+		_, chunk := noteCall("evernote_getFilteredSyncChunk", func(w *thrift.Writer) {
+			w.FieldI32(2, 0)
+		})
+		sawTag := false
+		for i := range chunk {
+			if chunk[i].ID == 6 {
+				for _, el := range chunk[i].Val.List {
+					if fieldStr(el.Struct, 1) == tagGUID && fieldStr(el.Struct, 2) == "重要" {
+						sawTag = true
+					}
+				}
+			}
+		}
+		if !sawTag {
+			t.Fatal("chunk 缺 f6 tags")
+		}
+
+		// 删除标签 + 笔记本 → f13/f12 删除账，f6 不再回传已删标签
+		noteCall("evernote_expungeTag", func(w *thrift.Writer) {
+			w.FieldString(2, tagGUID)
+		})
+		noteCall("evernote_expungeNotebook", func(w *thrift.Writer) {
+			w.FieldString(2, nbGUID)
+		})
+		_, chunk2 := noteCall("evernote_getFilteredSyncChunk", func(w *thrift.Writer) {
+			w.FieldI32(2, 0)
+		})
+		sawExpTag, sawExpNb := false, false
+		for i := range chunk2 {
+			switch chunk2[i].ID {
+			case 6:
+				if len(chunk2[i].Val.List) != 0 {
+					t.Fatal("已删除标签不应回传 f6")
+				}
+			case 12:
+				for _, el := range chunk2[i].Val.List {
+					if el.Str == nbGUID {
+						sawExpNb = true
+					}
+				}
+			case 13:
+				for _, el := range chunk2[i].Val.List {
+					if el.Str == tagGUID {
+						sawExpTag = true
+					}
+				}
+			}
+		}
+		if !sawExpTag || !sawExpNb {
+			t.Fatalf("删除账缺失（tag=%v notebook=%v）", sawExpTag, sawExpNb)
 		}
 	})
 }
