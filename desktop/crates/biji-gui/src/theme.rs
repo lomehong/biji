@@ -38,6 +38,12 @@ pub struct Palette {
     pub menu_text: Color32,
     /// 列表卡日期（原客户端为淡蓝，非品牌绿）。
     pub date_blue: Color32,
+    /// 摘要视图选中行底（官方截图采样 #C5E0EE，整行直角浅蓝）。
+    pub list_sel: Color32,
+    /// 摘要视图摘要文字（官方采样蓝灰 #5B6473）。
+    pub list_snip: Color32,
+    /// 摘要视图日期文字（官方采样蓝灰 #7C97AB）。
+    pub list_date: Color32,
     /// AI 助理紫（图标与文字）。
     pub ai_purple: Color32,
     /// 发丝分隔线。
@@ -69,6 +75,9 @@ pub static LIGHT: Palette = Palette {
     subtle: Color32::from_rgb(0x8A, 0x8A, 0x90),
     menu_text: Color32::from_rgb(0x4F, 0x4F, 0x4F),
     date_blue: Color32::from_rgb(0x6F, 0xAE, 0xE0),
+    list_sel: Color32::from_rgb(0xC5, 0xE0, 0xEE),
+    list_snip: Color32::from_rgb(0x5B, 0x64, 0x73),
+    list_date: Color32::from_rgb(0x7C, 0x97, 0xAB),
     ai_purple: Color32::from_rgb(0x9C, 0x8C, 0xFB),
     hairline: Color32::from_rgb(0xE2, 0xE2, 0xE6),
     card_border: Color32::from_rgb(0xF0, 0xF0, 0xF0),
@@ -96,6 +105,9 @@ pub static DARK: Palette = Palette {
     subtle: Color32::from_rgb(0xA2, 0x9C, 0x98),
     menu_text: Color32::from_rgb(0xC6, 0xC1, 0xBD),
     date_blue: Color32::from_rgb(0x4E, 0x93, 0xDC),
+    list_sel: Color32::from_rgb(0x2E, 0x4A, 0x5E),
+    list_snip: Color32::from_rgb(0x93, 0xA6, 0xB4),
+    list_date: Color32::from_rgb(0x72, 0x92, 0xAC),
     ai_purple: Color32::from_rgb(0xA9, 0x9C, 0xFF),
     hairline: Color32::from_rgb(0x46, 0x41, 0x3F),
     card_border: Color32::from_rgb(0x42, 0x3E, 0x3C),

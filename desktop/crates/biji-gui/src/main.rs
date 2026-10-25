@@ -1217,7 +1217,7 @@ impl BijiApp {
                             self.refresh_rows();
                             ui.close_menu();
                         }
-                        if crate::icons::menu_item(ui, Some(&crate::icons::list), "紧凑列表") {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::list), "摘要视图") {
                             self.st.list_compact = true;
                             self.refresh_rows();
                             ui.close_menu();
@@ -2452,7 +2452,7 @@ impl BijiApp {
                                 let view = if self.st.list_compact {
                                     "🖼 卡片视图"
                                 } else {
-                                    "☰ 紧凑列表"
+                                    "☰ 摘要视图"
                                 };
                                 if ui.button(view).clicked() {
                                     self.st.list_compact = !self.st.list_compact;
@@ -2486,7 +2486,7 @@ impl BijiApp {
                             if self.st.list_compact {
                                 "切换到卡片视图"
                             } else {
-                                "切换到紧凑列表"
+                                "切换到摘要视图"
                             },
                             if self.st.list_compact {
                                 &crate::icons::cards
@@ -2699,52 +2699,111 @@ impl BijiApp {
                     for row in rows {
                         let selected = self.st.selected_note == Some(row.uid)
                             || self.st.multi_select.contains(&row.uid);
-                        // 紧凑视图：单行「● 标题 …… 日期」（对位原客户端列表视图）
+                        // 紧凑视图：摘要行「标题 / 摘要 / 日期」+ 整行直角浅蓝选中 +
+                        // 行间发丝分隔线（对位官方摘要视图截图采样
+                        // spike/webref/zhihu-snippet.jpg：选中 #C5E0EE、摘要蓝灰、无卡片描边）
                         if self.st.list_compact {
+                            let full = ui.available_width();
+                            let snip: String = row
+                                .snippet
+                                .replace(['\n', '\r'], " ")
+                                .chars()
+                                .take(64)
+                                .collect();
+                            // 行高按真实排版预量（摘要可折 2-3 行，写死会把日期
+                            // 挤出选中底色——见 shot16 核验）
+                            let title_h = ui
+                                .painter()
+                                .layout(
+                                    row.title.clone(),
+                                    egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                                    egui::Color32::WHITE,
+                                    full,
+                                )
+                                .size()
+                                .y;
+                            let snip_h = if snip.is_empty() {
+                                0.0
+                            } else {
+                                ui.painter()
+                                    .layout(
+                                        snip.clone(),
+                                        egui::FontId::new(12.0, egui::FontFamily::Proportional),
+                                        egui::Color32::WHITE,
+                                        full,
+                                    )
+                                    .size()
+                                    .y
+                            };
+                            let date_h = ui
+                                .painter()
+                                .layout(
+                                    util::fmt_date(row.date),
+                                    egui::FontId::new(11.0, egui::FontFamily::Proportional),
+                                    egui::Color32::WHITE,
+                                    full,
+                                )
+                                .size()
+                                .y;
+                            let rh = 7.0
+                                + title_h
+                                + if snip.is_empty() { 0.0 } else { 5.0 + snip_h }
+                                + 5.0
+                                + date_h
+                                + 6.0;
+                            let left = ui.cursor().min.x - 13.0;
+                            let top = ui.cursor().top();
+                            if selected {
+                                let bg = egui::Rect::from_min_size(
+                                    egui::pos2(left, top),
+                                    egui::vec2(full + 26.0, rh),
+                                );
+                                ui.painter().rect_filled(bg, 0.0, theme::pal().list_sel);
+                            }
                             let row_resp = ui
-                                .horizontal(|ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    // 选中态整行浅底（深浅两主题共用 sel_bg/hover）
-                                    if selected {
-                                        let bg = egui::Rect::from_min_size(
-                                            ui.cursor().min,
-                                            egui::vec2(ui.available_width(), 26.0),
-                                        );
-                                        ui.painter().rect_filled(bg, 6.0, theme::pal().sel_bg);
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(if selected { "●" } else { "○" })
-                                            .small()
-                                            .color(if selected {
-                                                theme::pal().green
-                                            } else {
-                                                theme::pal().subtle
-                                            }),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(&row.title)
-                                            .size(13.0)
-                                            .color(theme::pal().text),
-                                    );
-                                    if row.shared {
+                                .allocate_ui(egui::vec2(full, rh), |ui| {
+                                    ui.set_min_width(full);
+                                    ui.add_space(7.0);
+                                    ui.horizontal(|ui| {
                                         ui.label(
-                                            egui::RichText::new("🌐")
-                                                .small()
-                                                .color(theme::pal().green_dark),
+                                            egui::RichText::new(&row.title)
+                                                .size(14.0)
+                                                .color(theme::pal().text),
+                                        );
+                                        if row.shared {
+                                            let (gr, _g) = ui.allocate_exact_size(
+                                                egui::vec2(12.0, 12.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            crate::icons::globe(
+                                                ui.painter(),
+                                                gr,
+                                                theme::pal().green_dark,
+                                            );
+                                        }
+                                    });
+                                    if !snip.is_empty() {
+                                        ui.label(
+                                            egui::RichText::new(&snip)
+                                                .size(12.0)
+                                                .color(theme::pal().list_snip),
                                         );
                                     }
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                egui::RichText::new(util::fmt_date(row.date))
-                                                    .small()
-                                                    .color(theme::pal().subtle),
-                                            );
-                                        },
+                                    ui.label(
+                                        egui::RichText::new(util::fmt_date(row.date))
+                                            .size(11.0)
+                                            .color(theme::pal().list_date),
                                     );
                                 })
                                 .response;
+                            // 行间发丝分隔线（全宽，选中行下方同样有）
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(left, top + rh),
+                                    egui::pos2(left + full + 26.0, top + rh),
+                                ],
+                                egui::Stroke::new(1.0, theme::pal().hairline),
+                            );
                             if self.st.trash_view {
                                 ui.horizontal(|ui| {
                                     if ui.small_button("还原").clicked() {
@@ -2769,8 +2828,15 @@ impl BijiApp {
                                     }
                                 });
                             } else {
+                                let hit_rect = egui::Rect::from_min_size(
+                                    egui::pos2(row_resp.rect.min.x - 13.0, row_resp.rect.min.y),
+                                    egui::vec2(
+                                        row_resp.rect.width() + 26.0,
+                                        row_resp.rect.height(),
+                                    ),
+                                );
                                 let hit = ui.interact(
-                                    row_resp.rect,
+                                    hit_rect,
                                     egui::Id::new(("note-row", row.uid)),
                                     egui::Sense::click(),
                                 );
@@ -2788,7 +2854,6 @@ impl BijiApp {
                                     &mut move_req,
                                 );
                             }
-                            ui.add_space(2.0);
                             continue;
                         }
                         // 笔记卡：白底圆角发丝边；选中 = 亮绿描边 + 浅绿底
