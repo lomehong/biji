@@ -722,6 +722,8 @@ pub fn gradient_pill(p: &Painter, r: Rect, left: Color32, right: Color32, bg: Co
 }
 
 /// 加号。
+/// 菜单改纯文字行后暂由侧栏扩展预留。
+#[allow(dead_code)]
 pub fn plus(p: &Painter, r: Rect, c: Color32) {
     let s = Stroke::new(sw(r) * 1.3, c);
     let cc = r.center();
@@ -861,6 +863,84 @@ pub fn x_mark(p: &Painter, r: Rect, c: Color32) {
 
 /// 菜单/弹层内图标行（图标 + 文字，整行可点，悬停灰底）。
 /// 弹层宽度由调用方 `ui.set_min_width` 保证。返回是否被点击。
+/// 菜单命令行（官方菜单样式：纯文字 + 右侧快捷键列 + 绿色对勾 + 灰色禁用）。
+/// 返回是否点击（禁用行恒 false）。菜单栏下拉与右键菜单区分：
+/// 下拉用本行（无图标），弹层下拉（来源/移动）用带图标的 menu_item。
+pub fn menu_cmd(
+    ui: &mut egui::Ui,
+    label: &str,
+    shortcut: &str,
+    checked: bool,
+    enabled: bool,
+) -> bool {
+    let pal = theme::pal();
+    let text_w = ui
+        .painter()
+        .layout_no_wrap(
+            label.to_string(),
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            pal.text,
+        )
+        .size()
+        .x;
+    let sc_w = if shortcut.is_empty() {
+        0.0
+    } else {
+        ui.painter()
+            .layout_no_wrap(
+                shortcut.to_string(),
+                egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                pal.subtle,
+            )
+            .size()
+            .x
+    };
+    let w = (30.0 + text_w + 30.0 + sc_w + 16.0).max(150.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), egui::Sense::click());
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, pal.hovered);
+    }
+    let color = if enabled { pal.text } else { pal.subtle };
+    if checked {
+        let g = ui.painter().layout_no_wrap(
+            "✓".to_string(),
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+            pal.green_dark,
+        );
+        ui.painter().galley(
+            egui::pos2(rect.min.x + 12.0, rect.center().y - g.size().y * 0.5),
+            g,
+            pal.green_dark,
+        );
+    }
+    let g = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::new(14.0, egui::FontFamily::Proportional),
+        color,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.min.x + 30.0, rect.center().y - g.size().y * 0.5),
+        g,
+        color,
+    );
+    if !shortcut.is_empty() {
+        let g = ui.painter().layout_no_wrap(
+            shortcut.to_string(),
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+            pal.subtle,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                rect.max.x - 14.0 - g.size().x,
+                rect.center().y - g.size().y * 0.5,
+            ),
+            g,
+            pal.subtle,
+        );
+    }
+    enabled && resp.clicked()
+}
+
 pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool {
     menu_item_sel(ui, icon, label, false)
 }

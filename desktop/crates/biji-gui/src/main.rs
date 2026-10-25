@@ -197,6 +197,15 @@ struct UiState {
     sort_asc: bool,
     /// 紧凑单行视图（false = 卡片视图）。
     list_compact: bool,
+    /// 面板/工具栏/字数条/状态栏显隐（对位官方 查看 菜单开关，F10/F11/Ctrl+F11/F8）。
+    show_sidebar: bool,
+    show_list: bool,
+    show_editor: bool,
+    show_toolbar: bool,
+    show_wc: bool,
+    show_statusbar: bool,
+    /// 快捷键列表窗口（帮助→快捷键）。
+    show_shortcuts_win: bool,
     /// Ctrl+F 置位：下一帧聚焦搜索框。
     focus_search: bool,
     /// 笔记信息弹窗（ℹ）。
@@ -285,6 +294,13 @@ impl UiState {
             list_sort: ListSort::Updated,
             sort_asc: false,
             list_compact: false,
+            show_sidebar: true,
+            show_list: true,
+            show_editor: true,
+            show_toolbar: true,
+            show_wc: true,
+            show_statusbar: true,
+            show_shortcuts_win: false,
             focus_search: false,
             note_info: None,
             multi_select: Vec::new(),
@@ -320,6 +336,15 @@ struct BijiApp {
     service: NoteService,
     cmd_rx: mpsc::Receiver<NodeWebkitCommand>,
     st: UiState,
+}
+
+/// 编辑菜单剪贴板命令种类。
+#[derive(Clone, Copy, PartialEq)]
+enum ClipOp {
+    Cut,
+    Copy,
+    Paste,
+    Delete,
 }
 
 impl BijiApp {
@@ -387,53 +412,9 @@ impl BijiApp {
                     || (i.key_pressed(egui::Key::Z) && i.modifiers.shift))
         });
         if undo_hotkey {
-            let mut undone = false;
-            if let Some(ed) = self.st.editor.as_mut() {
-                if let Some(prev) =
-                    Self::undo_pop(&mut ed.undo_stack, &mut ed.redo_stack, ed.content.clone())
-                {
-                    ed.content = prev;
-                    ed.dirty = true;
-                    ed.last_edit = Some(Instant::now());
-                    self.st.status = "已撤销".into();
-                    undone = true;
-                }
-            }
-            if !undone {
-                if let Some(fw) = self.st.float_win.as_mut() {
-                    if let Some(prev) =
-                        Self::undo_pop(&mut fw.undo_stack, &mut fw.redo_stack, fw.buffer.clone())
-                    {
-                        fw.buffer = prev;
-                        fw.dirty = true;
-                        self.st.status = "浮动窗口已撤销".into();
-                    }
-                }
-            }
+            self.perform_undo();
         } else if redo_hotkey {
-            let mut redone = false;
-            if let Some(ed) = self.st.editor.as_mut() {
-                if let Some(next) =
-                    Self::redo_pop(&mut ed.undo_stack, &mut ed.redo_stack, ed.content.clone())
-                {
-                    ed.content = next;
-                    ed.dirty = true;
-                    ed.last_edit = Some(Instant::now());
-                    self.st.status = "已重做".into();
-                    redone = true;
-                }
-            }
-            if !redone {
-                if let Some(fw) = self.st.float_win.as_mut() {
-                    if let Some(next) =
-                        Self::redo_pop(&mut fw.undo_stack, &mut fw.redo_stack, fw.buffer.clone())
-                    {
-                        fw.buffer = next;
-                        fw.dirty = true;
-                        self.st.status = "浮动窗口已重做".into();
-                    }
-                }
-            }
+            self.perform_redo();
         }
 
         // Ctrl+V 粘贴图片（对位原客户端粘贴截图自动落附件）：
@@ -468,6 +449,48 @@ impl BijiApp {
                     Err(e) => self.st.status = format!("删除失败: {e}"),
                 }
             }
+        }
+        // 官方对位快捷键：F9 同步 / Ctrl+Q 快速搜索 / F10/F11/Ctrl+F11 面板 / F8 工具栏
+        if ctx.input(|i| i.key_pressed(egui::Key::F9) && !i.modifiers.any()) {
+            self.do_sync();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Q) && i.modifiers.ctrl && !i.modifiers.shift) {
+            self.st.focus_search = true;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F10) && !i.modifiers.any()) {
+            self.st.show_sidebar = !self.st.show_sidebar;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F11) && !i.modifiers.any()) {
+            self.st.show_list = !self.st.show_list;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F11) && i.modifiers.ctrl && !i.modifiers.shift) {
+            self.st.show_editor = !self.st.show_editor;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F8) && !i.modifiers.any()) {
+            self.st.show_toolbar = !self.st.show_toolbar;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::B) && i.modifiers.ctrl && i.modifiers.alt) {
+            self.st.show_wc = !self.st.show_wc;
+        }
+        // Ctrl+Enter 在新窗口中打开当前笔记
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl && !i.modifiers.shift)
+        {
+            if let Some(u) = self.st.editor.as_ref().map(|e| e.uid) {
+                self.open_in_float(u);
+            }
+        }
+        // Alt+Shift+L 复制笔记链接
+        if ctx.input(|i| i.key_pressed(egui::Key::L) && i.modifiers.alt && i.modifiers.shift) {
+            if let Some(u) = self.st.editor.as_ref().map(|e| e.uid) {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(biji_service::resource_url(u));
+                }
+                self.st.status = "笔记链接已复制".into();
+            }
+        }
+        // Ctrl+Alt+N 新建笔记（官方全局热键对位）
+        if ctx.input(|i| i.key_pressed(egui::Key::N) && i.modifiers.ctrl && i.modifiers.alt) {
+            self.create_note();
         }
         // Esc：先关查找栏，再退多选态（演示模式外的场景）
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.st.present.is_none() {
@@ -1089,11 +1112,22 @@ impl BijiApp {
 
     fn draw_main(&mut self, ctx: &egui::Context) {
         self.draw_menubar(ctx);
-        self.draw_sidebar(ctx);
-        self.draw_note_list(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| self.draw_editor(ui));
+        if self.st.show_sidebar {
+            self.draw_sidebar(ctx);
+        }
+        if self.st.show_list {
+            self.draw_note_list(ctx);
+        }
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.st.show_editor {
+                self.draw_editor(ui);
+            }
+        });
         self.draw_float_window(ctx);
-        self.draw_status_bar(ctx);
+        if self.st.show_statusbar {
+            self.draw_status_bar(ctx);
+        }
+        self.draw_shortcuts_window(ctx);
         self.draw_dialogs(ctx);
     }
 
@@ -1173,6 +1207,302 @@ impl BijiApp {
         }
     }
 
+    /// 撤销（编辑器优先，其次浮动窗口；菜单「编辑→撤销」与 Ctrl+Z 共用）。
+    fn perform_undo(&mut self) {
+        if let Some(ed) = self.st.editor.as_mut() {
+            if let Some(prev) =
+                Self::undo_pop(&mut ed.undo_stack, &mut ed.redo_stack, ed.content.clone())
+            {
+                ed.content = prev;
+                ed.dirty = true;
+                ed.last_edit = Some(Instant::now());
+                self.st.status = "已撤销".into();
+                return;
+            }
+        }
+        if let Some(fw) = self.st.float_win.as_mut() {
+            if let Some(prev) =
+                Self::undo_pop(&mut fw.undo_stack, &mut fw.redo_stack, fw.buffer.clone())
+            {
+                fw.buffer = prev;
+                fw.dirty = true;
+                self.st.status = "浮动窗口已撤销".into();
+            }
+        }
+    }
+
+    /// 重做（同 perform_undo 的双会话顺序）。
+    fn perform_redo(&mut self) {
+        if let Some(ed) = self.st.editor.as_mut() {
+            if let Some(next) =
+                Self::redo_pop(&mut ed.undo_stack, &mut ed.redo_stack, ed.content.clone())
+            {
+                ed.content = next;
+                ed.dirty = true;
+                ed.last_edit = Some(Instant::now());
+                self.st.status = "已重做".into();
+                return;
+            }
+        }
+        if let Some(fw) = self.st.float_win.as_mut() {
+            if let Some(next) =
+                Self::redo_pop(&mut fw.undo_stack, &mut fw.redo_stack, fw.buffer.clone())
+            {
+                fw.buffer = next;
+                fw.dirty = true;
+                self.st.status = "浮动窗口已重做".into();
+            }
+        }
+    }
+
+    /// 在新窗口打开笔记（官方 Ctrl+Enter；与列表右键共用）。
+    fn open_in_float(&mut self, uid: i64) {
+        if let Ok(full) = self.service.store().get_note(uid) {
+            if self.st.editor.as_ref().map(|e| e.uid) != Some(uid) {
+                self.st.float_win = Some(FloatNote {
+                    uid,
+                    title: full.note.title.clone(),
+                    buffer: full.enml,
+                    dirty: false,
+                    undo_stack: Vec::new(),
+                    redo_stack: Vec::new(),
+                });
+                self.st.status = format!("已在浮动窗口打开 {}", note_label(uid));
+            } else {
+                self.st.status = "该笔记已在主编辑器打开".into();
+            }
+        }
+    }
+
+    /// 演示当前列表（官方 笔记→演示；菜单入口与旧查看菜单位置共用）。
+    fn start_present(&mut self) {
+        let ids: Vec<i64> = self.st.rows.iter().map(|r| r.uid).collect();
+        if ids.is_empty() {
+            self.st.status = "当前列表为空，无可演示内容".into();
+        } else {
+            self.service.dispatch(NodeWebkitCommand::Present {
+                note_ids: ids,
+                index: 0,
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+                trigger: "menu".into(),
+            });
+        }
+    }
+
+    /// 切换当前笔记共享态（官方 笔记→共享；与编辑器「共享」钮同一落库链路）。
+    fn toggle_share(&mut self) {
+        let Some(uid) = self.st.editor.as_ref().map(|e| e.uid) else {
+            return;
+        };
+        let cur = self
+            .service
+            .store()
+            .get_note_meta(uid)
+            .map(|n| n.is_shared)
+            .unwrap_or(false);
+        match self.service.store().set_note_shared(uid, !cur) {
+            Ok(()) => {
+                self.st.status = if cur { "已取消共享" } else { "已共享" }.into();
+                self.refresh_rows();
+            }
+            Err(e) => self.st.status = format!("共享切换失败: {e}"),
+        }
+    }
+
+    /// 复制当前笔记为副本（官方 笔记→复制笔记/创建笔记副本）。
+    fn duplicate_note(&mut self) {
+        let Some(uid) = self.st.editor.as_ref().map(|e| e.uid) else {
+            self.st.status = "请先打开笔记".into();
+            return;
+        };
+        let Ok(full) = self.service.store().get_note(uid) else {
+            self.st.status = "读取笔记失败".into();
+            return;
+        };
+        let title = format!("{} 副本", full.note.title);
+        match self
+            .service
+            .create_note(&title, &full.enml, full.note.notebook_uid)
+        {
+            Ok(_) => {
+                self.st.status = format!("已创建副本「{title}」");
+                self.refresh_rows();
+            }
+            Err(e) => self.st.status = format!("创建副本失败: {e}"),
+        }
+    }
+
+    /// 编辑器源码选区剪贴板操作（官方 编辑 菜单；作用于 ENML 源码 TextEdit）。
+    fn edit_clipboard(&mut self, ctx: &egui::Context, op: ClipOp) {
+        let id = egui::Id::new("enml-source");
+        let Some(content) = self.st.editor.as_ref().map(|e| e.content.clone()) else {
+            self.st.status = "请先打开笔记编辑器".into();
+            return;
+        };
+        let mut st = match egui::TextEdit::load_state(ctx, id) {
+            Some(s) => s,
+            None => {
+                self.st.status = "请先切到源码编辑模式".into();
+                return;
+            }
+        };
+        let Some(rng) = st.cursor.char_range() else {
+            self.st.status = "请先在正文定位/选中内容".into();
+            return;
+        };
+        let chars: Vec<char> = content.chars().collect();
+        let a = rng.primary.index.min(rng.secondary.index).min(chars.len());
+        let b = rng.primary.index.max(rng.secondary.index).min(chars.len());
+        let byte_at = |ci: usize| chars[..ci].iter().map(|c| c.len_utf8()).sum::<usize>();
+        let replaced: Option<(usize, usize, String, usize)> = match op {
+            ClipOp::Copy | ClipOp::Cut => {
+                if a >= b {
+                    self.st.status = "请先选中内容".into();
+                    return;
+                }
+                let text: String = chars[a..b].iter().collect();
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(text);
+                }
+                if op == ClipOp::Cut {
+                    Some((byte_at(a), byte_at(b), String::new(), a))
+                } else {
+                    None
+                }
+            }
+            ClipOp::Paste => {
+                let text = match arboard::Clipboard::new() {
+                    Ok(mut cb) => cb.get_text().ok(),
+                    Err(_) => None,
+                };
+                let Some(text) = text else {
+                    self.st.status = "剪贴板没有文本".into();
+                    return;
+                };
+                let new_ci = a + text.chars().count();
+                Some((byte_at(a), byte_at(b), text, new_ci))
+            }
+            ClipOp::Delete => {
+                if a >= b {
+                    self.st.status = "请先选中内容".into();
+                    return;
+                }
+                Some((byte_at(a), byte_at(b), String::new(), a))
+            }
+        };
+        match replaced {
+            Some((ba, bb, text, new_ci)) => {
+                if let Some(ed) = self.st.editor.as_mut() {
+                    Self::undo_push_if_changed(&mut ed.undo_stack, &mut ed.redo_stack, &ed.content);
+                    ed.content.replace_range(ba..bb, &text);
+                    ed.dirty = true;
+                    ed.last_edit = Some(Instant::now());
+                }
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(new_ci),
+                )));
+                egui::TextEdit::store_state(ctx, id, st);
+                self.st.status = match op {
+                    ClipOp::Cut => "已剪切".into(),
+                    ClipOp::Paste => "已粘贴".into(),
+                    _ => "已删除".into(),
+                };
+            }
+            None => {
+                self.st.status = "已复制到剪贴板".into();
+            }
+        }
+    }
+
+    /// 编辑器源码全选（官方 编辑→全选）。
+    fn edit_select_all(&mut self, ctx: &egui::Context) {
+        let id = egui::Id::new("enml-source");
+        let n = match self.st.editor.as_ref() {
+            Some(ed) => ed.content.chars().count(),
+            None => {
+                self.st.status = "请先打开笔记编辑器".into();
+                return;
+            }
+        };
+        if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(n),
+            )));
+            egui::TextEdit::store_state(ctx, id, st);
+        }
+    }
+
+    /// 在光标处插入 ENML 片段（官方 格式 菜单插入类命令；无光标则附加到末尾）。
+    fn insert_enml_at_cursor(&mut self, ctx: &egui::Context, snippet: &str) {
+        let id = egui::Id::new("enml-source");
+        let Some(content) = self.st.editor.as_ref().map(|e| e.content.clone()) else {
+            self.st.status = "请先打开笔记编辑器".into();
+            return;
+        };
+        let ci = egui::TextEdit::load_state(ctx, id)
+            .as_ref()
+            .and_then(|st| st.cursor.char_range())
+            .map(|r| r.primary.index)
+            .unwrap_or(usize::MAX);
+        let chars: Vec<char> = content.chars().collect();
+        let ci = ci.min(chars.len());
+        let ba: usize = chars[..ci].iter().map(|c| c.len_utf8()).sum();
+        if let Some(ed) = self.st.editor.as_mut() {
+            Self::undo_push_if_changed(&mut ed.undo_stack, &mut ed.redo_stack, &ed.content);
+            ed.content.insert_str(ba, snippet);
+            ed.dirty = true;
+            ed.last_edit = Some(Instant::now());
+        }
+        self.st.status = "已在光标处插入标记".into();
+    }
+
+    /// 快捷键列表窗口（官方 帮助→快捷键）。
+    fn draw_shortcuts_window(&mut self, ctx: &egui::Context) {
+        if !self.st.show_shortcuts_win {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("快捷键")
+            .id(egui::Id::new("shortcuts-win"))
+            .open(&mut open)
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                const ROWS: &[(&str, &str)] = &[
+                    ("新建笔记", "Ctrl+N / Ctrl+Alt+N"),
+                    ("保存当前笔记", "Ctrl+S"),
+                    ("笔记内查找 / 搜索框", "Ctrl+F / F6"),
+                    ("撤销 / 重做", "Ctrl+Z / Ctrl+Y"),
+                    ("粗体 / 斜体 / 下划线", "Ctrl+B / Ctrl+I / Ctrl+U"),
+                    ("高亮", "Ctrl+Shift+H"),
+                    ("同步", "F9"),
+                    ("左侧边栏", "F10"),
+                    ("笔记列表", "F11"),
+                    ("笔记编辑界面", "Ctrl+F11"),
+                    ("编辑工具栏", "F8"),
+                    ("字数和资源统计", "Ctrl+Alt+B"),
+                    ("在新窗口中打开", "Ctrl+Enter"),
+                    ("演示", "Ctrl+Alt+Enter"),
+                    ("删除所选/当前笔记", "Delete"),
+                    ("退出放映", "Esc / F5"),
+                ];
+                egui::Grid::new("shortcuts-grid")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        for (k, v) in ROWS {
+                            ui.label(*k);
+                            ui.label(egui::RichText::new(*v).color(theme::pal().subtle));
+                            ui.end_row();
+                        }
+                    });
+            });
+        self.st.show_shortcuts_win = open;
+    }
+
     /// 菜单栏（对位原客户端 文件/编辑/查看/笔记/格式/工具/帮助 一行）。
     fn draw_menubar(&mut self, ctx: &egui::Context) {
         // 菜单文字用中性灰（对位原客户端菜单栏实测 #4F4F4F），上下加高到 ~40px
@@ -1200,149 +1530,369 @@ impl BijiApp {
                 }
                 ui.horizontal(|ui| {
                     ui.menu_button(menu_text("文件(F)"), |ui| {
-                        ui.set_min_width(170.0);
-                        if crate::icons::menu_item(ui, Some(&crate::icons::plus), "新建笔记") {
+                        ui.set_min_width(250.0);
+                        if crate::icons::menu_cmd(ui, "新建笔记(N)", "", false, true) {
                             self.create_note();
                             ui.close_menu();
                         }
-                        if crate::icons::menu_item(
-                            ui,
-                            Some(&crate::icons::sync_arrows),
-                            "同步（推送/拉取一轮）",
-                        ) {
-                            self.do_sync();
+                        if crate::icons::menu_cmd(ui, "新群聊(C)", "Ctrl+Alt+C", false, true) {
+                            self.st.status = "新群聊暂未实现（自有后端规划中）".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "新建标签(T)...", "", false, true) {
+                            self.st.status = "请用侧栏「标签」分区的 ＋ 新建标签".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "新建笔记本(B)...", "", false, true) {
+                            self.st.status = "请用侧栏「笔记本」分区的 ＋ 新建笔记本".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "新建本地笔记本(L)", "", false, true) {
+                            self.st.status = "biji 库即本地库，直接「新建笔记本」即可".into();
+                            ui.close_menu();
+                        }
+                        crate::icons::menu_cmd(ui, "新建已保存搜索条件(S)...", "", false, false);
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "导入(I)", "", false, true) {
+                            self.st.status = "导入暂未实现".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "导出(E)...", "", false, true) {
+                            self.st.status = "整库导出暂未实现（可用「另存为 PDF」导出当前笔记）".into();
                             ui.close_menu();
                         }
                         ui.separator();
-                        if crate::icons::menu_item(ui, Some(&crate::icons::printer), "导出 PDF") {
+                        if crate::icons::menu_cmd(ui, "附加文件(F)...", "", false, true) {
+                            self.st.status = "把文件拖入笔记正文区即可添加附件".into();
+                            ui.close_menu();
+                        }
+                        crate::icons::menu_cmd(ui, "保存附件(V)...", "", false, false);
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "打印(P)...", "Ctrl+P", false, true) {
+                            self.st.status = "打印暂未实现（可用「另存为 PDF」）".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "另存为 PDF...", "", false, true) {
                             self.export_pdf();
                             ui.close_menu();
                         }
+                        if crate::icons::menu_cmd(ui, "打印预览(R)...", "Ctrl+Shift+P", false, true) {
+                            self.st.status = "打印预览暂未实现".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "页面设置(U)...", "", false, true) {
+                            self.st.status = "页面设置暂未实现".into();
+                            ui.close_menu();
+                        }
                         ui.separator();
-                        if crate::icons::menu_item(ui, Some(&crate::icons::x_mark), "退出") {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        let user = self
+                            .service
+                            .get_current_user_info()
+                            .map(|u| u.username)
+                            .unwrap_or_default();
+                        crate::icons::menu_cmd(ui, &format!("{user}（当前帐户）"), "", true, false);
+                        if crate::icons::menu_cmd(ui, "添加另一个帐户(A)...", "", false, true) {
+                            self.st.status = "biji 对接自有后端，暂为单帐户".into();
+                            ui.close_menu();
                         }
                     });
                     ui.menu_button(menu_text("编辑(E)"), |ui| {
-                        ui.set_min_width(150.0);
-                        if crate::icons::menu_item(ui, Some(&crate::icons::search), "清除搜索") {
-                            self.st.search.clear();
-                            self.refresh_rows();
+                        ui.set_min_width(250.0);
+                        if crate::icons::menu_cmd(ui, "撤销(U)", "Ctrl+Z", false, true) {
+                            self.perform_undo();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "重做(R)", "Ctrl+Y", false, true) {
+                            self.perform_redo();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "剪切(T)", "Ctrl+X", false, true) {
+                            self.edit_clipboard(ui.ctx(), ClipOp::Cut);
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "复制(C)", "Ctrl+C", false, true) {
+                            self.edit_clipboard(ui.ctx(), ClipOp::Copy);
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "粘贴(P)", "Ctrl+V", false, true) {
+                            self.edit_clipboard(ui.ctx(), ClipOp::Paste);
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(
+                            ui,
+                            "粘贴并匹配样式(M)",
+                            "Ctrl+Shift+V",
+                            false,
+                            true,
+                        ) {
+                            self.edit_clipboard(ui.ctx(), ClipOp::Paste);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "删除(D)", "Delete", false, true) {
+                            self.edit_clipboard(ui.ctx(), ClipOp::Delete);
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "全选(A)", "Ctrl+A", false, true) {
+                            self.edit_select_all(ui.ctx());
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "查找和替换(F)", "", false, true) {
+                            if self.st.editor.is_some() {
+                                if let Some(ed) = self.st.editor.as_mut() {
+                                    ed.preview = false;
+                                }
+                                if self.st.find.is_none() {
+                                    self.st.find = Some(FindState::default());
+                                }
+                            } else {
+                                self.st.focus_search = true;
+                            }
                             ui.close_menu();
                         }
                     });
                     ui.menu_button(menu_text("查看(V)"), |ui| {
-                        ui.set_min_width(170.0);
-                        if crate::icons::menu_item_sel(
+                        ui.set_min_width(250.0);
+                        if crate::icons::menu_cmd(
                             ui,
-                            Some(&crate::icons::cards),
-                            "卡片视图",
-                            !self.st.list_compact,
+                            "左侧边栏(L)",
+                            "F10",
+                            self.st.show_sidebar,
+                            true,
                         ) {
-                            self.st.list_compact = false;
-                            self.refresh_rows();
+                            self.st.show_sidebar = !self.st.show_sidebar;
                             ui.close_menu();
                         }
-                        if crate::icons::menu_item_sel(
-                            ui,
-                            Some(&crate::icons::list),
-                            "摘要视图",
-                            self.st.list_compact,
-                        ) {
-                            self.st.list_compact = true;
-                            self.refresh_rows();
+                        if crate::icons::menu_cmd(ui, "笔记列表(N)", "F11", self.st.show_list, true)
+                        {
+                            self.st.show_list = !self.st.show_list;
                             ui.close_menu();
                         }
-                        ui.separator();
-                        // 月亮的镂空角用菜单窗口底色（白/深灰窗口）
-                        let theme_item: Option<&crate::icons::PaintFn> = if theme::is_dark() {
-                            Some(&|p, r, c| crate::icons::sun(p, r, c))
-                        } else {
-                            Some(&|p, r, c| crate::icons::moon(p, r, c, theme::pal().white))
-                        };
-                        if crate::icons::menu_item(
+                        if crate::icons::menu_cmd(
                             ui,
-                            theme_item,
-                            if theme::is_dark() { "浅色模式" } else { "深色模式" },
+                            "笔记编辑界面(O)",
+                            "Ctrl+F11",
+                            self.st.show_editor,
+                            true,
                         ) {
-                            self.toggle_theme();
+                            self.st.show_editor = !self.st.show_editor;
                             ui.close_menu();
                         }
                         ui.separator();
-                        if crate::icons::menu_item(
+                        if crate::icons::menu_cmd(ui, "标签视图(T)", "Ctrl+Shift+T", false, true) {
+                            self.st.status = "标签视图：请从侧栏「标签」分区进入".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "快速搜索(O)", "Ctrl+Q", false, true) {
+                            self.st.focus_search = true;
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "共享给我的(M)", "", false, true) {
+                            self.st.status = "共享给我的暂未实现（自有后端规划中）".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "工作群聊(W)", "", false, true) {
+                            self.st.status = "工作群聊暂未实现".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "文件库", "", false, true) {
+                            self.st.status = "文件库暂未实现".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "搜索信息(I)", "Ctrl+F10", false, true) {
+                            self.st.focus_search = true;
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(
                             ui,
-                            Some(&crate::icons::play),
-                            "演示模式（全屏放映）",
+                            "编辑工具栏(E)",
+                            "F8",
+                            self.st.show_toolbar,
+                            true,
                         ) {
-                            let ids: Vec<i64> =
-                                self.st.rows.iter().map(|r| r.uid).collect();
-                            if ids.is_empty() {
-                                self.st.status = "当前列表为空，无可演示内容".into();
-                            } else {
-                                self.service.dispatch(NodeWebkitCommand::Present {
-                                    note_ids: ids,
-                                    index: 0,
-                                    x: 0,
-                                    y: 0,
-                                    width: 0,
-                                    height: 0,
-                                    trigger: "menu".into(),
-                                });
-                            }
+                            self.st.show_toolbar = !self.st.show_toolbar;
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "状态栏(A)", "", self.st.show_statusbar, true)
+                        {
+                            self.st.show_statusbar = !self.st.show_statusbar;
                             ui.close_menu();
                         }
                     });
                     ui.menu_button(menu_text("笔记(N)"), |ui| {
-                        ui.set_min_width(200.0);
+                        ui.set_min_width(260.0);
                         let uid = self.st.editor.as_ref().map(|e| e.uid);
-                        if let Some(uid) = uid {
-                            if crate::icons::menu_item(
-                                ui,
-                                Some(&crate::icons::trash),
-                                "删除当前笔记（移入回收站）",
-                            ) {
-                                match self.service.trash_note(uid) {
-                                    Ok(()) => {
-                                        self.st.status =
-                                            format!("已移入回收站 {}", note_label(uid));
-                                        self.st.selected_note = None;
-                                        self.refresh_rows();
-                                    }
-                                    Err(e) => self.st.status = format!("删除失败: {e}"),
-                                }
-                                ui.close_menu();
-                            }
-                        } else {
-                            ui.label(
-                                egui::RichText::new("（未打开笔记）")
-                                    .small()
-                                    .color(theme::pal().subtle),
-                            );
-                        }
-                    });
-                    ui.menu_button(menu_text("格式(O)"), |ui| {
-                        ui.set_min_width(160.0);
-                        let dirty = self.st.editor.as_ref().map(|e| e.dirty);
-                        if crate::icons::menu_item(ui, Some(&crate::icons::pencil), "源码编辑模式")
-                        {
-                            if let Some(ed) = self.st.editor.as_mut() {
-                                ed.preview = false;
+                        let has = uid.is_some();
+                        if crate::icons::menu_cmd(
+                            ui,
+                            "在新窗口中打开(O)",
+                            "Ctrl+Enter",
+                            false,
+                            has,
+                        ) {
+                            if let Some(u) = uid {
+                                self.open_in_float(u);
                             }
                             ui.close_menu();
                         }
-                        if crate::icons::menu_item(ui, Some(&crate::icons::eye), "富文本预览模式")
-                        {
-                            if dirty == Some(true) {
-                                self.save_editor();
+                        if crate::icons::menu_cmd(ui, "演示(P)", "Ctrl+Alt+Enter", false, has) {
+                            self.start_present();
+                            ui.close_menu();
+                        }
+                        crate::icons::menu_cmd(ui, "在另一个屏幕演示", "Ctrl+Shift+Enter", false, false);
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "共享(S)", "", false, has) {
+                            self.toggle_share();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(
+                            ui,
+                            "复制笔记链接(L)",
+                            "Alt+Shift+L",
+                            false,
+                            has,
+                        ) {
+                            if let Some(u) = uid {
+                                if let Ok(mut cb) = arboard::Clipboard::new() {
+                                    let _ = cb.set_text(biji_service::resource_url(u));
+                                }
+                                self.st.status = "笔记链接已复制".into();
                             }
-                            if let Some(ed) = self.st.editor.as_mut() {
-                                ed.preview = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "复制笔记(C)", "", false, has) {
+                            self.duplicate_note();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "移动笔记(V)", "Alt+Shift+M", false, has) {
+                            self.st.status = "右键列表行可选择「移动到笔记本」".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "创建笔记副本(D)", "", false, has) {
+                            self.duplicate_note();
+                            ui.close_menu();
+                        }
+                        crate::icons::menu_cmd(ui, "合并笔记(M)", "", false, false);
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "标签(T)...", "Ctrl+Alt+T", false, has) {
+                            self.st.status = "正文下方「添加标签…」可直接挂标签".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "删除笔记(E)", "", false, has) {
+                            let u = uid.unwrap_or_default();
+                            match self.service.trash_note(u) {
+                                Ok(()) => {
+                                    self.st.status =
+                                        format!("已移入回收站 {}", note_label(u));
+                                    self.st.selected_note = None;
+                                    self.refresh_rows();
+                                }
+                                Err(e) => self.st.status = format!("删除失败: {e}"),
                             }
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "笔记历史(H)", "", false, has) {
+                            self.st.status = "历史版本：编辑器顶部「版本」入口".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(
+                            ui,
+                            "字数和资源统计(W)...",
+                            "Ctrl+Alt+B",
+                            self.st.show_wc,
+                            has,
+                        ) {
+                            self.st.show_wc = !self.st.show_wc;
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button(menu_text("格式(O)"), |ui| {
+                        ui.set_min_width(250.0);
+                        if crate::icons::menu_cmd(ui, "字体(F)...", "Ctrl+D", false, true) {
+                            self.st.status = "字体遵循系统默认（ENML 规范）".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "段落(P)", "", false, true) {
+                            self.st.status = "段落样式暂未实现".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "样式(S)", "", false, true) {
+                            self.st.status = "样式暂未实现".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "插入表格(T)...", "", false, true) {
+                            self.insert_enml_at_cursor(ui.ctx(), "<table><tr><td></td></tr></table>");
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "插入水平线(H)", "Ctrl+Shift+-", false, true) {
+                            self.insert_enml_at_cursor(ui.ctx(), "<hr/>");
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "待办事项(D)", "", false, true) {
+                            self.insert_enml_at_cursor(ui.ctx(), "<en-todo/>");
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "超链接(H)", "", false, true) {
+                            self.insert_enml_at_cursor(ui.ctx(), "<a href=\"\"></a>");
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        crate::icons::menu_cmd(ui, "加密所选文本(E)...", "Ctrl+Shift+X", false, false);
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "简化格式(S)", "Ctrl+Space", false, true) {
+                            self.st.status = "简化格式暂未实现".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "设为纯文本", "Ctrl+Shift+Space", false, true) {
+                            self.st.status = "设为纯文本暂未实现".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "缩放(Z)", "", false, true) {
+                            self.st.status = "缩放暂未实现".into();
                             ui.close_menu();
                         }
                     });
                     ui.menu_button(menu_text("工具(T)"), |ui| {
-                        ui.set_min_width(140.0);
+                        ui.set_min_width(250.0);
+                        if crate::icons::menu_cmd(ui, "同步(S)", "F9", false, true) {
+                            self.do_sync();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "密码锁(L)", "", false, true) {
+                            self.st.status = "密码锁暂未实现".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "选项(O)", "", false, true) {
+                            self.st.status = "biji 暂无独立选项窗口（主题在标题栏切换）".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "帐户信息(A)", "", false, true) {
+                            let info = self
+                                .service
+                                .get_current_user_info()
+                                .map(|u| format!("{}#{}", u.username, u.service_host))
+                                .unwrap_or_default();
+                            self.st.status = format!("帐户：{info}");
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "导入文件夹(I)...", "", false, true) {
+                            self.st.status = "导入文件夹暂未实现".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "自定义工具栏(T)...", "", false, true) {
+                            self.st.status = "自定义工具栏暂未实现".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         if crate::icons::menu_item(ui, Some(&crate::icons::chat), "聊天") {
                             self.st.chat = if self.st.chat.is_some() {
                                 None
@@ -1385,8 +1935,42 @@ impl BijiApp {
                         }
                     });
                     ui.menu_button(menu_text("帮助(H)"), |ui| {
-                        ui.set_min_width(120.0);
-                        if crate::icons::menu_item(ui, Some(&crate::icons::info), "关于 biji") {
+                        ui.set_min_width(250.0);
+                        if crate::icons::menu_cmd(ui, "帮助(H)", "F1", false, true) {
+                            self.st.status = "帮助：见 README 与 docs/ 目录".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "入门指南(G)", "", false, true) {
+                            self.st.status = "入门：新建库→新建笔记→F9 同步（自有后端）".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "快捷键(K)", "", false, true) {
+                            self.st.show_shortcuts_win = true;
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "评价 biji", "", false, true) {
+                            self.st.status = "感谢使用与支持！".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "我的帐户页(M)", "", false, true) {
+                            self.st.status = "帐户信息见 工具(T)→帐户信息(A)".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "检查更新(C)", "", false, true) {
+                            self.st.status = "biji 为本地构建，随仓库发布更新".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "更新说明(N)", "", false, true) {
+                            self.st.status = "更新说明见仓库提交历史".into();
+                            ui.close_menu();
+                        }
+                        if crate::icons::menu_cmd(ui, "活动日志(L)", "", false, true) {
+                            self.st.status = "活动：状态栏常显同步与编辑动态".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::icons::menu_cmd(ui, "关于(A)...", "", false, true) {
                             self.st.status =
                                 "biji 笔记 · Rust/egui · ENML 存储 · USN 同步（自有后端） · 双服务语义"
                                     .into();
@@ -3041,21 +3625,7 @@ impl BijiApp {
                     }
                 }
                 if let Some(uid) = float_req {
-                    if let Ok(full) = self.service.store().get_note(uid) {
-                        if self.st.editor.as_ref().map(|e| e.uid) != Some(uid) {
-                            self.st.float_win = Some(FloatNote {
-                                uid,
-                                title: full.note.title.clone(),
-                                buffer: full.enml,
-                                dirty: false,
-                                undo_stack: Vec::new(),
-                                redo_stack: Vec::new(),
-                            });
-                            self.st.status = format!("已在浮动窗口打开 {}", note_label(uid));
-                        } else {
-                            self.st.status = "该笔记已在主编辑器打开".into();
-                        }
-                    }
+                    self.open_in_float(uid);
                 }
                 if let Some(uid) = shortcut_req {
                     match self.service.store().toggle_shortcut(uid) {
@@ -4009,7 +4579,7 @@ impl BijiApp {
 
             // 字数统计栏（对位原客户端编辑器底部状态行）：
             // 字 N · 词 M · 字符 X（编辑缓冲实时统计）
-            {
+            if self.st.show_wc {
                 let (cjk, non_ws, words) = Self::count_stats(&ed.content);
                 ui.separator();
                 ui.label(
@@ -4420,100 +4990,103 @@ impl BijiApp {
         .default_size([1080.0, 780.0])
         .resizable(true)
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                for (tool, label) in [
-                    (annotate::Tool::Select, "◇ 选择"),
-                    (annotate::Tool::Arrow, "↗ 箭头"),
-                    (annotate::Tool::Rect, "□ 矩形"),
-                    (annotate::Tool::Text, "文字"),
-                    (annotate::Tool::Pen, "画笔"),
-                ] {
-                    if ui.selectable_label(st.tool == tool, label).clicked() {
-                        st.tool = tool;
+            if self.st.show_toolbar {
+                ui.horizontal(|ui| {
+                    for (tool, label) in [
+                        (annotate::Tool::Select, "◇ 选择"),
+                        (annotate::Tool::Arrow, "↗ 箭头"),
+                        (annotate::Tool::Rect, "□ 矩形"),
+                        (annotate::Tool::Text, "文字"),
+                        (annotate::Tool::Pen, "画笔"),
+                    ] {
+                        if ui.selectable_label(st.tool == tool, label).clicked() {
+                            st.tool = tool;
+                        }
                     }
-                }
-                ui.separator();
-                for c in [
-                    [230u8, 57, 70],
-                    [255, 196, 0],
-                    [0, 120, 215],
-                    [0, 166, 90],
-                    [20, 20, 20],
-                ] {
-                    let selected = st.color == c;
-                    let btn = egui::Button::new(
-                        egui::RichText::new("●").color(egui::Color32::from_rgb(c[0], c[1], c[2])),
-                    );
-                    if ui.add(btn).clicked() {
-                        st.color = c;
+                    ui.separator();
+                    for c in [
+                        [230u8, 57, 70],
+                        [255, 196, 0],
+                        [0, 120, 215],
+                        [0, 166, 90],
+                        [20, 20, 20],
+                    ] {
+                        let selected = st.color == c;
+                        let btn = egui::Button::new(
+                            egui::RichText::new("●")
+                                .color(egui::Color32::from_rgb(c[0], c[1], c[2])),
+                        );
+                        if ui.add(btn).clicked() {
+                            st.color = c;
+                        }
+                        let _ = selected;
                     }
-                    let _ = selected;
-                }
-                ui.separator();
-                for w in [2.0f32, 4.0, 8.0] {
+                    ui.separator();
+                    for w in [2.0f32, 4.0, 8.0] {
+                        if ui
+                            .selectable_label((st.stroke - w).abs() < 0.01, format!("{w}px"))
+                            .clicked()
+                        {
+                            st.stroke = w;
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("↩ 撤销").clicked() {
+                        st.undo();
+                    }
+                    if ui.button("清空").clicked() {
+                        st.clear();
+                    }
+                    let has_sel = !st.selected.is_empty();
                     if ui
-                        .selectable_label((st.stroke - w).abs() < 0.01, format!("{w}px"))
+                        .add_enabled(has_sel, egui::Button::new("删除所选"))
                         .clicked()
                     {
-                        st.stroke = w;
+                        let n = st.delete_selected();
+                        if n > 0 {
+                            st.status = format!("已删除 {n} 条选中标注");
+                        }
                     }
-                }
-                ui.separator();
-                if ui.button("↩ 撤销").clicked() {
-                    st.undo();
-                }
-                if ui.button("清空").clicked() {
-                    st.clear();
-                }
-                let has_sel = !st.selected.is_empty();
-                if ui
-                    .add_enabled(has_sel, egui::Button::new("删除所选"))
-                    .clicked()
-                {
-                    let n = st.delete_selected();
-                    if n > 0 {
-                        st.status = format!("已删除 {n} 条选中标注");
+                    let still_sel = !st.selected.is_empty();
+                    if ui
+                        .add_enabled(still_sel, egui::Button::new("＋ 放大"))
+                        .on_hover_text("选中标注放大 1.2x")
+                        .clicked()
+                    {
+                        st.scale_selected(1.2);
                     }
-                }
-                let still_sel = !st.selected.is_empty();
-                if ui
-                    .add_enabled(still_sel, egui::Button::new("＋ 放大"))
-                    .on_hover_text("选中标注放大 1.2x")
-                    .clicked()
-                {
-                    st.scale_selected(1.2);
-                }
-                if ui
-                    .add_enabled(still_sel, egui::Button::new("－ 缩小"))
-                    .on_hover_text("选中标注缩小 0.8x")
-                    .clicked()
-                {
-                    st.scale_selected(0.8);
-                }
-                if ui.button("旋转90°").clicked() {
-                    let rotated = annotate::apply_rotation(st.image.clone(), 90.0);
-                    st.set_image(&ctx2, rotated);
-                    st.status = "画布已旋转 90°（已存标注坐标保留）".into();
-                }
-                if ui.add(theme::green_button("保存写回")).clicked() {
-                    action = AAction::Save;
-                }
-                if ui.button("关闭").clicked() {
-                    st.open = false;
-                }
-                ui.separator();
-                if ui
-                    .checkbox(&mut st.rotate_around_canvas, "绕画布中心旋转")
-                    .on_hover_text("旋转枢轴：画布中心（外部点）/ 选中公共包围盒中心")
-                    .changed()
-                {
-                    st.status = if st.rotate_around_canvas {
-                        "旋转枢轴：画布中心（外部点旋转）".into()
-                    } else {
-                        "旋转枢轴：选中公共包围盒中心".into()
-                    };
-                }
-            });
+                    if ui
+                        .add_enabled(still_sel, egui::Button::new("－ 缩小"))
+                        .on_hover_text("选中标注缩小 0.8x")
+                        .clicked()
+                    {
+                        st.scale_selected(0.8);
+                    }
+                    if ui.button("旋转90°").clicked() {
+                        let rotated = annotate::apply_rotation(st.image.clone(), 90.0);
+                        st.set_image(&ctx2, rotated);
+                        st.status = "画布已旋转 90°（已存标注坐标保留）".into();
+                    }
+                    if ui.add(theme::green_button("保存写回")).clicked() {
+                        action = AAction::Save;
+                    }
+                    if ui.button("关闭").clicked() {
+                        st.open = false;
+                    }
+                    ui.separator();
+                    if ui
+                        .checkbox(&mut st.rotate_around_canvas, "绕画布中心旋转")
+                        .on_hover_text("旋转枢轴：画布中心（外部点）/ 选中公共包围盒中心")
+                        .changed()
+                    {
+                        st.status = if st.rotate_around_canvas {
+                            "旋转枢轴：画布中心（外部点旋转）".into()
+                        } else {
+                            "旋转枢轴：选中公共包围盒中心".into()
+                        };
+                    }
+                });
+            }
             ui.separator();
             st.draw(ui);
             ui.add_space(2.0);
@@ -5712,12 +6285,12 @@ mod tests {
                     let Some(r) = m.area_rect(layer.id) else {
                         continue;
                     };
-                    if r.width() < 30.0 || r.width() > 420.0 || r.height() > 420.0 {
+                    if r.width() < 30.0 || r.width() > 420.0 || r.height() > 700.0 {
                         continue;
                     }
                     // 菜单从点击点弹出：中心与点击点距离应不远
                     let d = r.center().distance(near);
-                    if d < 200.0 && d < best_d {
+                    if d < 340.0 && d < best_d {
                         best_d = d;
                         best = Some(r);
                     }
@@ -6122,7 +6695,7 @@ mod tests {
 
             // 点「查看(V)」菜单按钮（菜单栏第 3 个菜单，扫 x 段）
             let mut menu: Option<(egui::Pos2, egui::Rect)> = None;
-            for xi in (200..320).step_by(10) {
+            for xi in (10..360).step_by(10) {
                 let pos = egui::pos2(xi as f32, 20.0);
                 click(&ctx, &mut app, pos);
                 if let Some(r) = ctx.memory(|m| {
@@ -6133,11 +6706,11 @@ mod tests {
                             continue;
                         }
                         if let Some(r) = m.area_rect(layer.id) {
-                            if r.width() < 30.0 || r.width() > 460.0 || r.height() > 460.0 {
+                            if r.width() < 30.0 || r.width() > 460.0 || r.height() > 700.0 {
                                 continue;
                             }
                             let d = r.center().distance(pos);
-                            if d < 140.0 && d < bd {
+                            if d < 340.0 && d < bd {
                                 bd = d;
                                 best = Some(r);
                             }
@@ -7623,7 +8196,7 @@ mod tests {
         // 菜单项触发路径已在仪器化跟踪中证实，几何扫描对 menubar
         // 开合 toggle 语义不稳定，导出动作改走同一真实方法直调）
         let mut menu_open = false;
-        for xi in (10..110).step_by(8) {
+        for xi in (10..360).step_by(8) {
             let pos = egui::pos2(xi as f32, 20.0);
             click(&ctx, &mut app, pos);
             if popup_near(&ctx, pos).is_some() {
