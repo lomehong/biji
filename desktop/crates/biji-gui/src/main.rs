@@ -119,12 +119,32 @@ struct ListRow {
     title: String,
     snippet: String,
     date: f64,
+    /// 创建时间（列表头「创建时间」排序用）。
+    created: f64,
     tags: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 enum Confirm {
     DeleteNotebook(i64, String),
+}
+
+/// 笔记列表排序键（对位原客户端列表头排序：更新时间/创建时间/标题）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListSort {
+    Updated,
+    Created,
+    Title,
+}
+
+impl ListSort {
+    fn label(self) -> &'static str {
+        match self {
+            ListSort::Updated => "更新时间",
+            ListSort::Created => "创建时间",
+            ListSort::Title => "标题",
+        }
+    }
 }
 
 struct UiState {
@@ -137,6 +157,16 @@ struct UiState {
     rows_sig: String,
     /// 笔记列表无限滚动的可见窗口（滚动到底自动扩展，切换视图重置）。
     list_limit: usize,
+    /// 列表排序键（对位原客户端列表头排序下拉）。
+    list_sort: ListSort,
+    /// 升序（false = 降序，最近在前，对位默认）。
+    sort_asc: bool,
+    /// 紧凑单行视图（false = 卡片视图）。
+    list_compact: bool,
+    /// Ctrl+F 置位：下一帧聚焦搜索框。
+    focus_search: bool,
+    /// 笔记信息弹窗（ℹ）。
+    note_info: Option<i64>,
     present: Option<(Vec<i64>, usize)>,
     status: String,
     show_new_notebook: bool,
@@ -191,6 +221,11 @@ impl UiState {
             rows: Vec::new(),
             rows_sig: String::new(),
             list_limit: Self::LIST_PAGE,
+            list_sort: ListSort::Updated,
+            sort_asc: false,
+            list_compact: false,
+            focus_search: false,
+            note_info: None,
             present: None,
             status: "就绪".into(),
             show_new_notebook: false,
@@ -236,12 +271,35 @@ impl BijiApp {
 
     fn rows_signature(&self) -> String {
         format!(
-            "{}|{:?}|{}|{}",
+            "{}|{:?}|{}|{}|{:?}|{}|{}",
             self.current_usn(),
             self.st.selection,
             self.st.trash_view,
-            self.st.search
+            self.st.search,
+            self.st.list_sort,
+            self.st.sort_asc,
+            self.st.list_compact
         )
+    }
+
+    /// 纯排序（供单测）：按 key 排序；降序时整体取反（标题同理，对位原客户端）。
+    fn sort_rows(rows: &mut [ListRow], sort: ListSort, asc: bool) {
+        match sort {
+            ListSort::Updated => rows.sort_by(|a, b| {
+                a.date
+                    .partial_cmp(&b.date)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            ListSort::Created => rows.sort_by(|a, b| {
+                a.created
+                    .partial_cmp(&b.created)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            ListSort::Title => rows.sort_by(|a, b| a.title.cmp(&b.title)),
+        }
+        if !asc {
+            rows.reverse();
+        }
     }
 
     fn refresh_rows(&mut self) {
@@ -294,10 +352,12 @@ impl BijiApp {
                     },
                     snippet,
                     date: meta.date_updated,
+                    created: meta.date_created,
                     tags: meta.tags_text,
                 });
             }
         }
+        Self::sort_rows(&mut rows, self.st.list_sort, self.st.sort_asc);
         self.st.rows = rows;
         self.st.rows_sig = sig;
     }
@@ -606,6 +666,17 @@ impl BijiApp {
                         }
                     });
                     ui.menu_button(menu_text("查看(V)"), |ui| {
+                        if ui.button("🖼 卡片视图").clicked() {
+                            self.st.list_compact = false;
+                            self.refresh_rows();
+                            ui.close_menu();
+                        }
+                        if ui.button("☰ 紧凑列表").clicked() {
+                            self.st.list_compact = true;
+                            self.refresh_rows();
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         if ui.button("▶ 演示模式（全屏放映）").clicked() {
                             let ids: Vec<i64> =
                                 self.st.rows.iter().map(|r| r.uid).collect();
@@ -931,15 +1002,17 @@ impl BijiApp {
                             .unwrap_or_else(|| "标签".into()),
                     }
                 };
-                // 搜索框（对位原客户端列表列顶部；F6 聚焦）
+                // 搜索框（对位原客户端列表列顶部；F6 / Ctrl+F 聚焦）
                 let search_id = egui::Id::new("note-search");
-                if ui.input(|i| i.key_pressed(egui::Key::F6)) {
+                let want_focus = ui.input(|i| i.key_pressed(egui::Key::F6))
+                    || std::mem::take(&mut self.st.focus_search);
+                if want_focus {
                     ui.ctx().memory_mut(|m| m.request_focus(search_id));
                 }
                 let mut search = self.st.search.clone();
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut search)
-                        .hint_text("搜索笔记 (F6)")
+                        .hint_text("搜索笔记 (Ctrl+F)")
                         .id(search_id)
                         .desired_width(ui.available_width()),
                 );
@@ -955,11 +1028,53 @@ impl BijiApp {
                         .color(theme::TEXT),
                 );
                 ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(format!("{}条笔记", self.st.rows.len()))
-                        .small()
-                        .color(theme::SUBTLE),
-                );
+                // 列表头控件行（对位原客户端：条数 + 排序下拉 + 方向 + 视图切换）
+                let mut resort = false;
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{}条笔记", self.st.rows.len()))
+                            .small()
+                            .color(theme::SUBTLE),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .selectable_label(self.st.list_compact, "☰")
+                            .on_hover_text(if self.st.list_compact {
+                                "切换到卡片视图"
+                            } else {
+                                "切换到紧凑列表"
+                            })
+                            .clicked()
+                        {
+                            self.st.list_compact = !self.st.list_compact;
+                            resort = true;
+                        }
+                        let dir = if self.st.sort_asc { "↑ 升序" } else { "↓ 降序" };
+                        if ui
+                            .selectable_label(false, egui::RichText::new(dir).small())
+                            .on_hover_text("切换排序方向")
+                            .clicked()
+                        {
+                            self.st.sort_asc = !self.st.sort_asc;
+                            resort = true;
+                        }
+                        let mut sort = self.st.list_sort;
+                        egui::ComboBox::from_id_salt("list-sort")
+                            .selected_text(sort.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut sort, ListSort::Updated, "更新时间");
+                                ui.selectable_value(&mut sort, ListSort::Created, "创建时间");
+                                ui.selectable_value(&mut sort, ListSort::Title, "标题");
+                            });
+                        if sort != self.st.list_sort {
+                            self.st.list_sort = sort;
+                            resort = true;
+                        }
+                    });
+                });
+                if resort {
+                    self.refresh_rows();
+                }
                 ui.add_space(2.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // 无限滚动：只渲染可见窗口内的卡片，滚动到底自动扩展
@@ -976,6 +1091,75 @@ impl BijiApp {
                     }
                     for row in rows {
                         let selected = self.st.selected_note == Some(row.uid);
+                        // 紧凑视图：单行「● 标题 …… 日期」（对位原客户端列表视图）
+                        if self.st.list_compact {
+                            let row_resp = ui
+                                .horizontal(|ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(
+                                        egui::RichText::new(if selected { "●" } else { "○" })
+                                            .small()
+                                            .color(if selected {
+                                                theme::GREEN
+                                            } else {
+                                                theme::SUBTLE
+                                            }),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(&row.title)
+                                            .size(13.0)
+                                            .color(theme::TEXT),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                egui::RichText::new(util::fmt_date(row.date))
+                                                    .small()
+                                                    .color(theme::SUBTLE),
+                                            );
+                                        },
+                                    );
+                                })
+                                .response;
+                            if self.st.trash_view {
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("还原").clicked() {
+                                        if let Err(e) = self.service.store().restore_note(row.uid) {
+                                            self.st.status = format!("还原失败: {e}");
+                                        } else {
+                                            self.st.status =
+                                                format!("已还原 {}", note_label(row.uid));
+                                            self.refresh_rows();
+                                        }
+                                    }
+                                    if ui.small_button("彻底删除").clicked() {
+                                        if let Err(e) =
+                                            self.service.store().expunge_note(row.uid)
+                                        {
+                                            self.st.status = format!("删除失败: {e}");
+                                        } else {
+                                            self.st.status = format!(
+                                                "已彻底删除 {}（删除账已记）",
+                                                note_label(row.uid)
+                                            );
+                                            self.refresh_rows();
+                                        }
+                                    }
+                                });
+                            } else {
+                                let hit = ui.interact(
+                                    row_resp.rect,
+                                    egui::Id::new(("note-row", row.uid)),
+                                    egui::Sense::click(),
+                                );
+                                if hit.clicked() {
+                                    self.st.selected_note = Some(row.uid);
+                                }
+                            }
+                            ui.add_space(2.0);
+                            continue;
+                        }
                         // 笔记卡：白底圆角发丝边；选中 = 亮绿描边 + 浅绿底
                         // （对位原客户端笔记列表的卡片选中态）
                         let frame = egui::Frame::default()
@@ -1090,7 +1274,7 @@ impl BijiApp {
             AttachTag(i64),
             DetachTag(i64),
         }
-        let (action, uid) = {
+        let (action, uid, info_req) = {
             let Some(ed) = self.st.editor.as_mut() else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.add_space(80.0);
@@ -1102,6 +1286,7 @@ impl BijiApp {
             };
 
             let mut action = Action::None;
+            let mut show_info = false;
 
             // 元信息行（对位原客户端：笔记本 chip + 更新日期）
             {
@@ -1137,6 +1322,13 @@ impl BijiApp {
                                 .small()
                                 .color(theme::SUBTLE),
                         );
+                        if ui
+                            .small_button("ℹ")
+                            .on_hover_text("笔记信息")
+                            .clicked()
+                        {
+                            show_info = true;
+                        }
                     });
                 }
             }
@@ -1412,6 +1604,7 @@ impl BijiApp {
                     ("I", "<i>", "</i>"),
                     ("U", "<u>", "</u>"),
                     ("S", "<s>", "</s>"),
+                    ("高亮", "<span style=\"background-color:#ffd54f\">", "</span>"),
                     ("H1", "<h1>", "</h1>"),
                     ("H2", "<h2>", "</h2>"),
                     ("代码", "<code>", "</code>"),
@@ -1484,8 +1677,11 @@ impl BijiApp {
                 }
             }
 
-            (action, uid)
+            (action, uid, show_info.then_some(ed.uid))
         };
+        if let Some(u) = info_req {
+            self.st.note_info = Some(u);
+        }
         match action {
             Action::None => {}
             Action::Save => self.save_editor(),
@@ -2233,6 +2429,78 @@ impl BijiApp {
     }
 
     fn draw_dialogs(&mut self, ctx: &egui::Context) {
+        // 笔记信息（ℹ，对位原客户端笔记信息面板）
+        if self.st.note_info.is_some() {
+            let mut open = true;
+            egui::Window::new("笔记信息")
+                .collapsible(false)
+                .open(&mut open)
+                .default_width(340.0)
+                .show(ctx, |ui| {
+                    let uid = self.st.note_info.unwrap();
+                    match self.service.store().get_note(uid) {
+                        Ok(full) => {
+                            let words = Enml::parse(&full.enml)
+                                .map(|d| d.to_plain_text().chars().count())
+                                .unwrap_or(0);
+                            let nb_name = full
+                                .note
+                                .notebook_uid
+                                .and_then(|n| {
+                                    self.service
+                                        .store()
+                                        .list_notebooks()
+                                        .ok()
+                                        .and_then(|nbs| {
+                                            nbs.into_iter().find(|x| x.uid == n).map(|x| x.name)
+                                        })
+                                })
+                                .unwrap_or_else(|| "（无）".into());
+                            egui::Grid::new("note-info-grid")
+                                .num_columns(2)
+                                .min_col_width(72.0)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("创建时间").color(theme::SUBTLE),
+                                    );
+                                    ui.label(util::fmt_epoch(full.note.date_created));
+                                    ui.end_row();
+                                    ui.label(
+                                        egui::RichText::new("更新时间").color(theme::SUBTLE),
+                                    );
+                                    ui.label(util::fmt_epoch(full.note.date_updated));
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("字数").color(theme::SUBTLE));
+                                    ui.label(format!("{words} 字"));
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("笔记本").color(theme::SUBTLE));
+                                    ui.label(nb_name);
+                                    ui.end_row();
+                                    ui.label(egui::RichText::new("标签").color(theme::SUBTLE));
+                                    ui.label(full.note.tags_text.unwrap_or_else(|| "—".into()));
+                                    ui.end_row();
+                                    if let Some(url) =
+                                        full.note.source_url.as_deref().filter(|s| !s.is_empty())
+                                    {
+                                        ui.label(egui::RichText::new("来源").color(theme::SUBTLE));
+                                        ui.label(url.to_string());
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                        Err(e) => {
+                            ui.label(egui::RichText::new(format!("读取失败: {e}")).weak());
+                        }
+                    }
+                    ui.add_space(6.0);
+                    if ui.button("关闭").clicked() {
+                        self.st.note_info = None;
+                    }
+                });
+            if !open {
+                self.st.note_info = None;
+            }
+        }
         // 新建笔记本
         if self.st.show_new_notebook {
             let mut create = false;
@@ -2318,6 +2586,31 @@ impl eframe::App for BijiApp {
         let save_hotkey = ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.ctrl);
         if save_hotkey && self.st.editor.as_ref().map(|e| e.dirty).unwrap_or(false) {
             self.save_editor();
+        }
+
+        // 全局快捷键（对位原客户端；放映模式不响应，文本编辑聚焦时不抢 Delete）
+        if self.st.present.is_none() {
+            let new_hotkey = ctx.input(|i| i.key_pressed(egui::Key::N) && i.modifiers.ctrl);
+            let find_hotkey = ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.ctrl);
+            if new_hotkey {
+                self.create_note();
+            } else if find_hotkey {
+                self.st.focus_search = true;
+            }
+            let del_pressed =
+                ctx.input(|i| i.key_pressed(egui::Key::Delete) && !i.modifiers.any());
+            if del_pressed && !ctx.wants_keyboard_input() {
+                if let Some(uid) = self.st.selected_note {
+                    match self.service.trash_note(uid) {
+                        Ok(()) => {
+                            self.st.status = format!("已移入回收站 {}", note_label(uid));
+                            self.st.selected_note = None;
+                            self.refresh_rows();
+                        }
+                        Err(e) => self.st.status = format!("删除失败: {e}"),
+                    }
+                }
+            }
         }
 
         if self.st.present.is_some() {
@@ -2567,6 +2860,28 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn list_sort_orders_by_key_and_direction() {
+        let mk = |uid: i64, title: &str, date: f64, created: f64| ListRow {
+            uid,
+            title: title.into(),
+            snippet: String::new(),
+            date,
+            created,
+            tags: None,
+        };
+        let mut rows = vec![mk(1, "B", 3.0, 1.0), mk(2, "A", 1.0, 3.0), mk(3, "C", 2.0, 2.0)];
+        // 更新时间降序（默认）：3 > 2 > 1
+        BijiApp::sort_rows(&mut rows, ListSort::Updated, false);
+        assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![1, 3, 2]);
+        // 创建时间降序
+        BijiApp::sort_rows(&mut rows, ListSort::Created, false);
+        assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![2, 3, 1]);
+        // 标题升序：A B C（中文按 Unicode 码点序）
+        BijiApp::sort_rows(&mut rows, ListSort::Title, true);
+        assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![2, 1, 3]);
     }
 
     #[test]
