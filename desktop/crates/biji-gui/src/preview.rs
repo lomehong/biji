@@ -34,6 +34,8 @@ struct InlineCtx {
     runs: Vec<Run>,
     pieces: Vec<Piece>,
     char_total: usize,
+    /// 链接区间（char 域）与目标 href：点击命中即内部导航。
+    links: Vec<(usize, usize, String)>,
 }
 
 impl InlineCtx {
@@ -42,6 +44,7 @@ impl InlineCtx {
             runs: vec![],
             pieces: vec![],
             char_total: 0,
+            links: vec![],
         }
     }
 
@@ -133,6 +136,11 @@ fn collect_inline_element(el: &Element, style: &Run, out: &mut InlineCtx, path: 
     s.strike = style.strike || matches!(el.name.as_str(), "s" | "strike" | "del");
     s.mono = style.mono || matches!(el.name.as_str(), "code" | "kbd" | "tt" | "samp");
     s.link = style.link || el.name == "a";
+    let link_start = if el.name == "a" {
+        Some(out.char_total)
+    } else {
+        None
+    };
     if el.name == "font" {
         if let Some(v) = el.attr("size") {
             if let Ok(n) = v.parse::<f32>() {
@@ -142,6 +150,14 @@ fn collect_inline_element(el: &Element, style: &Run, out: &mut InlineCtx, path: 
         }
     }
     collect_inline(&el.children, &s, out, path);
+    if let Some(start) = link_start {
+        if let Some(href) = el.attr("href") {
+            let len = out.char_total.saturating_sub(start);
+            if len > 0 {
+                out.links.push((start, len, href.to_string()));
+            }
+        }
+    }
 }
 
 /// 空白段不裁剪的 job 构建（渲染态选区用）：所有 run 逐段 append，
@@ -452,6 +468,8 @@ pub struct PreviewSession {
     pub sel_pieces: Vec<Piece>,
     /// 渲染态格式施加请求：选区 → 拆分文本节点插入标记元素。
     pub request_format: Option<FormatApply>,
+    /// 点击了 biji://note/N 链接：请求打开目标笔记（调用方同帧消费）。
+    pub open_note: Option<i64>,
 }
 
 /// 渲染态格式施加：对若干文本节点的 [start,end) char 区间包裹标记元素。
@@ -590,6 +608,12 @@ fn frag_format_toolbar(ui: &mut egui::Ui, ses: &mut PreviewSession) {
 /// 选区高亮按 char 逐个 `pos_from_ccursor` 取矩形填充；
 /// 状态机：drag_started 置锚点 → dragged 动焦点 → clicked 清除。
 /// 该块持有选区时片段表回写会话（工具栏点击时映射选区 → 文本节点编辑）。
+/// 解析 biji://note/N 内部链接（对位原客户端 evernote:///view 链接）。
+fn parse_note_link(href: &str) -> Option<i64> {
+    let rest = href.strip_prefix("biji://note/")?;
+    rest.parse().ok()
+}
+
 fn selectable_block(
     ui: &mut egui::Ui,
     block_idx: usize,
@@ -633,8 +657,44 @@ fn selectable_block(
                 ses.sel = Some((b, anchor, hit(pos)));
             }
         }
-    } else if response.clicked() && holds_sel {
-        ses.sel = None; // 单击清除选区
+    } else if response.clicked() {
+        // 单击：先看是否命中链接（biji://note/N → 内部导航，对位原
+        // 客户端 evernote:// 跳转），否则清除选区
+        let mut hit_link = false;
+        if let Some(pos) = response.interact_pointer_pos() {
+            // 链接命中按屏幕矩形（char 光标对单字链接会给出越界边界，
+            // 矩形判定对长短链接都精确）
+            for (start, len, href) in &ctx.links {
+                let a = galley.pos_from_ccursor(egui::text::CCursor::new(*start));
+                let b = galley.pos_from_ccursor(egui::text::CCursor::new(start + len));
+                let r = egui::Rect::from_min_max(a.min, b.max).translate(rect.min.to_vec2());
+                if r.contains(pos) {
+                    if let Some(uid) = parse_note_link(href) {
+                        ses.open_note = Some(uid);
+                        hit_link = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if !hit_link && holds_sel {
+            ses.sel = None; // 单击清除选区
+        }
+    }
+    // 链接悬停手型（屏幕矩形判定）
+    if !ctx.links.is_empty() {
+        if let Some(pos) = response.hover_pos() {
+            let over_link = ctx.links.iter().any(|(st, len, _)| {
+                let a = galley.pos_from_ccursor(egui::text::CCursor::new(*st));
+                let b = galley.pos_from_ccursor(egui::text::CCursor::new(st + len));
+                egui::Rect::from_min_max(a.min, b.max)
+                    .translate(rect.min.to_vec2())
+                    .contains(pos)
+            });
+            if over_link {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
     }
     let holds_sel = ses.sel.map(|(b, _, _)| b) == Some(block_idx);
     if holds_sel {
@@ -829,7 +889,7 @@ mod tests {
         let doc =
             biji_enml::Enml::parse("<en-note><p>普通<b>加粗</b>之后<i>斜体</i></p></en-note>")
                 .unwrap();
-        let mut ctx = InlineCtx { runs: vec![], pieces: vec![], char_total: 0 };
+        let mut ctx = InlineCtx { runs: vec![], pieces: vec![], char_total: 0, links: vec![] };
         collect_inline(&doc.root.children, &base_run(16.0), &mut ctx, &[]);
         // 普通 / 加粗 / 之后 / 斜体 —— 样式切换处切段。
         assert_eq!(ctx.runs.len(), 4);

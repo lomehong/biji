@@ -1972,7 +1972,7 @@ impl BijiApp {
             /// 切换共享状态（元信息行入口）。
             ToggleShared,
         }
-        let (action, uid, info_req, find_action) = {
+        let (action, uid, info_req, find_action, open_link) = {
             let Some(ed) = self.st.editor.as_mut() else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.add_space(80.0);
@@ -1986,6 +1986,7 @@ impl BijiApp {
             let mut action = Action::None;
             let mut show_info = false;
             let mut find_action: Option<FindAction> = None;
+            let mut open_link: Option<i64> = None;
 
             // 元信息行（对位原客户端：笔记本 chip + 更新日期）
             {
@@ -2337,6 +2338,7 @@ impl BijiApp {
                     sel: ed.preview_sel,
                     sel_pieces: Vec::new(),
                     request_format: None,
+                    open_note: None,
                 };
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_space(4.0);
@@ -2389,6 +2391,7 @@ impl BijiApp {
                 ed.preview_editing = sess.editing;
                 ed.preview_buffer = sess.buffer;
                 ed.preview_sel = sess.sel;
+                open_link = sess.open_note;
             } else {
                 // 格式工具行（对位原客户端格式栏；作用于 ENML 源码选区）
                 const FORMATS: &[(&str, &str, &str)] = &[
@@ -2471,15 +2474,19 @@ impl BijiApp {
                 }
             }
 
-            (
-                action,
-                uid,
-                show_info.then_some(ed.uid),
-                find_action,
-            )
+            (action, uid, show_info.then_some(ed.uid), find_action, open_link)
         };
         if let Some(u) = info_req {
             self.st.note_info = Some(u);
+        }
+        if let Some(target) = open_link {
+            // biji://note/N 内部导航（对位原客户端 evernote:// 跳转）
+            if self.service.store().get_note(target).is_ok() {
+                self.st.selected_note = Some(target);
+                self.st.status = format!("已打开链接笔记 {}", note_label(target));
+            } else {
+                self.st.status = format!("链接指向的笔记不存在（uid {target}）");
+            }
         }
         // 查找替换动作（编辑器块外落地，避免与 ed 借用交叉）
         if let Some(fa) = find_action {
@@ -5892,6 +5899,132 @@ mod tests {
         assert!(text.contains("/Type /Page "));
         assert!(text.trim().ends_with("%%EOF"), "应以 %%EOF 结尾");
         let _ = std::fs::remove_file(&out_path);
+    }
+
+    /// headless egui 集成：预览态点击 biji://note/N 链接 → 打开目标笔记
+    /// （编辑器载入目标标题）；链接指向不存在的笔记时状态栏诚实提示。
+    #[test]
+    fn note_link_navigation_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let target = app
+            .service
+            .create_note("目标笔记", "<en-note><p>目标内容</p></en-note>", None)
+            .unwrap();
+        let source = app
+            .service
+            .create_note(
+                "带链接笔记",
+                &format!(
+                    "<en-note><p>前文 <a href=\"biji://note/{target}\">跳到目标</a> 后文</p></en-note>"
+                ),
+                None,
+            )
+            .unwrap();
+        app.st.selected_note = Some(source);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: none,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: none,
+                }],
+            );
+        };
+        run(&ctx, &mut app, vec![]);
+        assert!(
+            app.st.editor.as_ref().map(|e| e.preview).unwrap_or(false),
+            "应处于预览态（链接点击路径）"
+        );
+
+        // 扫描编辑器正文区域点击，直到跳转到目标笔记
+        let mut jumped = false;
+        'scan: for yi in (170..560).step_by(10) {
+            for xi in (520..1300).step_by(24) {
+                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
+                if app.st.selected_note == Some(target) {
+                    jumped = true;
+                    break 'scan;
+                }
+                // 护栏：误入行内编辑态（✎ 按钮）不致命，但不应改选其它笔记
+                assert!(
+                    app.st.selected_note.is_some(),
+                    "扫描不应丢失选中（xi={xi} yi={yi}）"
+                );
+            }
+        }
+        assert!(jumped, "点击链接应跳转到目标笔记");
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(
+            app.st.editor.as_ref().map(|e| e.title.clone()),
+            Some("目标笔记".to_string()),
+            "编辑器应载入目标笔记"
+        );
+        assert!(app.st.status.contains("已打开链接笔记"));
+
+        // 坏链接（指向不存在的 uid）：诚实提示且不跳转
+        let bad = app
+            .service
+            .create_note(
+                "坏链接",
+                "<en-note><p><a href=\"biji://note/99999\">坏</a></p></en-note>",
+                None,
+            )
+            .unwrap();
+        app.st.selected_note = Some(bad);
+        run(&ctx, &mut app, vec![]);
+        let mut hit_bad = false;
+        'scan2: for yi in (170..560).step_by(10) {
+            for xi in (496..1300).step_by(8) {
+                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
+                if xi % 120 == 40 && yi % 50 == 0 {
+                    eprintln!("scan2 xi={} yi={} status={:?} sel={:?}", xi, yi, app.st.status, app.st.selected_note);
+                }
+                if app.st.status.contains("不存在") {
+                    hit_bad = true;
+                    break 'scan2;
+                }
+            }
+        }
+        assert!(hit_bad, "坏链接应给出诚实提示");
+        assert_eq!(app.st.selected_note, Some(bad), "坏链接不应跳转");
     }
 
     #[test]
