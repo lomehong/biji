@@ -42,6 +42,8 @@ pub struct Palette {
     pub ai_purple: Color32,
     /// 发丝分隔线。
     pub hairline: Color32,
+    /// 未选中笔记卡描边（比 hairline 更浅，实测 #F0F0F0）。
+    pub card_border: Color32,
     /// 链接蓝（经典下划线蓝；深色下提亮）。
     pub link: Color32,
     /// 输入底/极底。
@@ -69,6 +71,7 @@ pub static LIGHT: Palette = Palette {
     date_blue: Color32::from_rgb(0x6F, 0xAE, 0xE0),
     ai_purple: Color32::from_rgb(0x9C, 0x8C, 0xFB),
     hairline: Color32::from_rgb(0xE2, 0xE2, 0xE6),
+    card_border: Color32::from_rgb(0xF0, 0xF0, 0xF0),
     link: Color32::from_rgb(0x24, 0x56, 0xDC),
     extreme: Color32::from_rgb(0xF4, 0xF4, 0xF6),
     faint: Color32::from_rgb(0xF4, 0xF4, 0xF6),
@@ -92,6 +95,7 @@ pub static DARK: Palette = Palette {
     date_blue: Color32::from_rgb(0x8A, 0xB8, 0xE8),
     ai_purple: Color32::from_rgb(0xA9, 0x9C, 0xFF),
     hairline: Color32::from_rgb(0x3A, 0x3A, 0x40),
+    card_border: Color32::from_rgb(0x38, 0x38, 0x3E),
     link: Color32::from_rgb(0x7C, 0x9C, 0xF5),
     extreme: Color32::from_rgb(0x1A, 0x1A, 0x1C),
     faint: Color32::from_rgb(0x23, 0x23, 0x25),
@@ -236,7 +240,7 @@ pub fn nav_row_p(
     icon: IconPaint<'_>,
 ) -> egui::Response {
     let p = pal();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 34.0), egui::Sense::click());
     let fill = if selected {
         p.sel_bg
     } else if resp.hovered() {
@@ -284,7 +288,7 @@ pub fn nav_row_chev(
     ui.horizontal(|ui| {
         let p = pal();
         let w = width - if trailing_plus { 34.0 } else { 0.0 };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 28.0), egui::Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::click());
         let fill = if selected {
             p.sel_bg
         } else if resp.hovered() {

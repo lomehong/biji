@@ -1216,14 +1216,6 @@ fn selectable_block(
 /// 格式工具栏（B/I/U/S/代码/链接直接作用于所见文本，写回 ENML）；
 /// 每个顶层块旁带「✎」编辑按钮（块内 HTML 片段编辑，格式保留）。
 pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSession) {
-    {
-        let probe = ui.interact(
-            egui::Rect::from_min_size(egui::pos2(505.0, 160.0), egui::vec2(200.0, 200.0)),
-            egui::Id::new("probe3"),
-            egui::Sense::click(),
-        );
-        eprintln!("[probe3-top] h={} c={}", probe.hovered(), probe.clicked());
-    }
     let children = doc.root.children.clone();
     for (i, child) in children.iter().enumerate() {
         if ses.editing == Some(i) {

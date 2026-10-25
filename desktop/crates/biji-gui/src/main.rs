@@ -1503,7 +1503,7 @@ impl BijiApp {
 
         egui::SidePanel::left("sidebar")
             .resizable(false)
-            .default_width(236.0)
+            .default_width(210.0)
             .frame(
                 egui::Frame::default()
                     .fill(theme::pal().sidebar_bg)
@@ -2164,7 +2164,12 @@ impl BijiApp {
     fn draw_note_list(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("note-list")
             .resizable(true)
-            .default_width(320.0)
+            .default_width(280.0)
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::pal().bg)
+                    .inner_margin(egui::Margin::symmetric(13.0, 8.0)),
+            )
             .show(ctx, |ui| {
                 // 来源下拉与右键菜单共用（全部/笔记本/标签）
                 let notebooks: Vec<(i64, String)> = self
@@ -2617,19 +2622,19 @@ impl BijiApp {
                             })
                             .rounding(12.0)
                             .stroke(egui::Stroke::new(
-                                if selected { 2.0_f32 } else { 1.0_f32 },
+                                if selected { 1.5_f32 } else { 1.0_f32 },
                                 if selected {
                                     theme::pal().green_edge
                                 } else {
-                                    theme::pal().hairline
+                                    theme::pal().card_border
                                 },
                             ))
-                            .inner_margin(egui::Margin::same(12.0));
+                            .inner_margin(egui::Margin::same(14.0));
                         let inner = frame.show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             ui.label(
                                 egui::RichText::new(&row.title)
-                                    .size(16.0)
+                                    .size(15.0)
                                     .strong()
                                     .color(theme::pal().text),
                             );
@@ -6245,9 +6250,11 @@ mod tests {
         assert!(pinned, "卡右键应能添加到快捷方式");
 
         // ---- 2) 侧栏快捷方式行点击直达笔记
-        run(&ctx, &mut app, vec![]);
+        // 行高加大后顶部组合控件更占位，扫描会途经分区头；每轮先恢复展开态
         let mut opened = false;
-        for yi in (60..260).step_by(8) {
+        for yi in (60..300).step_by(8) {
+            app.st.show_shortcuts = true;
+            run(&ctx, &mut app, vec![]);
             let pos = egui::pos2(100.0, yi as f32);
             click(&ctx, &mut app, pos, false);
             if app.st.selected_note == Some(uid) {
@@ -6265,7 +6272,9 @@ mod tests {
 
         // ---- 3) 快捷方式行右键 → 取消
         let mut removed = false;
-        for yi in (60..260).step_by(8) {
+        for yi in (60..300).step_by(8) {
+            app.st.show_shortcuts = true;
+            run(&ctx, &mut app, vec![]);
             let pos = egui::pos2(100.0, yi as f32);
             click(&ctx, &mut app, pos, true);
             if let Some(m) = popup_near(&ctx, pos) {
@@ -7292,7 +7301,7 @@ mod tests {
         // 扫描编辑器正文区域点击，直到跳转到目标笔记
         let mut jumped = false;
         'scan: for yi in (170..560).step_by(10) {
-            for xi in (576..1300).step_by(24) {
+            for xi in (505..1300).step_by(24) {
                 click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
                 if app.st.selected_note == Some(target) {
                     jumped = true;
@@ -7327,7 +7336,7 @@ mod tests {
         run(&ctx, &mut app, vec![]);
         let mut hit_bad = false;
         'scan2: for yi in (170..560).step_by(10) {
-            for xi in (576..1300).step_by(8) {
+            for xi in (505..1300).step_by(8) {
                 click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
                 if xi % 120 == 40 && yi % 50 == 0 {
                     eprintln!(
