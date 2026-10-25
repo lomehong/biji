@@ -11,8 +11,9 @@
 //! （simhei/msyh/simsun/Deng）。
 
 mod annotate;
-mod pdf_export;
+mod icons;
 mod pdf;
+mod pdf_export;
 mod preview;
 mod theme;
 
@@ -57,9 +58,8 @@ fn main() -> ExitCode {
             theme::apply(&cc.egui_ctx);
             // 向 OS 声明浅色主题偏好：Windows 标题栏随系统深色模式时保持浅色，
             // 与窗口内浅色 UI 一致（egui-winit → winit set_theme）。
-            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(
-                egui::SystemTheme::Light,
-            ));
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Light));
             let (tx, rx) = mpsc::channel();
             let service = NoteService::new(store, Box::new(CmdFrontend { tx }));
             Ok(Box::new(BijiApp::new(service, rx)))
@@ -179,16 +179,6 @@ enum ListSort {
     Updated,
     Created,
     Title,
-}
-
-impl ListSort {
-    fn label(self) -> &'static str {
-        match self {
-            ListSort::Updated => "更新时间",
-            ListSort::Created => "创建时间",
-            ListSort::Title => "标题",
-        }
-    }
 }
 
 struct UiState {
@@ -450,8 +440,7 @@ impl BijiApp {
         // 剪贴板含图像时 → PNG 编码 → add_resource + en-media 占位入源；
         // 纯文本剪贴板不拦截（TextEdit 的 Paste 事件正常工作）。
         let paste_hotkey = ctx.input(|i| i.key_pressed(egui::Key::V) && i.modifiers.ctrl);
-        if paste_hotkey
-        {
+        if paste_hotkey {
             self.paste_clipboard_image();
         }
         let del_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete) && !i.modifiers.any());
@@ -1118,11 +1107,7 @@ impl BijiApp {
                         .desired_width(ui.available_width()),
                 );
                 if resp.changed() {
-                    Self::undo_push_if_changed(
-                        &mut fw.undo_stack,
-                        &mut fw.redo_stack,
-                        &fw.buffer,
-                    );
+                    Self::undo_push_if_changed(&mut fw.undo_stack, &mut fw.redo_stack, &fw.buffer);
                     fw.dirty = true;
                 }
                 ui.add_space(4.0);
@@ -1166,12 +1151,17 @@ impl BijiApp {
 
     /// 菜单栏（对位原客户端 文件/编辑/查看/笔记/格式/工具/帮助 一行）。
     fn draw_menubar(&mut self, ctx: &egui::Context) {
-        let menu_text = |s: &str| egui::RichText::new(s).size(13.0).color(theme::pal().text);
+        // 菜单文字用中性灰（对位原客户端菜单栏实测 #4F4F4F），上下加高到 ~40px
+        let menu_text = |s: &str| {
+            egui::RichText::new(s)
+                .size(13.0)
+                .color(theme::pal().menu_text)
+        };
         egui::TopBottomPanel::top("menubar")
             .frame(
                 egui::Frame::default()
                     .fill(theme::pal().white)
-                    .inner_margin(egui::Margin::symmetric(8.0, 2.0)),
+                    .inner_margin(egui::Margin::symmetric(8.0, 9.0)),
             )
             .show(ctx, |ui| {
                 // 菜单按钮扁平化：静态纯文字，hover 才显灰底（对位原生菜单栏）
@@ -1432,8 +1422,7 @@ impl BijiApp {
             let w = img.width as u32;
             let h = img.height as u32;
             // RGBA → PNG
-            let rgba =
-                image::RgbaImage::from_raw(w, h, img.bytes.into()).unwrap_or_default();
+            let rgba = image::RgbaImage::from_raw(w, h, img.bytes.into()).unwrap_or_default();
             let dynimg = image::DynamicImage::ImageRgba8(rgba);
             let mut png = Vec::new();
             dynimg
@@ -1446,10 +1435,7 @@ impl BijiApp {
         };
         let mime = "image/png";
         let name = format!("粘贴图片_{w}x{h}.png");
-        let hash = format!(
-            "{:x}",
-            <sha2::Sha256 as sha2::Digest>::digest(&png)
-        );
+        let hash = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&png));
         let dup = self
             .service
             .store()
@@ -1460,11 +1446,7 @@ impl BijiApp {
             self.st.status = "该图片已在本笔记（重复粘贴跳过）".into();
             return;
         }
-        match self
-            .service
-            .store()
-            .add_resource(ed.uid, &name, mime, &png)
-        {
+        match self.service.store().add_resource(ed.uid, &name, mime, &png) {
             Ok(_) => {
                 let tag = format!("<en-media hash=\"{hash}\" type=\"{mime}\"/>");
                 if let Some(pos) = ed.content.rfind("</en-note>") {
@@ -1504,8 +1486,6 @@ impl BijiApp {
         let shortcut_notes = self.service.store().shortcut_notes();
         let mut action: Option<Selection> = None;
         let mut to_confirm_delete: Option<(i64, String)> = None;
-        let mut to_confirm_delete_tag: Option<(i64, String)> = None;
-        let mut rename_tag_req: Option<(i64, String)> = None;
         let mut drag_nb: Option<i64> = None;
         let mut stack_edit_req: Option<(i64, String)> = None;
         let mut open_note = Option::<i64>::None;
@@ -1514,7 +1494,7 @@ impl BijiApp {
 
         egui::SidePanel::left("sidebar")
             .resizable(false)
-            .default_width(190.0)
+            .default_width(236.0)
             .frame(
                 egui::Frame::default()
                     .fill(theme::pal().sidebar_bg)
@@ -1531,14 +1511,36 @@ impl BijiApp {
                     .inner_margin(egui::Margin::symmetric(10.0, 4.0));
                 let pill_inner = pill.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let plus = egui::Button::new(
-                            egui::RichText::new("＋").small().color(theme::pal().white),
-                        )
-                        .fill(theme::pal().green)
-                        .stroke(egui::Stroke::NONE)
-                        .rounding(11.0);
-                        ui.add_sized([22.0, 22.0], plus);
-                        ui.label(egui::RichText::new("新建笔记").color(theme::pal().text));
+                        let (cr, _r) =
+                            ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                        crate::icons::plus_circle(
+                            ui.painter(),
+                            cr,
+                            theme::pal().green,
+                            theme::pal().white,
+                        );
+                        ui.label(
+                            egui::RichText::new("新建笔记")
+                                .size(16.0)
+                                .strong()
+                                .color(theme::pal().text),
+                        );
+                        // 分隔线 + 网格钮（视觉对位；点击同样落新建）
+                        let (gr, gr_resp) =
+                            ui.allocate_exact_size(egui::vec2(30.0, 34.0), egui::Sense::click());
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(gr.min.x + 2.0, gr.min.y + 6.0),
+                                egui::pos2(gr.min.x + 2.0, gr.max.y - 6.0),
+                            ],
+                            egui::Stroke::new(1.0_f32, theme::pal().hairline),
+                        );
+                        crate::icons::cards(
+                            ui.painter(),
+                            gr.shrink2(egui::vec2(10.0, 11.0)),
+                            theme::pal().subtle,
+                        );
+                        let _ = gr_resp;
                     });
                 });
                 if ui
@@ -1551,13 +1553,60 @@ impl BijiApp {
                 {
                     self.create_note();
                 }
+                // 新建普通笔记（次级白底圆角钮，对位原客户端第二行）
+                let sub = egui::Frame::default()
+                    .fill(theme::pal().white)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
+                    .rounding(12.0)
+                    .inner_margin(egui::Margin::symmetric(10.0, 5.0));
+                let sub_inner = sub.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (ir, _r2) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        crate::icons::doc_plus(ui.painter(), ir, theme::pal().text);
+                        ui.label(egui::RichText::new("新建普通笔记").color(theme::pal().text));
+                    });
+                });
+                if ui
+                    .interact(
+                        sub_inner.response.rect,
+                        egui::Id::new("new-note-sub"),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+                {
+                    self.create_note();
+                }
+                // AI 助理行（对位原客户端紫色闪光入口；视觉占位）
+                ui.add_space(4.0);
+                let _ai =
+                    theme::nav_row_p(ui, ui.available_width(), "AI 助理", false, &|p, r, _| {
+                        crate::icons::sparkle(p, r, theme::pal().ai_purple)
+                    });
+                ui.add_space(4.0);
                 // 快捷方式分区（对位原客户端侧栏置顶笔记）：点击直达笔记
                 if !shortcut_notes.is_empty() {
-                    ui.add_space(6.0);
-                    theme::section_header(ui, "快捷方式", &mut self.st.show_shortcuts, false);
+                    let (sc_hdr, _scp) = theme::nav_row_chev(
+                        ui,
+                        ui.available_width(),
+                        Some(self.st.show_shortcuts),
+                        "快捷方式",
+                        false,
+                        &crate::icons::star,
+                        false,
+                    );
+                    if sc_hdr.clicked() {
+                        self.st.show_shortcuts = !self.st.show_shortcuts;
+                    }
                     if self.st.show_shortcuts {
                         for (uid, title) in &shortcut_notes {
-                            let row = theme::nav_row(ui, "📌", title, false);
+                            let row = theme::nav_row_p(
+                                ui,
+                                ui.available_width(),
+                                title,
+                                false,
+                                &crate::icons::doc,
+                            );
                             if row.clicked() {
                                 open_note = Some(*uid);
                             }
@@ -1570,27 +1619,8 @@ impl BijiApp {
                         }
                     }
                 }
-                // 侧栏过滤（对位原客户端侧栏搜索）：过滤笔记本与标签行
-                if !notebooks.is_empty() || !tags.is_empty() {
-                    let mut f = self.st.sidebar_filter.clone();
-                    let fr = ui.add(
-                        egui::TextEdit::singleline(&mut f)
-                            .hint_text("🔍 过滤侧栏…")
-                            .desired_width(ui.available_width())
-                            .id(egui::Id::new("sidebar-filter")),
-                    );
-                    if fr.changed() {
-                        self.st.sidebar_filter = f;
-                    }
-                    if !self.st.sidebar_filter.is_empty()
-                        && ui
-                            .small_button("✕")
-                            .on_hover_text("清除过滤")
-                            .clicked()
-                        {
-                            self.st.sidebar_filter.clear();
-                        }
-                }
+                // 侧栏过滤：原客户端无此控件，UI 不渲染；过滤状态与逻辑保留
+                // （headless 测试直驱 st.sidebar_filter 验证过滤语义）
                 let nb_visible: Vec<&biji_store::Notebook> = if self.st.sidebar_filter.is_empty() {
                     notebooks.iter().collect()
                 } else {
@@ -1607,13 +1637,34 @@ impl BijiApp {
                         .collect()
                 };
                 let all_sel = !self.st.trash_view && self.st.selection == Selection::All;
-                if theme::nav_row(ui, "📄", "全部笔记", all_sel).clicked() {
+                let (all_row, _ap) = theme::nav_row_chev(
+                    ui,
+                    ui.available_width(),
+                    Some(false),
+                    "全部笔记",
+                    all_sel,
+                    &crate::icons::doc,
+                    false,
+                );
+                if all_row.clicked() {
                     action = Some(Selection::All);
                     self.st.trash_view = false;
                 }
                 ui.add_space(10.0);
                 // 分区头：箭头 + 小节名 + 右侧新建（自绘行，标签与导航文字对齐）
-                if theme::section_header(ui, "笔记本", &mut self.st.show_notebooks, true) {
+                let (nb_hdr, nb_plus) = theme::nav_row_chev(
+                    ui,
+                    ui.available_width(),
+                    Some(self.st.show_notebooks),
+                    "笔记本",
+                    false,
+                    &crate::icons::book,
+                    true,
+                );
+                if nb_hdr.clicked() {
+                    self.st.show_notebooks = !self.st.show_notebooks;
+                }
+                if nb_plus {
                     open_new_nb = true;
                 }
                 if self.st.show_notebooks {
@@ -1643,19 +1694,22 @@ impl BijiApp {
                     // 栈头 + 缩进的栈内笔记本
                     let mut stack_req: Option<(i64, String)> = None;
                     for (stack_name, members) in &stacks {
-                        let open = self
-                            .st
-                            .stack_open
-                            .get(stack_name)
-                            .copied()
-                            .unwrap_or(true);
-                        let hdr = theme::section_header(
+                        let open = self.st.stack_open.get(stack_name).copied().unwrap_or(true);
+                        let open_flag =
+                            *self.st.stack_open.entry(stack_name.clone()).or_insert(true);
+                        let (s_hdr, _sp) = theme::nav_row_chev(
                             ui,
-                            &format!("🗂 {stack_name}"),
-                            self.st.stack_open.entry(stack_name.clone()).or_insert(true),
+                            ui.available_width(),
+                            Some(open_flag),
+                            stack_name,
+                            false,
+                            &crate::icons::book,
                             false,
                         );
-                        let _ = hdr;
+                        if s_hdr.clicked() {
+                            let e = self.st.stack_open.entry(stack_name.clone()).or_insert(true);
+                            *e = !*e;
+                        }
                         if !open {
                             continue;
                         }
@@ -1666,8 +1720,13 @@ impl BijiApp {
                                 let w = ui.available_width() - 58.0;
                                 let selected = !self.st.trash_view
                                     && self.st.selection == Selection::Notebook(nb.uid);
-                                let row =
-                                    theme::nav_row_sized(ui, w, "📓", &nb.name, selected);
+                                let row = theme::nav_row_p(
+                                    ui,
+                                    w,
+                                    &nb.name,
+                                    selected,
+                                    &crate::icons::book,
+                                );
                                 if row.clicked() {
                                     action = Some(Selection::Notebook(nb.uid));
                                     self.st.trash_view = false;
@@ -1701,7 +1760,10 @@ impl BijiApp {
                     }
                     // 栈头操作落地（栈内成员移出分组）
                     if let Some((uid, empty)) = stack_req.take() {
-                        if let Err(e) = self.service.store().set_notebook_stack(uid, if empty.is_empty() { None } else { Some(&empty) }) {
+                        if let Err(e) = self.service.store().set_notebook_stack(
+                            uid,
+                            if empty.is_empty() { None } else { Some(&empty) },
+                        ) {
                             self.st.status = format!("移出分组失败: {e}");
                         } else {
                             self.st.status = format!("已把 {} 移出分组", note_label(uid));
@@ -1716,7 +1778,8 @@ impl BijiApp {
                             let selected = !self.st.trash_view
                                 && self.st.selection == Selection::Notebook(nb.uid);
                             let w = ui.available_width() - 58.0;
-                            let row = theme::nav_row_sized(ui, w, "📓", &nb.name, selected);
+                            let row =
+                                theme::nav_row_p(ui, w, &nb.name, selected, &crate::icons::book);
                             if row.clicked() {
                                 action = Some(Selection::Notebook(nb.uid));
                                 self.st.trash_view = false;
@@ -1746,8 +1809,7 @@ impl BijiApp {
                                             if let Err(e) =
                                                 self.service.store().reorder_notebooks(&order)
                                             {
-                                                self.st.status =
-                                                    format!("排序保存失败: {e}");
+                                                self.st.status = format!("排序保存失败: {e}");
                                             } else {
                                                 self.st.status = format!(
                                                     "笔记本排序已调整（{} → 位 {}）",
@@ -1803,6 +1865,18 @@ impl BijiApp {
                     }
                 }
                 ui.add_space(10.0);
+                let (tag_hdr, _tp) = theme::nav_row_chev(
+                    ui,
+                    ui.available_width(),
+                    Some(self.st.show_tags),
+                    "标签",
+                    false,
+                    &crate::icons::tag,
+                    false,
+                );
+                if tag_hdr.clicked() {
+                    self.st.show_tags = !self.st.show_tags;
+                }
                 if self.st.show_tags {
                     if tag_visible.is_empty() && !self.st.sidebar_filter.is_empty() {
                         ui.label(
@@ -1840,37 +1914,40 @@ impl BijiApp {
                         // 过滤态下：自身或后代命中才渲染
                         let mut subtree_hit = is_visible(t.uid);
                         if !subtree_hit {
-                            let mut stack: Vec<i64> =
-                                tags.iter().filter(|c| c.parent_uid == Some(t.uid)).map(|c| c.uid).collect();
+                            let mut stack: Vec<i64> = tags
+                                .iter()
+                                .filter(|c| c.parent_uid == Some(t.uid))
+                                .map(|c| c.uid)
+                                .collect();
                             while let Some(c) = stack.pop() {
                                 if is_visible(c) {
                                     subtree_hit = true;
                                     break;
                                 }
                                 stack.extend(
-                                    tags.iter().filter(|g| g.parent_uid == Some(c)).map(|g| g.uid),
+                                    tags.iter()
+                                        .filter(|g| g.parent_uid == Some(c))
+                                        .map(|g| g.uid),
                                 );
                             }
                         }
                         if !subtree_hit {
                             return;
                         }
-                        let children: Vec<&biji_store::Tag> =
-                            tags.iter().filter(|c| c.parent_uid == Some(t.uid)).collect();
+                        let children: Vec<&biji_store::Tag> = tags
+                            .iter()
+                            .filter(|c| c.parent_uid == Some(t.uid))
+                            .collect();
                         ui.horizontal(|ui| {
                             ui.add_space(14.0 * depth as f32);
                             let _w = ui.available_width();
-                            let selected = !app.st.trash_view
-                                && app.st.selection == Selection::Tag(t.uid);
+                            let selected =
+                                !app.st.trash_view && app.st.selection == Selection::Tag(t.uid);
                             let label = if children.is_empty() {
                                 format!("{} ({})", t.name, t.note_count)
                             } else {
-                                let open = app
-                                    .st
-                                    .tag_tree_open
-                                    .get(&t.uid)
-                                    .copied()
-                                    .unwrap_or(true);
+                                let open =
+                                    app.st.tag_tree_open.get(&t.uid).copied().unwrap_or(true);
                                 format!(
                                     "{}{} ({})",
                                     if open { "▾ " } else { "▸ " },
@@ -1878,15 +1955,17 @@ impl BijiApp {
                                     t.note_count
                                 )
                             };
-                            let row = theme::nav_row(ui, "🏷", &label, selected);
+                            let row = theme::nav_row_p(
+                                ui,
+                                ui.available_width(),
+                                &label,
+                                selected,
+                                &crate::icons::tag,
+                            );
                             if row.clicked() {
                                 if !children.is_empty() {
-                                    let open = app
-                                        .st
-                                        .tag_tree_open
-                                        .get(&t.uid)
-                                        .copied()
-                                        .unwrap_or(true);
+                                    let open =
+                                        app.st.tag_tree_open.get(&t.uid).copied().unwrap_or(true);
                                     app.st.tag_tree_open.insert(t.uid, !open);
                                 }
                                 *action = Some(Selection::Tag(t.uid));
@@ -1901,11 +1980,9 @@ impl BijiApp {
                                     *parent_edit = Some((t.uid, t.name.clone(), String::new()));
                                     ui.close_menu();
                                 }
-                                if t.parent_uid.is_some() && ui.button("↩ 移出父标签").clicked() {
-                                    app.st.status = format!(
-                                        "已把标签「{}」移出父级",
-                                        t.name
-                                    );
+                                if t.parent_uid.is_some() && ui.button("↩ 移出父标签").clicked()
+                                {
+                                    app.st.status = format!("已把标签「{}」移出父级", t.name);
                                     let _ = &app.st.status;
                                     ui.close_menu();
                                     // 直接落地（record 通过 action 标记）
@@ -1913,7 +1990,8 @@ impl BijiApp {
                                 }
                                 if ui.button("🗑 删除标签").clicked() {
                                     // 复用既有确认（DeleteTag）
-                                    app.st.confirm = Some(Confirm::DeleteTag(t.uid, t.name.clone()));
+                                    app.st.confirm =
+                                        Some(Confirm::DeleteTag(t.uid, t.name.clone()));
                                     ui.close_menu();
                                 }
                             });
@@ -1922,7 +2000,14 @@ impl BijiApp {
                         if open {
                             for c in &children {
                                 render_tag_node(
-                                    ui, c, depth + 1, tags, visible, app, action, parent_edit,
+                                    ui,
+                                    c,
+                                    depth + 1,
+                                    tags,
+                                    visible,
+                                    app,
+                                    action,
+                                    parent_edit,
                                 );
                             }
                         }
@@ -1931,8 +2016,11 @@ impl BijiApp {
                         app.st.tag_tree_open.get(&uid).copied().unwrap_or(true)
                     }
                     let mut parent_edit_local: Option<(i64, String, String)> = None;
-                    let roots: Vec<&biji_store::Tag> =
-                        tag_visible.iter().filter(|t| t.parent_uid.is_none()).copied().collect();
+                    let roots: Vec<&biji_store::Tag> = tag_visible
+                        .iter()
+                        .filter(|t| t.parent_uid.is_none())
+                        .copied()
+                        .collect();
                     for t in &roots {
                         render_tag_node(
                             ui,
@@ -1950,22 +2038,21 @@ impl BijiApp {
                         .iter()
                         .filter(|t| {
                             t.parent_uid.is_some()
-                                && !tag_visible
-                                    .iter()
-                                    .any(|v| v.uid == t.parent_uid.unwrap())
+                                && !tag_visible.iter().any(|v| v.uid == t.parent_uid.unwrap())
                         })
                         .copied()
                         .collect();
                     for t in orphan_visible {
                         ui.horizontal(|ui| {
                             ui.add_space(14.0);
-                            let selected = !self.st.trash_view
-                                && self.st.selection == Selection::Tag(t.uid);
-                            let row = theme::nav_row(
+                            let selected =
+                                !self.st.trash_view && self.st.selection == Selection::Tag(t.uid);
+                            let row = theme::nav_row_p(
                                 ui,
-                                "🏷",
+                                ui.available_width(),
                                 &format!("{} ({})", t.name, t.note_count),
                                 selected,
+                                &crate::icons::tag,
                             );
                             if row.clicked() {
                                 action = Some(Selection::Tag(t.uid));
@@ -1990,37 +2077,17 @@ impl BijiApp {
                             action = None;
                         }
                     }
-                    // 旧平铺循环移除——上面树形渲染替代
-                    if false {
-                        for t in &tag_visible {
-                        let selected =
-                            !self.st.trash_view && self.st.selection == Selection::Tag(t.uid);
-                        let row = theme::nav_row(
-                            ui,
-                            "🏷",
-                            &format!("{} ({})", t.name, t.note_count),
-                            selected,
-                        );
-                        if row.clicked() {
-                            action = Some(Selection::Tag(t.uid));
-                            self.st.trash_view = false;
-                        }
-                        // 右键菜单（对位原客户端标签行）：重命名 / 删除
-                        row.context_menu(|ui| {
-                            if ui.button("✏️ 重命名标签").clicked() {
-                                rename_tag_req = Some((t.uid, t.name.clone()));
-                                ui.close_menu();
-                            }
-                            if ui.button("🗑 删除标签").clicked() {
-                                to_confirm_delete_tag = Some((t.uid, t.name.clone()));
-                                ui.close_menu();
-                            }
-                        });
-                    }
-                    }
                 }
                 ui.add_space(10.0);
-                if theme::nav_row(ui, "🏢", "企业空间", false).clicked() {
+                if theme::nav_row_p(
+                    ui,
+                    ui.available_width(),
+                    "企业空间",
+                    false,
+                    &crate::icons::corp,
+                )
+                .clicked()
+                {
                     self.st.groupspace = if self.st.groupspace.is_some() {
                         None
                     } else {
@@ -2033,7 +2100,15 @@ impl BijiApp {
                     };
                 }
                 ui.add_space(6.0);
-                if theme::nav_row(ui, "🗑", "回收站", self.st.trash_view).clicked() {
+                if theme::nav_row_p(
+                    ui,
+                    ui.available_width(),
+                    "回收站",
+                    self.st.trash_view,
+                    &crate::icons::trash,
+                )
+                .clicked()
+                {
                     self.st.trash_view = true;
                     action = Some(self.st.selection.clone());
                 }
@@ -2049,12 +2124,6 @@ impl BijiApp {
         }
         if let Some((uid, name)) = to_confirm_delete {
             self.st.confirm = Some(Confirm::DeleteNotebook(uid, name));
-        }
-        if let Some((uid, name)) = to_confirm_delete_tag {
-            self.st.confirm = Some(Confirm::DeleteTag(uid, name));
-        }
-        if let Some((uid, name)) = rename_tag_req {
-            self.st.rename_tag = Some((uid, name));
         }
         if let Some((uid, name)) = stack_edit_req {
             let cur = self
@@ -2086,7 +2155,7 @@ impl BijiApp {
     fn draw_note_list(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("note-list")
             .resizable(true)
-            .default_width(300.0)
+            .default_width(320.0)
             .show(ctx, |ui| {
                 // 来源下拉与右键菜单共用（全部/笔记本/标签）
                 let notebooks: Vec<(i64, String)> = self
@@ -2137,27 +2206,65 @@ impl BijiApp {
                     ui.ctx().memory_mut(|m| m.request_focus(search_id));
                 }
                 let mut search = self.st.search.clone();
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut search)
-                        .hint_text("搜索笔记 (Ctrl+F)")
-                        .id(search_id)
-                        .desired_width(ui.available_width()),
+                let pill = egui::Frame::default()
+                    .fill(theme::pal().extreme)
+                    .stroke(egui::Stroke::NONE)
+                    .rounding(16.0)
+                    .inner_margin(egui::Margin::symmetric(12.0, 6.0));
+                let pill_inner = pill.show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut search)
+                            .hint_text("搜索笔记 (Ctrl+F)")
+                            .frame(false)
+                            .id(search_id)
+                            .desired_width(ui.available_width() - 24.0),
+                    );
+                });
+                // 放大镜绘制在胶囊右缘（对位原客户端图标位置）
+                let pr = pill_inner.response.rect;
+                crate::icons::search(
+                    ui.painter(),
+                    egui::Rect::from_center_size(
+                        egui::pos2(pr.max.x - 14.0, pr.center().y),
+                        egui::vec2(14.0, 14.0),
+                    ),
+                    theme::pal().subtle,
                 );
-                if resp.changed() {
+                if pill_inner.response.changed() {
                     self.st.search = search;
                     self.refresh_rows();
                 }
-                ui.add_space(6.0);
-                // 标题行（对位原客户端：点击弹来源选择——全部笔记/各笔记本/各标签）
-                let src_btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(format!("{header} ▼"))
-                            .size(17.0)
-                            .strong()
-                            .color(theme::pal().text),
-                    )
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::NONE),
+                ui.add_space(8.0);
+                // 标题行（对位原客户端：19px 标题 + 小▾，点击弹来源选择——
+                // 全部笔记/各笔记本/各标签）
+                let title_galley = ui.painter().layout_no_wrap(
+                    header.clone(),
+                    egui::FontId::new(19.0, egui::FontFamily::Proportional),
+                    theme::pal().text,
+                );
+                let title_w = title_galley.size().x + 22.0;
+                let (title_rect, src_btn) =
+                    ui.allocate_exact_size(egui::vec2(title_w, 30.0), egui::Sense::click());
+                if src_btn.hovered() {
+                    ui.painter()
+                        .rect_filled(title_rect, 8.0, theme::pal().hovered);
+                }
+                ui.painter().galley(
+                    egui::pos2(
+                        title_rect.min.x,
+                        title_rect.center().y - title_galley.size().y * 0.5,
+                    ),
+                    title_galley,
+                    theme::pal().text,
+                );
+                crate::icons::chevron(
+                    ui.painter(),
+                    egui::Rect::from_center_size(
+                        egui::pos2(title_rect.max.x - 10.0, title_rect.center().y),
+                        egui::vec2(10.0, 10.0),
+                    ),
+                    theme::pal().subtle,
+                    true,
                 );
                 let mut pick: Option<Selection> = None;
                 let source_id = egui::Id::new("source-menu");
@@ -2199,8 +2306,9 @@ impl BijiApp {
                     self.refresh_rows();
                 }
                 ui.add_space(2.0);
-                // 列表头控件行（对位原客户端：条数 + 排序下拉 + 方向 + 视图切换）
+                // 列表头控件行（对位原客户端：条数 + 排序/视图/标签/⋯ 图标钮）
                 let mut resort = false;
+                let mut tag_pick: Option<Selection> = None;
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!("{}条笔记", self.st.rows.len()))
@@ -2208,42 +2316,122 @@ impl BijiApp {
                             .color(theme::pal().subtle),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .selectable_label(self.st.list_compact, "☰")
-                            .on_hover_text(if self.st.list_compact {
+                        // ⋯ 更多：方向 + 视图
+                        let more = crate::icons::icon_btn(ui, 24.0, "更多", &crate::icons::dots);
+                        egui::popup_below_widget(
+                            ui,
+                            egui::Id::new("more-menu"),
+                            &more,
+                            egui::PopupCloseBehavior::CloseOnClick,
+                            |ui| {
+                                let dir = if self.st.sort_asc {
+                                    "↓ 降序"
+                                } else {
+                                    "↑ 升序"
+                                };
+                                if ui.button(dir).clicked() {
+                                    self.st.sort_asc = !self.st.sort_asc;
+                                    resort = true;
+                                    ui.close_menu();
+                                }
+                                let view = if self.st.list_compact {
+                                    "🖼 卡片视图"
+                                } else {
+                                    "☰ 紧凑列表"
+                                };
+                                if ui.button(view).clicked() {
+                                    self.st.list_compact = !self.st.list_compact;
+                                    resort = true;
+                                    ui.close_menu();
+                                }
+                            },
+                        );
+                        // 标签筛选（弹层列各标签）
+                        let tag_btn =
+                            crate::icons::icon_btn(ui, 24.0, "按标签筛选", &crate::icons::tag);
+                        egui::popup_below_widget(
+                            ui,
+                            egui::Id::new("tag-filter-menu"),
+                            &tag_btn,
+                            egui::PopupCloseBehavior::CloseOnClick,
+                            |ui| {
+                                for (uid, name) in &tags {
+                                    if ui.button(format!("🏷 {name}")).clicked() {
+                                        tag_pick = Some(Selection::Tag(*uid));
+                                        ui.close_menu();
+                                    }
+                                }
+                            },
+                        );
+                        // 视图切换
+                        if crate::icons::icon_btn(
+                            ui,
+                            24.0,
+                            if self.st.list_compact {
                                 "切换到卡片视图"
                             } else {
                                 "切换到紧凑列表"
-                            })
-                            .clicked()
+                            },
+                            if self.st.list_compact {
+                                &crate::icons::cards
+                            } else {
+                                &crate::icons::list
+                            },
+                        )
+                        .clicked()
                         {
                             self.st.list_compact = !self.st.list_compact;
                             resort = true;
                         }
-                        let dir = if self.st.sort_asc { "↑ 升序" } else { "↓ 降序" };
-                        if ui
-                            .selectable_label(false, egui::RichText::new(dir).small())
-                            .on_hover_text("切换排序方向")
-                            .clicked()
-                        {
-                            self.st.sort_asc = !self.st.sort_asc;
-                            resort = true;
-                        }
-                        let mut sort = self.st.list_sort;
-                        egui::ComboBox::from_id_salt("list-sort")
-                            .selected_text(sort.label())
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut sort, ListSort::Updated, "更新时间");
-                                ui.selectable_value(&mut sort, ListSort::Created, "创建时间");
-                                ui.selectable_value(&mut sort, ListSort::Title, "标题");
-                            });
-                        if sort != self.st.list_sort {
-                            self.st.list_sort = sort;
-                            resort = true;
-                        }
+                        // 排序弹层（对位原客户端排序钮）
+                        let sort_btn =
+                            crate::icons::icon_btn(ui, 24.0, "排序", &crate::icons::sort);
+                        egui::popup_below_widget(
+                            ui,
+                            egui::Id::new("sort-menu"),
+                            &sort_btn,
+                            egui::PopupCloseBehavior::CloseOnClick,
+                            |ui| {
+                                let mut sort = self.st.list_sort;
+                                if ui
+                                    .selectable_label(sort == ListSort::Updated, "更新时间")
+                                    .clicked()
+                                {
+                                    sort = ListSort::Updated;
+                                    resort = true;
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .selectable_label(sort == ListSort::Created, "创建时间")
+                                    .clicked()
+                                {
+                                    sort = ListSort::Created;
+                                    resort = true;
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .selectable_label(sort == ListSort::Title, "标题")
+                                    .clicked()
+                                {
+                                    sort = ListSort::Title;
+                                    resort = true;
+                                    ui.close_menu();
+                                }
+                                if sort != self.st.list_sort {
+                                    self.st.list_sort = sort;
+                                }
+                            },
+                        );
                     });
                 });
                 if resort {
+                    self.refresh_rows();
+                }
+                if let Some(sel) = tag_pick {
+                    self.st.selection = sel;
+                    self.st.trash_view = false;
+                    self.st.selected_note = None;
+                    self.st.search.clear();
                     self.refresh_rows();
                 }
                 ui.add_space(2.0);
@@ -2251,12 +2439,8 @@ impl BijiApp {
                 let mut shortcut_req: Option<i64> = None;
                 let mut float_req: Option<i64> = None;
                 let mut move_req: Option<(i64, Option<i64>)> = None;
-                let pinned: std::collections::HashSet<i64> = self
-                    .service
-                    .store()
-                    .shortcuts()
-                    .into_iter()
-                    .collect();
+                let pinned: std::collections::HashSet<i64> =
+                    self.service.store().shortcuts().into_iter().collect();
                 // 多选态批量操作条（面板底部固定，对位原客户端批量操作栏）
                 let mut batch_trash = false;
                 let mut batch_move: Option<Option<i64>> = None;
@@ -2316,7 +2500,8 @@ impl BijiApp {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // 无限滚动：只渲染可见窗口内的卡片，滚动到底自动扩展
                     let total = self.st.rows.len();
-                    let rows: Vec<ListRow> = self.st
+                    let rows: Vec<ListRow> = self
+                        .st
                         .rows
                         .iter()
                         .take(self.st.list_limit)
@@ -2379,9 +2564,7 @@ impl BijiApp {
                                         }
                                     }
                                     if ui.small_button("彻底删除").clicked() {
-                                        if let Err(e) =
-                                            self.service.store().expunge_note(row.uid)
-                                        {
+                                        if let Err(e) = self.service.store().expunge_note(row.uid) {
                                             self.st.status = format!("删除失败: {e}");
                                         } else {
                                             self.st.status = format!(
@@ -2423,7 +2606,7 @@ impl BijiApp {
                             } else {
                                 theme::pal().white
                             })
-                            .rounding(8.0)
+                            .rounding(12.0)
                             .stroke(egui::Stroke::new(
                                 if selected { 2.0_f32 } else { 1.0_f32 },
                                 if selected {
@@ -2432,12 +2615,12 @@ impl BijiApp {
                                     theme::pal().hairline
                                 },
                             ))
-                            .inner_margin(egui::Margin::same(10.0));
+                            .inner_margin(egui::Margin::same(12.0));
                         let inner = frame.show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             ui.label(
                                 egui::RichText::new(&row.title)
-                                    .size(15.0)
+                                    .size(16.0)
                                     .strong()
                                     .color(theme::pal().text),
                             );
@@ -2459,11 +2642,16 @@ impl BijiApp {
                                 ui.label(
                                     egui::RichText::new(util::fmt_date(row.date))
                                         .small()
-                                        .color(theme::pal().green),
+                                        .color(theme::pal().date_blue),
                                 );
                                 if let Some(tags) = &row.tags {
+                                    let (tr, _tr2) = ui.allocate_exact_size(
+                                        egui::vec2(11.0, 11.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    crate::icons::tag(ui.painter(), tr, theme::pal().subtle);
                                     ui.label(
-                                        egui::RichText::new(format!("🏷 {tags}"))
+                                        egui::RichText::new(tags.clone())
                                             .small()
                                             .color(theme::pal().subtle),
                                     );
@@ -2562,8 +2750,7 @@ impl BijiApp {
                 if let Some(uid) = shortcut_req {
                     match self.service.store().toggle_shortcut(uid) {
                         Ok(true) => {
-                            self.st.status =
-                                format!("已把 {} 加入快捷方式", note_label(uid));
+                            self.st.status = format!("已把 {} 加入快捷方式", note_label(uid));
                         }
                         Ok(false) => {
                             self.st.status = format!("已取消 {} 的快捷方式", note_label(uid));
@@ -2681,8 +2868,7 @@ impl BijiApp {
                             }
                             ed.dirty = true;
                             ed.last_edit = Some(Instant::now());
-                            self.st.status =
-                                format!("已导入附件 {name}（{}B）", bytes.len());
+                            self.st.status = format!("已导入附件 {name}（{}B）", bytes.len());
                         }
                         Err(e) => self.st.status = format!("导入附件失败: {e}"),
                     }
@@ -2704,6 +2890,8 @@ impl BijiApp {
             DetachTag(i64),
             /// 切换共享状态（元信息行入口）。
             ToggleShared,
+            /// 导出当前笔记为 PDF（⋯ 菜单入口）。
+            ExportPdf,
         }
         let (action, uid, info_req, find_action, open_link) = {
             let Some(ed) = self.st.editor.as_mut() else {
@@ -2732,16 +2920,31 @@ impl BijiApp {
                                     nbs.into_iter().find(|n| n.uid == nb_uid).map(|n| n.name)
                                 });
                             if let Some(name) = nb_name {
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new(format!("📓 {name}"))
+                                // 笔记本 chip：书本图标 + 名称（自绘圆角胶囊）
+                                let chip = egui::Frame::default()
+                                    .fill(theme::pal().bg)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
+                                    .rounding(12.0)
+                                    .inner_margin(egui::Margin::symmetric(8.0, 3.0));
+                                let chip_inner = chip.show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let (ic, _icr) = ui.allocate_exact_size(
+                                            egui::vec2(12.0, 12.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        crate::icons::book(ui.painter(), ic, theme::pal().subtle);
+                                        ui.label(
+                                            egui::RichText::new(name.clone())
                                                 .small()
                                                 .color(theme::pal().text),
-                                        )
-                                        .fill(theme::pal().bg)
-                                        .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
-                                        .rounding(12.0),
+                                        );
+                                    });
+                                });
+                                if ui
+                                    .interact(
+                                        chip_inner.response.rect,
+                                        egui::Id::new("nb-chip"),
+                                        egui::Sense::click(),
                                     )
                                     .on_hover_text("在侧栏打开该笔记本")
                                     .clicked()
@@ -2755,31 +2958,59 @@ impl BijiApp {
                                 .small()
                                 .color(theme::pal().subtle),
                         );
-                        if ui
-                            .small_button("ℹ")
-                            .on_hover_text("笔记信息")
+                        if crate::icons::icon_btn(ui, 20.0, "笔记信息", &crate::icons::info)
                             .clicked()
                         {
                             show_info = true;
                         }
                         if full.note.is_shared {
+                            let (gr, _gr2) = ui
+                                .allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                            crate::icons::globe(ui.painter(), gr, theme::pal().green_dark);
                             ui.label(
-                                egui::RichText::new("🌐 已共享")
+                                egui::RichText::new("已共享")
                                     .small()
                                     .color(theme::pal().green_dark),
                             );
                         }
-                        if ui
-                            .small_button(if full.note.is_shared {
-                                "取消共享"
+                        if crate::icons::chrome_btn(
+                            ui,
+                            24.0,
+                            if full.note.is_shared {
+                                "取消共享（计入待同步）"
                             } else {
-                                "共享"
-                            })
-                            .on_hover_text("切换共享状态（计入待同步）")
-                            .clicked()
+                                "共享（计入待同步）"
+                            },
+                            &crate::icons::person_plus,
+                        )
+                        .clicked()
                         {
                             action = Action::ToggleShared;
                         }
+                    });
+                    // AI 助理行（对位原客户端编辑器顶部 AI 入口；视觉占位）
+                    ui.horizontal(|ui| {
+                        let (sr, _sr2) =
+                            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                        crate::icons::sparkle(ui.painter(), sr, theme::pal().ai_purple);
+                        ui.label(
+                            egui::RichText::new("AI 助理")
+                                .small()
+                                .color(theme::pal().ai_purple),
+                        );
+                        let box_f = egui::Frame::default()
+                            .fill(theme::pal().extreme)
+                            .stroke(egui::Stroke::NONE)
+                            .rounding(8.0)
+                            .inner_margin(egui::Margin::symmetric(8.0, 3.0));
+                        box_f.show(ui, |ui| {
+                            ui.set_min_width(220.0);
+                            ui.label(
+                                egui::RichText::new("向 AI 提问…")
+                                    .small()
+                                    .color(theme::pal().subtle),
+                            );
+                        });
                     });
                 }
             }
@@ -2845,7 +3076,15 @@ impl BijiApp {
             }
             ui.add_space(2.0);
 
-            // 工具行（只改 ed 状态与动作标记，不触碰 self 其余部分）
+            // 工具行（对位原客户端：保存 pill + 版本 pill + 灰底圆角图标钮；
+            // 编辑/预览/删除/放映收进 ⋯ 菜单；只改 ed 状态与动作标记）
+            let full_note_shared = self
+                .service
+                .store()
+                .get_note(ed.uid)
+                .ok()
+                .map(|f| f.note.is_shared)
+                .unwrap_or(false);
             ui.horizontal(|ui| {
                 if ed.dirty {
                     if ui
@@ -2861,39 +3100,93 @@ impl BijiApp {
                         action = Action::Save;
                     }
                 } else {
-                    ui.label(egui::RichText::new("已保存").small().color(theme::pal().subtle));
+                    ui.label(
+                        egui::RichText::new("已保存")
+                            .small()
+                            .color(theme::pal().subtle),
+                    );
                 }
-                ui.separator();
-                if ui.selectable_label(!ed.preview, "✏️ 编辑").clicked() {
-                    ed.preview = false;
-                }
-                if ui.selectable_label(ed.preview, "👁 预览").clicked() {
-                    if ed.dirty {
-                        action = Action::Save;
-                    }
-                    ed.preview = true;
-                }
-                ui.separator();
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("🗑 删除").color(theme::pal().subtle))
-                            .fill(theme::pal().bg)
-                            .stroke(egui::Stroke::NONE),
-                    )
+                // 版本 pill（绿字浅绿底；视觉对位，暂为入口占位）
+                let ver = egui::Frame::default()
+                    .fill(theme::pal().green_tint)
+                    .stroke(egui::Stroke::NONE)
+                    .rounding(10.0)
+                    .inner_margin(egui::Margin::symmetric(8.0, 3.0));
+                let ver_inner = ver.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (vr, _vr2) =
+                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        crate::icons::clock(ui.painter(), vr, theme::pal().green_dark);
+                        ui.label(
+                            egui::RichText::new("版本")
+                                .small()
+                                .color(theme::pal().green_dark),
+                        );
+                    });
+                });
+                ui.interact(
+                    ver_inner.response.rect,
+                    egui::Id::new("version-pill"),
+                    egui::Sense::hover(),
+                )
+                .on_hover_text("历史版本");
+                // 附件提示（拖入文件添加；附件条在下方展示）
+                if crate::icons::icon_btn(ui, 24.0, "拖入文件以添加附件", &crate::icons::clip)
                     .clicked()
                 {
-                    action = Action::Trash;
+                    self.st.status = "把文件拖入笔记正文区即可添加附件".into();
                 }
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("▶ 放映本篇").color(theme::pal().subtle))
-                            .fill(theme::pal().bg)
-                            .stroke(egui::Stroke::NONE),
-                    )
-                    .clicked()
+                // 共享（灰底圆角钮，对位原客户端分享钮）
+                if crate::icons::chrome_btn(
+                    ui,
+                    24.0,
+                    if full_note_shared {
+                        "取消共享"
+                    } else {
+                        "共享"
+                    },
+                    &crate::icons::share,
+                )
+                .clicked()
                 {
-                    action = Action::Present;
+                    action = Action::ToggleShared;
                 }
+                // ⋯ 更多：编辑/预览/放映/导出/删除
+                let more = crate::icons::chrome_btn(ui, 24.0, "更多操作", &crate::icons::dots);
+                egui::popup_below_widget(
+                    ui,
+                    egui::Id::new("editor-more-menu"),
+                    &more,
+                    egui::PopupCloseBehavior::CloseOnClick,
+                    |ui| {
+                        if ui
+                            .button(if ed.preview {
+                                "✏️ 编辑模式"
+                            } else {
+                                "👁 预览模式"
+                            })
+                            .clicked()
+                        {
+                            if ed.preview && ed.dirty {
+                                action = Action::Save;
+                            }
+                            ed.preview = !ed.preview;
+                            ui.close_menu();
+                        }
+                        if ui.button("▶ 放映本篇").clicked() {
+                            action = Action::Present;
+                            ui.close_menu();
+                        }
+                        if ui.button("🖨 导出 PDF").clicked() {
+                            action = Action::ExportPdf;
+                            ui.close_menu();
+                        }
+                        if ui.button("🗑 移入回收站").clicked() {
+                            action = Action::Trash;
+                            ui.close_menu();
+                        }
+                    },
+                );
             });
             ui.separator();
 
@@ -2997,7 +3290,8 @@ impl BijiApp {
                                 if attached.iter().any(|(u, _)| *u == t.uid) {
                                     continue;
                                 }
-                                if !needle.is_empty() && !t.name.to_lowercase().starts_with(&needle) {
+                                if !needle.is_empty() && !t.name.to_lowercase().starts_with(&needle)
+                                {
                                     continue;
                                 }
                                 any = true;
@@ -3013,7 +3307,8 @@ impl BijiApp {
                                     .button(format!("＋ 新建「{}」", self.st.tag_filter))
                                     .clicked()
                                 {
-                                    match self.service.store().create_tag(&self.st.tag_filter, None) {
+                                    match self.service.store().create_tag(&self.st.tag_filter, None)
+                                    {
                                         Ok(new_uid) => action = Action::AttachTag(new_uid),
                                         Err(e) => self.st.status = format!("新建标签失败: {e}"),
                                     }
@@ -3044,7 +3339,9 @@ impl BijiApp {
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            egui::RichText::new("✕").small().color(theme::pal().subtle),
+                                            egui::RichText::new("✕")
+                                                .small()
+                                                .color(theme::pal().subtle),
                                         )
                                         .fill(theme::pal().white)
                                         .stroke(egui::Stroke::NONE),
@@ -3117,16 +3414,13 @@ impl BijiApp {
                     if let Some(doc) = parsed.as_ref() {
                         let mut doc_mut = doc.clone();
                         if blk < doc_mut.root.children.len() {
-                            if let biji_enml::Node::Element(el) =
-                                &mut doc_mut.root.children[blk]
-                            {
+                            if let biji_enml::Node::Element(el) = &mut doc_mut.root.children[blk] {
                                 if preview::set_table_cell(el, r, c, &text) {
                                     doc_mut.sanitize();
                                     ed.content = doc_mut.to_xml();
                                     ed.dirty = true;
                                     ed.last_edit = Some(Instant::now());
-                                    self.st.status =
-                                        format!("表格[{r}][{c}] 已就地编辑");
+                                    self.st.status = format!("表格[{r}][{c}] 已就地编辑");
                                 }
                             }
                         }
@@ -3137,9 +3431,7 @@ impl BijiApp {
                     if let Some(doc) = parsed.as_ref() {
                         let mut doc_mut = doc.clone();
                         if blk < doc_mut.root.children.len() {
-                            if let biji_enml::Node::Element(el) =
-                                &mut doc_mut.root.children[blk]
-                            {
+                            if let biji_enml::Node::Element(el) = &mut doc_mut.root.children[blk] {
                                 if preview::apply_table_op(el, op) {
                                     doc_mut.sanitize();
                                     ed.content = doc_mut.to_xml();
@@ -3202,7 +3494,12 @@ impl BijiApp {
                     ("I", "斜体", "<i>", "</i>"),
                     ("U", "下划线", "<u>", "</u>"),
                     ("S̶", "删除线", "<s>", "</s>"),
-                    ("🖍", "高亮", "<span style=\"background-color:#ffd54f\">", "</span>"),
+                    (
+                        "🖍",
+                        "高亮",
+                        "<span style=\"background-color:#ffd54f\">",
+                        "</span>",
+                    ),
                     ("H₁", "一级标题", "<h1>", "</h1>"),
                     ("H₂", "二级标题", "<h2>", "</h2>"),
                     ("⟨⟩", "行内代码", "<code>", "</code>"),
@@ -3216,8 +3513,12 @@ impl BijiApp {
                 ui.horizontal(|ui| {
                     for (icon, tip, open, close) in FORMATS {
                         if ui.small_button(*icon).on_hover_text(*tip).clicked() {
-                            let (newc, newr) =
-                                util::wrap_enml_around_selection(&ed.content, selection, open, close);
+                            let (newc, newr) = util::wrap_enml_around_selection(
+                                &ed.content,
+                                selection,
+                                open,
+                                close,
+                            );
                             ed.content = newc;
                             ed.dirty = true;
                             ed.last_edit = Some(Instant::now());
@@ -3228,13 +3529,13 @@ impl BijiApp {
                         }
                     }
                     ui.separator();
-                    if ui
-                        .small_button("☑")
-                        .on_hover_text("待办清单")
-                        .clicked()
-                    {
-                        let (newc, newr) =
-                            util::wrap_enml_around_selection(&ed.content, selection, "<en-todo/>", "");
+                    if ui.small_button("☑").on_hover_text("待办清单").clicked() {
+                        let (newc, newr) = util::wrap_enml_around_selection(
+                            &ed.content,
+                            selection,
+                            "<en-todo/>",
+                            "",
+                        );
                         ed.content = newc;
                         ed.dirty = true;
                         ed.last_edit = Some(Instant::now());
@@ -3243,11 +3544,7 @@ impl BijiApp {
                             egui::TextEdit::store_state(ui.ctx(), editor_id, st);
                         }
                     }
-                    if ui
-                        .small_button("🔗")
-                        .on_hover_text("插入链接")
-                        .clicked()
-                    {
+                    if ui.small_button("🔗").on_hover_text("插入链接").clicked() {
                         let (newc, newr) = util::wrap_enml_around_selection(
                             &ed.content,
                             selection,
@@ -3293,11 +3590,9 @@ impl BijiApp {
                 let (cjk, non_ws, words) = Self::count_stats(&ed.content);
                 ui.separator();
                 ui.label(
-                    egui::RichText::new(format!(
-                        "字 {cjk} · 词 {words} · 字符 {non_ws}"
-                    ))
-                    .small()
-                    .color(theme::pal().subtle),
+                    egui::RichText::new(format!("字 {cjk} · 词 {words} · 字符 {non_ws}"))
+                        .small()
+                        .color(theme::pal().subtle),
                 )
                 .on_hover_text("中文按字、西文连续字母数字按词统计（ENML 剥离标签后的纯文本）");
             }
@@ -3311,7 +3606,13 @@ impl BijiApp {
                 }
             }
 
-            (action, uid, show_info.then_some(ed.uid), find_action, open_link)
+            (
+                action,
+                uid,
+                show_info.then_some(ed.uid),
+                find_action,
+                open_link,
+            )
         };
         if let Some(u) = info_req {
             self.st.note_info = Some(u);
@@ -3329,8 +3630,12 @@ impl BijiApp {
         if let Some(fa) = find_action {
             match fa {
                 FindAction::Next => {
-                    let Some(fs) = self.st.find.as_mut() else { return };
-                    let Some(ed) = self.st.editor.as_ref() else { return };
+                    let Some(fs) = self.st.find.as_mut() else {
+                        return;
+                    };
+                    let Some(ed) = self.st.editor.as_ref() else {
+                        return;
+                    };
                     let hits = Self::find_hits(&ed.content, &fs.query);
                     if hits.is_empty() {
                         fs.hit = 0;
@@ -3342,8 +3647,8 @@ impl BijiApp {
                             let start = ed.content[..off].chars().count();
                             let len = fs.query.chars().count();
                             let id = egui::Id::new("enml-source");
-                            let mut ts = egui::TextEdit::load_state(ui.ctx(), id)
-                                .unwrap_or_default();
+                            let mut ts =
+                                egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
                             ts.cursor.set_char_range(Some(egui::text::CCursorRange::two(
                                 egui::text::CCursor::new(start),
                                 egui::text::CCursor::new(start + len),
@@ -3353,8 +3658,12 @@ impl BijiApp {
                     }
                 }
                 FindAction::ReplaceOne => {
-                    let Some(fs) = self.st.find.clone() else { return };
-                    let Some(ed) = self.st.editor.as_mut() else { return };
+                    let Some(fs) = self.st.find.clone() else {
+                        return;
+                    };
+                    let Some(ed) = self.st.editor.as_mut() else {
+                        return;
+                    };
                     let hits = Self::find_hits(&ed.content, &fs.query);
                     if let Some(&off) = hits.get(fs.hit) {
                         let end = off + fs.query.len();
@@ -3367,8 +3676,12 @@ impl BijiApp {
                     }
                 }
                 FindAction::ReplaceAll => {
-                    let Some(fs) = self.st.find.clone() else { return };
-                    let Some(ed) = self.st.editor.as_mut() else { return };
+                    let Some(fs) = self.st.find.clone() else {
+                        return;
+                    };
+                    let Some(ed) = self.st.editor.as_mut() else {
+                        return;
+                    };
                     let (newc, n) = Self::replace_all(&ed.content, &fs.query, &fs.replace);
                     if n > 0 {
                         ed.content = newc;
@@ -3392,6 +3705,7 @@ impl BijiApp {
                     self.refresh_rows();
                 }
             }
+            Action::ExportPdf => self.export_pdf(),
             Action::Present => {
                 let cmd = NodeWebkitCommand::Present {
                     note_ids: vec![uid],
@@ -4165,13 +4479,9 @@ impl BijiApp {
                                 .note
                                 .notebook_uid
                                 .and_then(|n| {
-                                    self.service
-                                        .store()
-                                        .list_notebooks()
-                                        .ok()
-                                        .and_then(|nbs| {
-                                            nbs.into_iter().find(|x| x.uid == n).map(|x| x.name)
-                                        })
+                                    self.service.store().list_notebooks().ok().and_then(|nbs| {
+                                        nbs.into_iter().find(|x| x.uid == n).map(|x| x.name)
+                                    })
                                 })
                                 .unwrap_or_else(|| "（无）".into());
                             egui::Grid::new("note-info-grid")
@@ -4188,16 +4498,24 @@ impl BijiApp {
                                     );
                                     ui.label(util::fmt_epoch(full.note.date_updated));
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("字数").color(theme::pal().subtle));
+                                    ui.label(
+                                        egui::RichText::new("字数").color(theme::pal().subtle),
+                                    );
                                     ui.label(format!("{words} 字"));
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("笔记本").color(theme::pal().subtle));
+                                    ui.label(
+                                        egui::RichText::new("笔记本").color(theme::pal().subtle),
+                                    );
                                     ui.label(nb_name);
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("标签").color(theme::pal().subtle));
+                                    ui.label(
+                                        egui::RichText::new("标签").color(theme::pal().subtle),
+                                    );
                                     ui.label(full.note.tags_text.unwrap_or_else(|| "—".into()));
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("共享").color(theme::pal().subtle));
+                                    ui.label(
+                                        egui::RichText::new("共享").color(theme::pal().subtle),
+                                    );
                                     ui.label(if full.note.is_shared {
                                         "🌐 已共享"
                                     } else {
@@ -4207,7 +4525,9 @@ impl BijiApp {
                                     if let Some(url) =
                                         full.note.source_url.as_deref().filter(|s| !s.is_empty())
                                     {
-                                        ui.label(egui::RichText::new("来源").color(theme::pal().subtle));
+                                        ui.label(
+                                            egui::RichText::new("来源").color(theme::pal().subtle),
+                                        );
                                         ui.label(url.to_string());
                                         ui.end_row();
                                     }
@@ -4239,8 +4559,7 @@ impl BijiApp {
                     ui.horizontal(|ui| {
                         ui.label("名称:");
                         let resp = ui.add(
-                            egui::TextEdit::singleline(buf)
-                                .desired_width(ui.available_width()),
+                            egui::TextEdit::singleline(buf).desired_width(ui.available_width()),
                         );
                         if !resp.has_focus() && ui.rect_contains_pointer(ui.max_rect()) {
                             resp.request_focus();
@@ -4289,8 +4608,7 @@ impl BijiApp {
                     ui.horizontal(|ui| {
                         ui.label("名称:");
                         let resp = ui.add(
-                            egui::TextEdit::singleline(buf)
-                                .desired_width(ui.available_width()),
+                            egui::TextEdit::singleline(buf).desired_width(ui.available_width()),
                         );
                         if !resp.has_focus() && ui.rect_contains_pointer(ui.max_rect()) {
                             resp.request_focus();
@@ -4386,7 +4704,9 @@ impl BijiApp {
                     let Some((uid, name, buf)) = self.st.tag_parent_edit.as_mut() else {
                         return;
                     };
-                    ui.label(format!("把「{name}」挂到父标签（按名称匹配，留空 = 移出）："));
+                    ui.label(format!(
+                        "把「{name}」挂到父标签（按名称匹配，留空 = 移出）："
+                    ));
                     ui.add(
                         egui::TextEdit::singleline(buf)
                             .hint_text("父标签名")
@@ -4429,8 +4749,9 @@ impl BijiApp {
                                             format!("已把「{name}」设为「{needle}」的子标签")
                                     }
                                     Err(_) => {
-                                        self.st.status =
-                                            format!("设置失败（成环或不存在的标签）: {name} → {needle}")
+                                        self.st.status = format!(
+                                            "设置失败（成环或不存在的标签）: {name} → {needle}"
+                                        )
                                     }
                                 }
                             }
@@ -4721,7 +5042,10 @@ mod util {
         // two(min, max)：primary 收 max（闭合标签后），secondary 收 min（开标签后）
         (
             out,
-            CCursorRange::two(CCursor::new(start + open.chars().count()), CCursor::new(inner_end)),
+            CCursorRange::two(
+                CCursor::new(start + open.chars().count()),
+                CCursor::new(inner_end),
+            ),
         )
     }
 
@@ -4787,7 +5111,10 @@ mod util {
             // 完整文档：插到 </en-note> 前（保持合法 ENML，不被 sanitize 清空）
             let doc = "<?xml version=\"1.0\"?><en-note><p>a</p></en-note>";
             let (out2, _) = wrap_enml_around_selection(doc, None, "<hr/>", "");
-            assert_eq!(out2, "<?xml version=\"1.0\"?><en-note><p>a</p><hr/></en-note>");
+            assert_eq!(
+                out2,
+                "<?xml version=\"1.0\"?><en-note><p>a</p><hr/></en-note>"
+            );
         }
 
         #[test]
@@ -4838,16 +5165,29 @@ mod tests {
             shared: false,
             tags: None,
         };
-        let mut rows = vec![mk(1, "B", 3.0, 1.0), mk(2, "A", 1.0, 3.0), mk(3, "C", 2.0, 2.0)];
+        let mut rows = vec![
+            mk(1, "B", 3.0, 1.0),
+            mk(2, "A", 1.0, 3.0),
+            mk(3, "C", 2.0, 2.0),
+        ];
         // 更新时间降序（默认）：3 > 2 > 1
         BijiApp::sort_rows(&mut rows, ListSort::Updated, false);
-        assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![1, 3, 2]);
+        assert_eq!(
+            rows.iter().map(|r| r.uid).collect::<Vec<_>>(),
+            vec![1, 3, 2]
+        );
         // 创建时间降序
         BijiApp::sort_rows(&mut rows, ListSort::Created, false);
-        assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![2, 3, 1]);
+        assert_eq!(
+            rows.iter().map(|r| r.uid).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
         // 标题升序：A B C（中文按 Unicode 码点序）
         BijiApp::sort_rows(&mut rows, ListSort::Title, true);
-        assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![2, 1, 3]);
+        assert_eq!(
+            rows.iter().map(|r| r.uid).collect::<Vec<_>>(),
+            vec![2, 1, 3]
+        );
     }
 
     /// headless egui 集成：注入 PointerButton(Secondary/Primary) 事件走真实控件
@@ -4987,7 +5327,10 @@ mod tests {
             .into_iter()
             .map(|n| n.name)
             .collect();
-        assert!(names.contains(&"新工作".to_string()), "重命名应落库: {names:?}");
+        assert!(
+            names.contains(&"新工作".to_string()),
+            "重命名应落库: {names:?}"
+        );
         assert!(!names.contains(&"工作".to_string()));
 
         // ---- 2) 右键笔记卡 → 移动到笔记本（平铺菜单：回收站/分隔/标签/工作/生活/未分类）
@@ -5055,12 +5398,7 @@ mod tests {
             false,
         );
         assert!(
-            app.service
-                .store()
-                .get_note(note)
-                .unwrap()
-                .note
-                .is_deleted,
+            app.service.store().get_note(note).unwrap().note.is_deleted,
             "右键「移入回收站」应把笔记移入回收站"
         );
     }
@@ -5253,11 +5591,7 @@ mod tests {
             "删除标签后标签应消失"
         );
         assert!(
-            app.service
-                .store()
-                .note_tags(note)
-                .unwrap()
-                .is_empty(),
+            app.service.store().note_tags(note).unwrap().is_empty(),
             "笔记与标签的关联应解除"
         );
     }
@@ -5531,23 +5865,22 @@ mod tests {
         let header = header.expect("点击列表头「全部笔记 ▼」应弹出来源菜单");
         // 候选序（名称码点序）：📄 全部笔记 / 📓 工作 / 🏷 重要
         // 逐项扫描 dy 直到 selection 变化并断言列表内容
-        let pick_until = |ctx: &egui::Context,
-                          app: &mut BijiApp,
-                          want: &dyn Fn(&BijiApp) -> bool|
-         -> bool {
-            for dy in (10..170).step_by(6) {
-                open_and_pick(ctx, app, header, dy as f32);
-                if want(app) {
-                    return true;
+        let pick_until =
+            |ctx: &egui::Context, app: &mut BijiApp, want: &dyn Fn(&BijiApp) -> bool| -> bool {
+                for dy in (10..170).step_by(6) {
+                    open_and_pick(ctx, app, header, dy as f32);
+                    if want(app) {
+                        return true;
+                    }
                 }
-            }
-            false
-        };
+                false
+            };
 
         // 选「📓 工作」→ 只剩甲
         assert!(
             pick_until(&ctx, &mut app, &|app: &BijiApp| {
-                app.st.selection == Selection::Notebook(nb_work) && app.st.rows.len() == 1
+                app.st.selection == Selection::Notebook(nb_work)
+                    && app.st.rows.len() == 1
                     && app.st.rows[0].uid == n1
             }),
             "来源下拉应能切到笔记本「工作」且列表只剩该本笔记"
@@ -5555,7 +5888,8 @@ mod tests {
         // 选「🏷 重要」→ 只剩乙
         assert!(
             pick_until(&ctx, &mut app, &|app: &BijiApp| {
-                app.st.selection == Selection::Tag(tag) && app.st.rows.len() == 1
+                app.st.selection == Selection::Tag(tag)
+                    && app.st.rows.len() == 1
                     && app.st.rows[0].uid == n2
             }),
             "来源下拉应能切到标签「重要」且列表只剩带标笔记"
@@ -5669,14 +6003,16 @@ mod tests {
             None
         };
         // 点「表格」（单次）
-        let table_x = find_btn(&ctx, &mut app, "<table><tr><td>")
-            .expect("工具栏应有「表格」按钮");
+        let table_x = find_btn(&ctx, &mut app, "<table><tr><td>").expect("工具栏应有「表格」按钮");
         app.st.editor.as_mut().unwrap().content = pristine.clone();
         clear_cursor(&ctx);
         click(&ctx, &mut app, egui::pos2(table_x, row_y));
         let after_table = app.st.editor.as_ref().unwrap().content.clone();
         assert!(after_table.contains("<table><tr><td>"));
-        assert!(after_table.starts_with("<?xml"), "插入位置不得破坏 XML 声明");
+        assert!(
+            after_table.starts_with("<?xml"),
+            "插入位置不得破坏 XML 声明"
+        );
 
         // 点「—」（单次；基于已含表格的内容继续，探测后恢复该基线）
         let baseline = app.st.editor.as_ref().unwrap().content.clone();
@@ -5856,7 +6192,12 @@ mod tests {
         for dy in (28..150).step_by(6) {
             click(&ctx, &mut app, pos, true);
             if let Some(m) = popup_near(&ctx, pos) {
-                click(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + dy as f32), false);
+                click(
+                    &ctx,
+                    &mut app,
+                    egui::pos2(m.center().x, m.min.y + dy as f32),
+                    false,
+                );
                 if app.service.store().shortcuts() == vec![uid] {
                     pinned = true;
                     break;
@@ -5894,7 +6235,12 @@ mod tests {
             let pos = egui::pos2(100.0, yi as f32);
             click(&ctx, &mut app, pos, true);
             if let Some(m) = popup_near(&ctx, pos) {
-                click(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + 18.0), false);
+                click(
+                    &ctx,
+                    &mut app,
+                    egui::pos2(m.center().x, m.min.y + 18.0),
+                    false,
+                );
                 if app.service.store().shortcuts().is_empty() {
                     removed = true;
                     break;
@@ -5936,7 +6282,10 @@ mod tests {
         app.refresh_rows();
 
         let ctx = egui::Context::default();
-        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>, mods: egui::Modifiers| {
+        let run = |ctx: &egui::Context,
+                   app: &mut BijiApp,
+                   events: Vec<egui::Event>,
+                   mods: egui::Modifiers| {
             theme::apply(ctx);
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -5953,39 +6302,32 @@ mod tests {
             });
         };
         let none = egui::Modifiers::default();
-        let click_at = |ctx: &egui::Context,
-                        app: &mut BijiApp,
-                        pos: egui::Pos2,
-                        mods: egui::Modifiers| {
-            run(
-                ctx,
-                app,
-                vec![egui::Event::PointerMoved(pos)],
-                none,
-            );
-            run(
-                ctx,
-                app,
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: mods,
-                }],
-                mods,
-            );
-            run(
-                ctx,
-                app,
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: mods,
-                }],
-                mods, // 真实使用中修饰键在释放帧仍按住（clicked() 在释放帧求值）
-            );
-        };
+        let click_at =
+            |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2, mods: egui::Modifiers| {
+                run(ctx, app, vec![egui::Event::PointerMoved(pos)], none);
+                run(
+                    ctx,
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: mods,
+                    }],
+                    mods,
+                );
+                run(
+                    ctx,
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: mods,
+                    }],
+                    mods, // 真实使用中修饰键在释放帧仍按住（clicked() 在释放帧求值）
+                );
+            };
         let card_center = |ctx: &egui::Context, uid: i64| -> egui::Pos2 {
             ctx.read_response(egui::Id::new(("note-card", uid)))
                 .expect("卡片应已渲染")
@@ -6057,15 +6399,17 @@ mod tests {
                 moved = true;
                 break;
             }
-            assert!(
-                !app.st.multi_select.is_empty(),
-                "扫描误清多选（xi={xi}）"
-            );
+            assert!(!app.st.multi_select.is_empty(), "扫描误清多选（xi={xi}）");
         }
         assert!(moved, "点「移动到…」应弹目标层");
         // 弹层里只有一本（生活）+ 未分类：点第一项
         if let Some(m) = popup_near(&ctx, egui::pos2(300.0, bar_y(&ctx, &app))) {
-            click_at(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + 18.0), none);
+            click_at(
+                &ctx,
+                &mut app,
+                egui::pos2(m.center().x, m.min.y + 18.0),
+                none,
+            );
         }
         let got: Vec<Option<i64>> = [n1, n2, n3]
             .iter()
@@ -6094,10 +6438,7 @@ mod tests {
                 trashed = true;
                 break;
             }
-            assert!(
-                !(d1 || d2),
-                "扫描误触批量条按钮（xi={xi}）提前删除"
-            );
+            assert!(!(d1 || d2), "扫描误触批量条按钮（xi={xi}）提前删除");
         }
         assert!(trashed, "批量条「移入回收站」应删除所选两条");
         assert!(
@@ -6292,11 +6633,7 @@ mod tests {
         );
         let uid = app
             .service
-            .create_note(
-                "查找测试",
-                "<en-note><p>苹果 香蕉 苹果</p></en-note>",
-                None,
-            )
+            .create_note("查找测试", "<en-note><p>苹果 香蕉 苹果</p></en-note>", None)
             .unwrap();
         app.st.selected_note = Some(uid);
 
@@ -6422,11 +6759,7 @@ mod tests {
                 rep_x = Some(pos.x);
                 break;
             }
-            assert_eq!(
-                c.matches("苹果").count(),
-                2,
-                "扫描误触其它按钮（xi={xi}）"
-            );
+            assert_eq!(c.matches("苹果").count(), 2, "扫描误触其它按钮（xi={xi}）");
         }
         assert!(rep_x.is_some(), "应能点到「替换」");
         assert!(app.st.editor.as_ref().unwrap().dirty, "替换应置脏");
@@ -6574,7 +6907,13 @@ mod tests {
             "重复拖放应幂等"
         );
         assert_eq!(
-            app.st.editor.as_ref().unwrap().content.matches("en-media").count(),
+            app.st
+                .editor
+                .as_ref()
+                .unwrap()
+                .content
+                .matches("en-media")
+                .count(),
             1,
             "占位不应重复"
         );
@@ -6688,14 +7027,7 @@ mod tests {
         'outer: for yi in (40..140).step_by(8) {
             for xi in (505..1100).step_by(20).rev() {
                 click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
-                if app
-                    .service
-                    .store()
-                    .get_note(uid)
-                    .unwrap()
-                    .note
-                    .is_shared
-                {
+                if app.service.store().get_note(uid).unwrap().note.is_shared {
                     toggled = true;
                     break 'outer;
                 }
@@ -6725,14 +7057,7 @@ mod tests {
         'outer2: for yi in (40..140).step_by(8) {
             for xi in (505..1100).step_by(20).rev() {
                 click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
-                if !app
-                    .service
-                    .store()
-                    .get_note(uid)
-                    .unwrap()
-                    .note
-                    .is_shared
-                {
+                if !app.service.store().get_note(uid).unwrap().note.is_shared {
                     undone = true;
                     break 'outer2;
                 }
@@ -6933,7 +7258,7 @@ mod tests {
         // 扫描编辑器正文区域点击，直到跳转到目标笔记
         let mut jumped = false;
         'scan: for yi in (170..560).step_by(10) {
-            for xi in (520..1300).step_by(24) {
+            for xi in (576..1300).step_by(24) {
                 click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
                 if app.st.selected_note == Some(target) {
                     jumped = true;
@@ -6968,10 +7293,13 @@ mod tests {
         run(&ctx, &mut app, vec![]);
         let mut hit_bad = false;
         'scan2: for yi in (170..560).step_by(10) {
-            for xi in (496..1300).step_by(8) {
+            for xi in (576..1300).step_by(8) {
                 click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
                 if xi % 120 == 40 && yi % 50 == 0 {
-                    eprintln!("scan2 xi={} yi={} status={:?} sel={:?}", xi, yi, app.st.status, app.st.selected_note);
+                    eprintln!(
+                        "scan2 xi={} yi={} status={:?} sel={:?}",
+                        xi, yi, app.st.status, app.st.selected_note
+                    );
                 }
                 if app.st.status.contains("不存在") {
                     hit_bad = true;
@@ -7117,7 +7445,11 @@ mod tests {
         click(&ctx, &mut app, p);
         run(&ctx, &mut app, vec![]);
         assert_eq!(tr_count(&app), base_tr + 1);
-        assert_eq!(td_count(&app), base_td + 2 + (base_tr + 1), "＋列每行加一格");
+        assert_eq!(
+            td_count(&app),
+            base_td + 2 + (base_tr + 1),
+            "＋列每行加一格"
+        );
 
         // ---- 4) Ctrl+S 落库
         let ctrl = egui::Modifiers {
@@ -7273,7 +7605,11 @@ mod tests {
             let Some(m) = popup_near(&ctx, card) else {
                 continue;
             };
-            click(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + dy as f32));
+            click(
+                &ctx,
+                &mut app,
+                egui::pos2(m.center().x, m.min.y + dy as f32),
+            );
             if app
                 .st
                 .float_win
@@ -7306,8 +7642,7 @@ mod tests {
         assert!(app.st.float_win.as_ref().unwrap().dirty, "浮动编辑应置脏");
         // 主窗口 A：源码缓冲编辑（与真实编辑等效的缓冲变更）
         let c = app.st.editor.as_ref().unwrap().content.clone();
-        app.st.editor.as_mut().unwrap().content =
-            c.replacen("<p>AAA</p>", "<p>AAA改</p>", 1);
+        app.st.editor.as_mut().unwrap().content = c.replacen("<p>AAA</p>", "<p>AAA改</p>", 1);
         app.st.editor.as_mut().unwrap().dirty = true;
 
         // ---- 3) 各自保存：浮动「💾 保存」（窗口底部按钮行）→ 主 Ctrl+S
@@ -7315,13 +7650,7 @@ mod tests {
         for dy in (8..90).step_by(8) {
             let pos = egui::pos2(fw_rect.min.x + 20.0, fw_rect.max.y + dy as f32);
             click(&ctx, &mut app, pos);
-            if app
-                .st
-                .float_win
-                .as_ref()
-                .map(|f| !f.dirty)
-                .unwrap_or(false)
-            {
+            if app.st.float_win.as_ref().map(|f| !f.dirty).unwrap_or(false) {
                 saved_fw = true;
                 break;
             }
@@ -7494,7 +7823,10 @@ mod tests {
         app.st.selected_note = Some(uid);
 
         let ctx = egui::Context::default();
-        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>, mods: egui::Modifiers| {
+        let run = |ctx: &egui::Context,
+                   app: &mut BijiApp,
+                   events: Vec<egui::Event>,
+                   mods: egui::Modifiers| {
             theme::apply(ctx);
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -7708,7 +8040,8 @@ mod tests {
             doc.sanitize();
             let new_content = doc.to_xml();
             assert!(
-                new_content.contains("widths=\"120,90\"") || new_content.contains("widths='120,90'"),
+                new_content.contains("widths=\"120,90\"")
+                    || new_content.contains("widths='120,90'"),
                 "widths 属性应保留在 sanitize 后的 ENML: {new_content}"
             );
             // 如果 sanitize 保留了属性，则实际链路可行
@@ -7753,12 +8086,22 @@ mod tests {
         let c = s.create_notebook("C本", None).unwrap();
 
         // 默认名称序：甲乙丙
-        let names: Vec<String> = s.list_notebooks().unwrap().iter().map(|n| n.name.clone()).collect();
+        let names: Vec<String> = s
+            .list_notebooks()
+            .unwrap()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
         assert_eq!(names, vec!["A本", "B本", "C本"]);
 
         // 拖拽：丙 → 第一位
         s.reorder_notebooks(&[c, a, b]).unwrap();
-        let names: Vec<String> = s.list_notebooks().unwrap().iter().map(|n| n.name.clone()).collect();
+        let names: Vec<String> = s
+            .list_notebooks()
+            .unwrap()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
         assert_eq!(names, vec!["C本", "A本", "B本"], "排序后应按 nb_sort 序");
 
         // meta 持久化
@@ -7766,18 +8109,18 @@ mod tests {
 
         // 新笔记本（未列入排序）追加尾部
         let d = s.create_notebook("D本", None).unwrap();
-        let names: Vec<String> = s.list_notebooks().unwrap().iter().map(|n| n.name.clone()).collect();
+        let names: Vec<String> = s
+            .list_notebooks()
+            .unwrap()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
         assert_eq!(names, vec!["C本", "A本", "B本", "D本"]);
 
         // 删一本后剩余排序保持
         s.delete_notebook(a).unwrap();
         let order = s.notebook_sort_order();
-        let alive: Vec<i64> = s
-            .list_notebooks()
-            .unwrap()
-            .iter()
-            .map(|n| n.uid)
-            .collect();
+        let alive: Vec<i64> = s.list_notebooks().unwrap().iter().map(|n| n.uid).collect();
         // b 在 c 后（原始顺序 c,a,b → a 删后 c,b），d 追加
         assert_eq!(alive[0], c);
         assert_eq!(alive[1], b);
@@ -7831,10 +8174,7 @@ mod tests {
         assert_eq!(names, vec!["A本", "B本", "C本"]);
 
         // 直接调 reorder（与拖拽松开时完全同一方法 + 参数）
-        app.service
-            .store()
-            .reorder_notebooks(&[c, b, a])
-            .unwrap();
+        app.service.store().reorder_notebooks(&[c, b, a]).unwrap();
         run(&ctx, &mut app, vec![]);
 
         let names: Vec<String> = app
@@ -7845,11 +8185,7 @@ mod tests {
             .iter()
             .map(|n| n.name.clone())
             .collect();
-        assert_eq!(
-            names,
-            vec!["C本", "B本", "A本"],
-            "reorder 后侧栏应按新序"
-        );
+        assert_eq!(names, vec!["C本", "B本", "A本"], "reorder 后侧栏应按新序");
         assert_eq!(
             app.service.store().notebook_sort_order(),
             vec![c, b, a],

@@ -18,9 +18,7 @@ use std::process::Command;
 pub mod pdf;
 
 use base64::Engine as _;
-use biji_store::{
-    ListNotes, NoteDraft, NoteFull, Store, StoreError,
-};
+use biji_store::{ListNotes, NoteDraft, NoteFull, Store, StoreError};
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, ServiceError>;
@@ -184,9 +182,18 @@ pub enum NodeWebkitCommand {
     FocusMarkupWindow,
     CloseMarkupWindow,
     CloseMarkupWindowWithMessage(String),
-    RotateImage { resource_url: String, theta: f64 },
-    ResizeImage { resource_url: String, width: i32, height: i32 },
-    ClearImage { resource_url: String },
+    RotateImage {
+        resource_url: String,
+        theta: f64,
+    },
+    ResizeImage {
+        resource_url: String,
+        width: i32,
+        height: i32,
+    },
+    ClearImage {
+        resource_url: String,
+    },
     Present {
         note_ids: Vec<i64>,
         index: usize,
@@ -240,7 +247,11 @@ pub type OpenTarget = Box<dyn Fn(&str) -> std::io::Result<()>>;
 
 /// Windows 默认实现：落盘临时文件后调用 `start`。
 pub fn system_opener(path: &str) -> std::io::Result<()> {
-    Command::new("cmd").args(["/C", "start", "", path]).spawn()?.wait().map(|_| ())
+    Command::new("cmd")
+        .args(["/C", "start", "", path])
+        .spawn()?
+        .wait()
+        .map(|_| ())
 }
 
 pub struct NoteService {
@@ -331,7 +342,12 @@ impl NoteService {
     }
 
     /// 账号写入（复刻原 `user#service_host` 账号模型，分析文档 §6.1）。
-    pub fn set_account(&self, username: &str, service_host: &str, email: Option<&str>) -> Result<()> {
+    pub fn set_account(
+        &self,
+        username: &str,
+        service_host: &str,
+        email: Option<&str>,
+    ) -> Result<()> {
         self.store.meta_set("user", username)?;
         self.store.meta_set("service_host", service_host)?;
         if let Some(mail) = email {
@@ -397,7 +413,13 @@ impl NoteService {
         let safe_name: String = resource
             .filename
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let path = dir.join(format!("biji-{safe_name}"));
         std::fs::write(&path, &resource.bytes)?;
@@ -431,11 +453,7 @@ impl NoteService {
     /// 由附件新建笔记：正文为指向该资源的 `en-media` 占位（对位原语义）。
     /// `offset>0` 为分段装配：段按 offset 拼进装配缓冲，每次调用后以当前
     /// 装配结果 upsert 笔记（同一 resource uid 幂等指向同一条笔记与资源）。
-    pub fn create_note_from_resource(
-        &self,
-        resource: ResourceData,
-        offset: u64,
-    ) -> Result<i64> {
+    pub fn create_note_from_resource(&self, resource: ResourceData, offset: u64) -> Result<i64> {
         // 段装配：offset 定位段在整体内容中的位置
         {
             let mut assemblies = self.resource_assemblies.borrow_mut();
@@ -455,8 +473,7 @@ impl NoteService {
             .unwrap_or_default();
 
         // 幂等 upsert：后续段只替换既有资源内容，不另建笔记
-        if let Some(&(note_uid, res_uid)) = self.created_from_resource.borrow().get(&resource.uid)
-        {
+        if let Some(&(note_uid, res_uid)) = self.created_from_resource.borrow().get(&resource.uid) {
             self.store.replace_resource_bytes(res_uid, &assembled)?;
             return Ok(note_uid);
         }
@@ -473,12 +490,9 @@ impl NoteService {
             content_class: None,
             notebook_uid: None,
         })?;
-        let res_uid = self.store.add_resource(
-            note_uid,
-            &resource.filename,
-            &resource.mime,
-            &assembled,
-        )?;
+        let res_uid =
+            self.store
+                .add_resource(note_uid, &resource.filename, &resource.mime, &assembled)?;
         self.created_from_resource
             .borrow_mut()
             .insert(resource.uid, (note_uid, res_uid));
@@ -573,15 +587,20 @@ impl NoteService {
 
     /// 写回编辑器产出的笔记（标题 + 正文）。
     pub fn update_note(&self, note: &NoteView) -> Result<()> {
-        self.store.update_note_meta(note.id, Some(&note.title), note.author.as_deref(), note.source_url.as_deref())?;
+        self.store.update_note_meta(
+            note.id,
+            Some(&note.title),
+            note.author.as_deref(),
+            note.source_url.as_deref(),
+        )?;
         self.store.update_note_content(note.id, &note.html)?;
         Ok(())
     }
 
     pub fn create_note(&self, title: &str, enml: &str, notebook_uid: Option<i64>) -> Result<i64> {
         // 入库前清洗，保证库内正文始终是合法 ENML（对位原 RTE 约束）。
-        let mut doc = biji_enml::Enml::parse_loose(enml)
-            .map_err(|e| ServiceError::Enml(e.to_string()))?;
+        let mut doc =
+            biji_enml::Enml::parse_loose(enml).map_err(|e| ServiceError::Enml(e.to_string()))?;
         if title.is_empty() {
             // 无标题时用纯文本首行兜底（对位原客户端行为）。
             let text = doc.to_plain_text();
@@ -705,10 +724,19 @@ fn tempfile_dir() -> Result<std::path::PathBuf> {
 impl std::fmt::Display for NodeWebkitCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NodeWebkitCommand::Markup { resource_url, title, .. } => {
+            NodeWebkitCommand::Markup {
+                resource_url,
+                title,
+                ..
+            } => {
                 write!(f, "Markup {resource_url}「{title}」")
             }
-            NodeWebkitCommand::MarkupPdf { pdf_url, page_num, title, .. } => {
+            NodeWebkitCommand::MarkupPdf {
+                pdf_url,
+                page_num,
+                title,
+                ..
+            } => {
                 write!(f, "MarkupPdf {pdf_url} p{page_num}「{title}」")
             }
             NodeWebkitCommand::FocusMarkupWindow => write!(f, "FocusMarkupWindow"),
@@ -716,16 +744,25 @@ impl std::fmt::Display for NodeWebkitCommand {
             NodeWebkitCommand::CloseMarkupWindowWithMessage(m) => {
                 write!(f, "CloseMarkupWindowWithMessage「{m}」")
             }
-            NodeWebkitCommand::RotateImage { resource_url, theta } => {
+            NodeWebkitCommand::RotateImage {
+                resource_url,
+                theta,
+            } => {
                 write!(f, "RotateImage {resource_url} {theta}°")
             }
-            NodeWebkitCommand::ResizeImage { resource_url, width, height } => {
+            NodeWebkitCommand::ResizeImage {
+                resource_url,
+                width,
+                height,
+            } => {
                 write!(f, "ResizeImage {resource_url} {width}x{height}")
             }
             NodeWebkitCommand::ClearImage { resource_url } => {
                 write!(f, "ClearImage {resource_url}")
             }
-            NodeWebkitCommand::Present { note_ids, index, .. } => {
+            NodeWebkitCommand::Present {
+                note_ids, index, ..
+            } => {
                 write!(f, "Present {note_ids:?} from #{index}")
             }
             NodeWebkitCommand::FocusPresentationWindow => write!(f, "FocusPresentationWindow"),
@@ -743,24 +780,32 @@ mod tests {
     use super::*;
 
     fn service() -> NoteService {
-        NoteService::new(Store::open_memory().unwrap(), Box::new(LoggingFrontend::default()))
+        NoteService::new(
+            Store::open_memory().unwrap(),
+            Box::new(LoggingFrontend::default()),
+        )
     }
 
     fn recording_service() -> (NoteService, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
         let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let captured = opened.clone();
-        let svc = NoteService::new(Store::open_memory().unwrap(), Box::new(LoggingFrontend::default()))
-            .with_opener(Box::new(move |target| {
-                captured.borrow_mut().push(target.to_string());
-                Ok(())
-            }));
+        let svc = NoteService::new(
+            Store::open_memory().unwrap(),
+            Box::new(LoggingFrontend::default()),
+        )
+        .with_opener(Box::new(move |target| {
+            captured.borrow_mut().push(target.to_string());
+            Ok(())
+        }));
         (svc, opened)
     }
 
     #[test]
     fn note_lifecycle_through_service() {
         let svc = service();
-        let uid = svc.create_note("标题", "<en-note><p>正文</p></en-note>", None).unwrap();
+        let uid = svc
+            .create_note("标题", "<en-note><p>正文</p></en-note>", None)
+            .unwrap();
         let view = svc.get_note(uid).unwrap();
         assert_eq!(view.title, "标题");
         assert!(view.html.contains("正文"));
@@ -785,7 +830,11 @@ mod tests {
     fn create_note_sanitizes_enml() {
         let svc = service();
         let uid = svc
-            .create_note("x", "<en-note><script>alert(1)</script><p>ok</p></en-note>", None)
+            .create_note(
+                "x",
+                "<en-note><script>alert(1)</script><p>ok</p></en-note>",
+                None,
+            )
             .unwrap();
         let view = svc.get_note(uid).unwrap();
         assert!(!view.html.contains("script"));
@@ -807,7 +856,10 @@ mod tests {
         let uid = svc.create_note("t", "<en-note/>", None).unwrap();
         assert!(svc.request_note_lock(uid).unwrap());
         assert!(svc.is_note_locked(uid));
-        assert!(matches!(svc.request_note_lock(uid), Err(ServiceError::LockHeld(_))));
+        assert!(matches!(
+            svc.request_note_lock(uid),
+            Err(ServiceError::LockHeld(_))
+        ));
         svc.release_note_lock(uid);
         assert!(!svc.is_note_locked(uid));
         assert!(svc.request_note_lock(uid).unwrap());
@@ -817,7 +869,10 @@ mod tests {
     fn resource_base64_and_replace() {
         let svc = service();
         let note = svc.create_note("n", "<en-note/>", None).unwrap();
-        let ruid = svc.store().add_resource(note, "pic.png", "image/png", b"\x89PNG").unwrap();
+        let ruid = svc
+            .store()
+            .add_resource(note, "pic.png", "image/png", b"\x89PNG")
+            .unwrap();
         let url = resource_url(ruid);
 
         let data = svc.get_resource(&url).unwrap();
@@ -825,10 +880,18 @@ mod tests {
         assert_eq!(data.bytes, b"\x89PNG");
 
         let b64 = svc.get_resource_as_base64(&url).unwrap();
-        assert_eq!(b64.base64, base64::engine::general_purpose::STANDARD.encode(b"\x89PNG"));
+        assert_eq!(
+            b64.base64,
+            base64::engine::general_purpose::STANDARD.encode(b"\x89PNG")
+        );
 
         svc.update_resource(
-            ResourceData { uid: ruid, mime: "image/png".into(), filename: "pic.png".into(), bytes: b"NEW".to_vec() },
+            ResourceData {
+                uid: ruid,
+                mime: "image/png".into(),
+                filename: "pic.png".into(),
+                bytes: b"NEW".to_vec(),
+            },
             0,
         )
         .unwrap();
@@ -836,14 +899,24 @@ mod tests {
 
         // offset>0 分段写：段拼接进现有内容（offset 定位）
         svc.update_resource(
-            ResourceData { uid: ruid, mime: "image/png".into(), filename: "pic.png".into(), bytes: b"XY".to_vec() },
+            ResourceData {
+                uid: ruid,
+                mime: "image/png".into(),
+                filename: "pic.png".into(),
+                bytes: b"XY".to_vec(),
+            },
             1,
         )
         .unwrap();
         assert_eq!(svc.get_resource(&url).unwrap().bytes, b"NXY");
         // 越界段：末端补零延长
         svc.update_resource(
-            ResourceData { uid: ruid, mime: "image/png".into(), filename: "pic.png".into(), bytes: b"Z".to_vec() },
+            ResourceData {
+                uid: ruid,
+                mime: "image/png".into(),
+                filename: "pic.png".into(),
+                bytes: b"Z".to_vec(),
+            },
             6,
         )
         .unwrap();
@@ -855,7 +928,12 @@ mod tests {
         let svc = service();
         let note_uid = svc
             .create_note_from_resource(
-                ResourceData { uid: 0, mime: "image/jpeg".into(), filename: "照片.jpg".into(), bytes: vec![1, 2, 3] },
+                ResourceData {
+                    uid: 0,
+                    mime: "image/jpeg".into(),
+                    filename: "照片.jpg".into(),
+                    bytes: vec![1, 2, 3],
+                },
                 0,
             )
             .unwrap();
@@ -867,7 +945,12 @@ mod tests {
         // 分段装配：offset>0 的段拼接进整体内容，同一 uid 幂等指向同一笔记/资源
         let note_uid2 = svc
             .create_note_from_resource(
-                ResourceData { uid: 0, mime: "image/jpeg".into(), filename: "照片.jpg".into(), bytes: vec![4, 5] },
+                ResourceData {
+                    uid: 0,
+                    mime: "image/jpeg".into(),
+                    filename: "照片.jpg".into(),
+                    bytes: vec![4, 5],
+                },
                 3,
             )
             .unwrap();
@@ -877,7 +960,12 @@ mod tests {
         assert_eq!(resources[0].1.bytes, vec![1, 2, 3, 4, 5], "装配内容失真");
         // 段间空隙补零：offset 8 起写一段
         svc.create_note_from_resource(
-            ResourceData { uid: 0, mime: "image/jpeg".into(), filename: "照片.jpg".into(), bytes: vec![9] },
+            ResourceData {
+                uid: 0,
+                mime: "image/jpeg".into(),
+                filename: "照片.jpg".into(),
+                bytes: vec![9],
+            },
             8,
         )
         .unwrap();
@@ -892,7 +980,10 @@ mod tests {
     fn open_resource_routes_to_opener() {
         let (svc, opened) = recording_service();
         let note = svc.create_note("n", "<en-note/>", None).unwrap();
-        let ruid = svc.store().add_resource(note, "a.bin", "application/octet-stream", b"x").unwrap();
+        let ruid = svc
+            .store()
+            .add_resource(note, "a.bin", "application/octet-stream", b"x")
+            .unwrap();
         svc.open_resource(&resource_url(ruid)).unwrap();
         assert_eq!(opened.borrow().len(), 1);
         assert!(opened.borrow()[0].contains("biji-a.bin"));
@@ -995,7 +1086,8 @@ mod tests {
     #[test]
     fn account_and_analytics() {
         let svc = service();
-        svc.set_account("lome", "server.biji", Some("lome@example.com")).unwrap();
+        svc.set_account("lome", "server.biji", Some("lome@example.com"))
+            .unwrap();
         let user = svc.get_current_user_info().unwrap();
         assert_eq!(user.username, "lome");
         assert_eq!(user.service_host, "server.biji");
@@ -1012,8 +1104,10 @@ mod tests {
     #[test]
     fn list_and_search_via_service() {
         let svc = service();
-        svc.create_note("Rust 笔记", "<en-note><p>所有权</p></en-note>", None).unwrap();
-        svc.create_note("购物", "<en-note><p>牛奶</p></en-note>", None).unwrap();
+        svc.create_note("Rust 笔记", "<en-note><p>所有权</p></en-note>", None)
+            .unwrap();
+        svc.create_note("购物", "<en-note><p>牛奶</p></en-note>", None)
+            .unwrap();
         assert_eq!(svc.list_notes().unwrap().len(), 2);
         let hits = svc.search_notes("所有权").unwrap();
         assert_eq!(hits.len(), 1);

@@ -92,14 +92,24 @@ pub fn note_to_pdf(title: &str, enml: &str, out_path: &Path) -> Result<usize, St
     for (text, is_title) in lines {
         let lh = if is_title { title_lh } else { body_lh };
         if y + lh > usable_h {
-            flush(std::mem::replace(
-                &mut img,
-                image::RgbaImage::from_pixel(PAGE_W, PAGE_H, image::Rgba([255, 255, 255, 255])),
-            ), &mut pages)?;
+            flush(
+                std::mem::replace(
+                    &mut img,
+                    image::RgbaImage::from_pixel(PAGE_W, PAGE_H, image::Rgba([255, 255, 255, 255])),
+                ),
+                &mut pages,
+            )?;
             y = 0.0;
         }
         if !text.is_empty() {
-            draw_text(&mut img, [MARGIN, MARGIN + y], &text, ink, if is_title { TITLE_PX } else { BODY_PX }, 0.0);
+            draw_text(
+                &mut img,
+                [MARGIN, MARGIN + y],
+                &text,
+                ink,
+                if is_title { TITLE_PX } else { BODY_PX },
+                0.0,
+            );
         }
         y += lh;
     }
@@ -120,9 +130,22 @@ pub fn note_to_pdf(title: &str, enml: &str, out_path: &Path) -> Result<usize, St
         buf.extend_from_slice(body.as_bytes());
     };
     // 对象编号：1=catalog 2=pages 3..(3+n)=page  (3+n)..(3+2n)=image (3+2n)..(3+3n)=content
-    push(&mut buf, &mut offsets, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".into());
-    push(&mut buf, &mut offsets, format!("2 0 obj\n<< /Type /Pages /Kids [{}] /Count {n} >>\nendobj\n",
-        (3..3 + n).map(|i| format!("{i} 0 R")).collect::<Vec<_>>().join(" ")));
+    push(
+        &mut buf,
+        &mut offsets,
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".into(),
+    );
+    push(
+        &mut buf,
+        &mut offsets,
+        format!(
+            "2 0 obj\n<< /Type /Pages /Kids [{}] /Count {n} >>\nendobj\n",
+            (3..3 + n)
+                .map(|i| format!("{i} 0 R"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    );
     for (i, jpg) in pages.iter().enumerate() {
         let page_no = 3 + i;
         let img_no = 3 + n + i;
@@ -135,9 +158,14 @@ pub fn note_to_pdf(title: &str, enml: &str, out_path: &Path) -> Result<usize, St
         buf.extend_from_slice(jpg);
         buf.extend_from_slice(b"\nendstream\nendobj\n");
         let content = format!("q {pw} 0 0 {ph} 0 0 cm /Im{i} Do Q\n");
-        push(&mut buf, &mut offsets, format!(
-            "{cont_no} 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n",
-            content.len()));
+        push(
+            &mut buf,
+            &mut offsets,
+            format!(
+                "{cont_no} 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n",
+                content.len()
+            ),
+        );
     }
     let xref_at = buf.len();
     let count = offsets.len() + 1; // +1 是 xref 自身的 0 号条目
@@ -146,7 +174,10 @@ pub fn note_to_pdf(title: &str, enml: &str, out_path: &Path) -> Result<usize, St
     for off in &offsets {
         buf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
-    buf.extend_from_slice(format!("trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n")
+            .as_bytes(),
+    );
 
     let mut f = std::fs::File::create(out_path).map_err(|e| format!("创建文件失败: {e}"))?;
     f.write_all(&buf).map_err(|e| format!("写入失败: {e}"))?;

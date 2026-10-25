@@ -34,6 +34,12 @@ pub struct Palette {
     pub text: Color32,
     /// 次级灰（计数、摘要、占位提示）。
     pub subtle: Color32,
+    /// 菜单栏文字（原客户端为中性灰，非纯黑）。
+    pub menu_text: Color32,
+    /// 列表卡日期（原客户端为淡蓝，非品牌绿）。
+    pub date_blue: Color32,
+    /// AI 助理紫（图标与文字）。
+    pub ai_purple: Color32,
     /// 发丝分隔线。
     pub hairline: Color32,
     /// 链接蓝（经典下划线蓝；深色下提亮）。
@@ -50,15 +56,18 @@ pub struct Palette {
 pub static LIGHT: Palette = Palette {
     green: Color32::from_rgb(0x00, 0xB8, 0x70),
     green_dark: Color32::from_rgb(0x00, 0x9E, 0x60),
-    green_edge: Color32::from_rgb(0x3E, 0xE8, 0x7C),
+    green_edge: Color32::from_rgb(0x31, 0xEF, 0x6F),
     green_tint: Color32::from_rgb(0xEE, 0xFE, 0xF5),
-    sidebar_bg: Color32::from_rgb(0xEC, 0xEC, 0xF0),
-    sel_bg: Color32::from_rgb(0xE2, 0xE2, 0xE6),
+    sidebar_bg: Color32::from_rgb(0xEF, 0xEF, 0xF2),
+    sel_bg: Color32::from_rgb(0xE7, 0xE7, 0xEA),
     sidebar_hover: Color32::from_rgb(0xE6, 0xE6, 0xEA),
     bg: Color32::from_rgb(0xFC, 0xFC, 0xFC),
     white: Color32::WHITE,
     text: Color32::from_rgb(0x1A, 0x1A, 0x1E),
     subtle: Color32::from_rgb(0x8A, 0x8A, 0x90),
+    menu_text: Color32::from_rgb(0x4F, 0x4F, 0x4F),
+    date_blue: Color32::from_rgb(0x6F, 0xAE, 0xE0),
+    ai_purple: Color32::from_rgb(0x9C, 0x8C, 0xFB),
     hairline: Color32::from_rgb(0xE2, 0xE2, 0xE6),
     link: Color32::from_rgb(0x24, 0x56, 0xDC),
     extreme: Color32::from_rgb(0xF4, 0xF4, 0xF6),
@@ -79,6 +88,9 @@ pub static DARK: Palette = Palette {
     white: Color32::from_rgb(0x2A, 0x2A, 0x2E),
     text: Color32::from_rgb(0xE8, 0xE8, 0xEC),
     subtle: Color32::from_rgb(0x9A, 0x9A, 0xA2),
+    menu_text: Color32::from_rgb(0xC9, 0xC9, 0xCF),
+    date_blue: Color32::from_rgb(0x8A, 0xB8, 0xE8),
+    ai_purple: Color32::from_rgb(0xA9, 0x9C, 0xFF),
     hairline: Color32::from_rgb(0x3A, 0x3A, 0x40),
     link: Color32::from_rgb(0x7C, 0x9C, 0xF5),
     extreme: Color32::from_rgb(0x1A, 0x1A, 0x1C),
@@ -114,7 +126,11 @@ pub fn apply(ctx: &Context) {
     } else {
         (&LIGHT, false)
     };
-    let mut v = if dark { Visuals::dark() } else { Visuals::light() };
+    let mut v = if dark {
+        Visuals::dark()
+    } else {
+        Visuals::light()
+    };
     v.override_text_color = Some(p.text);
     v.panel_fill = p.bg;
     v.window_fill = p.white;
@@ -207,22 +223,20 @@ pub fn green_button<'a>(text: &'a str) -> egui::Button<'a> {
         .rounding(12.0)
 }
 
-/// 侧栏导航行：左对齐自绘控件（egui Button 会把文字水平居中，导致导航行
-/// 与分区头/药丸错位——这里自绘底色 + 左起排版，图标恒定 10px 内边距）。
-pub fn nav_row(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
-    nav_row_sized(ui, ui.available_width(), icon, label, selected)
-}
+/// 图标绘制回调（sidebar 行 / 图标钮共用）。
+pub type IconPaint<'a> = &'a dyn Fn(&egui::Painter, egui::Rect, Color32);
 
-/// 定宽变体（笔记本行右侧要留出计数与删除按钮）。
-pub fn nav_row_sized(
+/// 侧栏导航行（对位原客户端线性图标行）：自绘底色 + 图标 + 左起文字。
+/// egui Button 会把文字水平居中导致与分区错位，这里自绘保持左对齐。
+pub fn nav_row_p(
     ui: &mut egui::Ui,
     width: f32,
-    icon: &str,
     label: &str,
     selected: bool,
+    icon: IconPaint<'_>,
 ) -> egui::Response {
     let p = pal();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click());
     let fill = if selected {
         p.sel_bg
     } else if resp.hovered() {
@@ -230,90 +244,100 @@ pub fn nav_row_sized(
     } else {
         p.sidebar_bg
     };
-    ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter().rect_filled(rect, 8.0, fill);
     let text_color = if selected { p.green_dark } else { p.text };
-    // 图标/文字两段固定 x 排版：emoji 步进宽度不固定，合并成串会让文字
-    // 起点漂移；拆两段后文字与分区头标签严格同轨（x+30）。
-    let icon_galley = ui.painter().layout_no_wrap(
-        icon.to_string(),
-        egui::FontId::new(14.0, egui::FontFamily::Proportional),
-        text_color,
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.min.x + 17.0, rect.center().y),
+        egui::vec2(14.0, 14.0),
     );
-    ui.painter().galley(
-        egui::pos2(rect.min.x + 10.0, rect.center().y - icon_galley.size().y * 0.5),
-        icon_galley,
-        text_color,
-    );
+    icon(ui.painter(), icon_rect, text_color);
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
         egui::FontId::new(14.0, egui::FontFamily::Proportional),
         text_color,
     );
     ui.painter().galley(
-        egui::pos2(rect.min.x + 30.0, rect.center().y - label_galley.size().y * 0.5),
+        egui::pos2(
+            rect.min.x + 32.0,
+            rect.center().y - label_galley.size().y * 0.5,
+        ),
         label_galley,
         text_color,
     );
     resp
 }
 
-/// 侧栏分区头（手风琴）：箭头固定 11px、标签固定 29px 起排——与导航行
-/// 的图标 10px / 文字 ~28px 两条对齐线一致。返回「＋」是否被点击。
-/// 点击整行切换 `open`。整体包在 horizontal 内，保证「＋」与文字同行。
-pub fn section_header(
+/// 带折叠箭头与右侧＋的分区行（快捷方式/全部笔记/笔记本/标签，对位原客户端
+/// 「› ★ 快捷方式」形态）。`chevron_open` 为箭头视觉状态（None 不画箭头）。
+/// 返回 (行点击, ＋是否点击)。
+pub fn nav_row_chev(
     ui: &mut egui::Ui,
+    width: f32,
+    chevron_open: Option<bool>,
     label: &str,
-    open: &mut bool,
+    selected: bool,
+    icon: IconPaint<'_>,
     trailing_plus: bool,
-) -> bool {
+) -> (egui::Response, bool) {
     let mut plus_clicked = false;
+    let mut row = None;
     ui.horizontal(|ui| {
         let p = pal();
-        let w = ui.available_width() - if trailing_plus { 34.0 } else { 0.0 };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, 6.0, p.sidebar_hover);
+        let w = width - if trailing_plus { 34.0 } else { 0.0 };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 28.0), egui::Sense::click());
+        let fill = if selected {
+            p.sel_bg
+        } else if resp.hovered() {
+            p.sidebar_hover
+        } else {
+            p.sidebar_bg
+        };
+        ui.painter().rect_filled(rect, 8.0, fill);
+        let text_color = if selected { p.green_dark } else { p.text };
+        let mut x = rect.min.x + 8.0;
+        if let Some(is_open) = chevron_open {
+            let cr = egui::Rect::from_center_size(
+                egui::pos2(x + 5.0, rect.center().y),
+                egui::vec2(9.0, 9.0),
+            );
+            crate::icons::chevron(ui.painter(), cr, p.subtle, is_open);
+            x += 16.0;
         }
-        let gray = p.subtle;
-        let arrow = if *open { "▼" } else { "▶" };
-        let arrow_galley = ui.painter().layout_no_wrap(
-            arrow.to_string(),
-            egui::FontId::new(10.0, egui::FontFamily::Proportional),
-            gray,
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(x + 7.0, rect.center().y),
+            egui::vec2(14.0, 14.0),
         );
-        ui.painter().galley(
-            egui::pos2(rect.min.x + 11.0, rect.center().y - arrow_galley.size().y * 0.5),
-            arrow_galley,
-            gray,
-        );
+        icon(ui.painter(), icon_rect, text_color);
         let label_galley = ui.painter().layout_no_wrap(
             label.to_string(),
-            egui::FontId::new(12.0, egui::FontFamily::Proportional),
-            gray,
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            text_color,
         );
         ui.painter().galley(
-            egui::pos2(rect.min.x + 30.0, rect.center().y - label_galley.size().y * 0.5),
+            egui::pos2(x + 20.0, rect.center().y - label_galley.size().y * 0.5),
             label_galley,
-            gray,
+            text_color,
         );
-        if resp.clicked() {
-            *open = !*open;
-        }
+        row = Some(resp);
         if trailing_plus {
             // ＋ 用自绘 + interact（add_sized 在 horizontal 内会派生 top_down
             // 子区，把面板右缘撑出一条贯穿全高的黑带——实测 bug，勿改回）。
             let prect = egui::Rect::from_min_size(
-                egui::pos2(rect.max.x + 8.0, rect.min.y - 2.0),
+                egui::pos2(rect.max.x + 8.0, rect.min.y + 3.0),
                 egui::vec2(26.0, 22.0),
             );
-            let presp = ui.interact(prect, egui::Id::new(("section-plus", label)), egui::Sense::click());
+            let presp = ui.interact(
+                prect,
+                egui::Id::new(("section-plus", label)),
+                egui::Sense::click(),
+            );
             if presp.hovered() {
                 ui.painter().rect_filled(prect, 6.0, p.sel_bg);
             }
             let plus_galley = ui.painter().layout_no_wrap(
                 "＋".to_string(),
-                egui::FontId::new(12.0, egui::FontFamily::Proportional),
-                gray,
+                egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                p.subtle,
             );
             ui.painter().galley(
                 egui::pos2(
@@ -321,12 +345,15 @@ pub fn section_header(
                     prect.center().y - plus_galley.size().y * 0.5,
                 ),
                 plus_galley,
-                gray,
+                p.subtle,
             );
             if presp.clicked() {
                 plus_clicked = true;
             }
         }
     });
-    plus_clicked
+    (
+        row.unwrap_or_else(|| unreachable!("horizontal 必然执行")),
+        plus_clicked,
+    )
 }

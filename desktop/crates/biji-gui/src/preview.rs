@@ -544,7 +544,9 @@ pub fn apply_format_edits(doc: &mut Enml, apply: &FormatApply) -> usize {
         let Some(list) = children_at(&mut doc.root.children, parent) else {
             continue;
         };
-        let Some(node) = list.get_mut(idx) else { continue };
+        let Some(node) = list.get_mut(idx) else {
+            continue;
+        };
         let Node::Text(full) = node else { continue };
         let chars: Vec<char> = full.chars().collect();
         let s = (*start).min(chars.len());
@@ -675,10 +677,8 @@ fn tr_cells(tr: &Element) -> Vec<String> {
 
 /// 操作条小按钮（真实分配控件 + 绘制；返回 (矩形, 是否点击)）。
 fn op_label(ui: &mut egui::Ui, t: &str, small: &egui::FontId) -> (egui::Rect, bool) {
-    let g =
-        ui.fonts(|f| f.layout_no_wrap(t.to_string(), small.clone(), ui.visuals().text_color()));
-    let (r, resp) =
-        ui.allocate_exact_size(g.size() + egui::vec2(8.0, 4.0), egui::Sense::click());
+    let g = ui.fonts(|f| f.layout_no_wrap(t.to_string(), small.clone(), ui.visuals().text_color()));
+    let (r, resp) = ui.allocate_exact_size(g.size() + egui::vec2(8.0, 4.0), egui::Sense::click());
     ui.painter().galley(
         egui::pos2(r.min.x + 4.0, r.min.y + 2.0),
         g,
@@ -723,12 +723,14 @@ fn interactive_table(ui: &mut egui::Ui, block: usize, el: &Element, ses: &mut Pr
             for (ri, tr) in rows.iter().enumerate() {
                 // 行首：删行 ✕
                 let g = ui.fonts(|f| {
-                    f.layout_no_wrap("✕".to_string(), small.clone(), ui.visuals().weak_text_color())
+                    f.layout_no_wrap(
+                        "✕".to_string(),
+                        small.clone(),
+                        ui.visuals().weak_text_color(),
+                    )
                 });
-                let (r, resp) = ui.allocate_exact_size(
-                    g.size() + egui::vec2(8.0, 4.0),
-                    egui::Sense::click(),
-                );
+                let (r, resp) =
+                    ui.allocate_exact_size(g.size() + egui::vec2(8.0, 4.0), egui::Sense::click());
                 ui.painter().galley(
                     egui::pos2(r.min.x + 4.0, r.min.y + 2.0),
                     g,
@@ -756,7 +758,11 @@ fn interactive_table(ui: &mut egui::Ui, block: usize, el: &Element, ses: &mut Pr
                         }
                     } else {
                         let text = cells.get(ci).cloned().unwrap_or_default();
-                        let label: String = if text.is_empty() { "·".to_string() } else { text };
+                        let label: String = if text.is_empty() {
+                            "·".to_string()
+                        } else {
+                            text
+                        };
                         let g = ui.fonts(|f| {
                             f.layout_no_wrap(label, font.clone(), ui.visuals().text_color())
                         });
@@ -769,7 +775,15 @@ fn interactive_table(ui: &mut egui::Ui, block: usize, el: &Element, ses: &mut Pr
                             g,
                             ui.visuals().text_color(),
                         );
-                        eprintln!("[cell4] r{}c{} rect={:?} ptr={:?} h={} c={}", ri, ci, r, ui.input(|i| i.pointer.hover_pos()), resp.hovered(), resp.clicked());
+                        eprintln!(
+                            "[cell4] r{}c{} rect={:?} ptr={:?} h={} c={}",
+                            ri,
+                            ci,
+                            r,
+                            ui.input(|i| i.pointer.hover_pos()),
+                            resp.hovered(),
+                            resp.clicked()
+                        );
                         if resp.clicked() {
                             enter_edit = Some((ri, ci));
                         }
@@ -809,11 +823,7 @@ fn interactive_table(ui: &mut egui::Ui, block: usize, el: &Element, ses: &mut Pr
     // ---- 列宽拖拽把手：各列右边界 6px 条 ----
     // Grid 完成后 col_bounds 可从本帧 cell_rects 推算边界——用网格行首
     // 单元格矩形宽度作为列边界参考（简化：用第一行 cells 的 x 坐标）
-    if let Some((_, _, first_rect)) = ses
-        .tbl_cells
-        .iter()
-        .find(|(r, c, _)| *r == 0 && *c == 0)
-    {
+    if let Some((_, _, first_rect)) = ses.tbl_cells.iter().find(|(r, c, _)| *r == 0 && *c == 0) {
         // 以第一行各列 x 坐标推算列边界（近似——Grid 布局稳定时可靠）
         let _ = first_rect;
     }
@@ -974,7 +984,9 @@ pub fn set_table_cell(el: &mut Element, row: usize, col: usize, text: &str) -> b
     let Some(path) = table_row_paths(el).get(row).copied() else {
         return false;
     };
-    let Some(tr) = row_at(el, path) else { return false };
+    let Some(tr) = row_at(el, path) else {
+        return false;
+    };
     let Some(ci) = td_indices(tr).get(col).copied() else {
         return false;
     };
@@ -1245,14 +1257,7 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
                     match el.name.as_str() {
                         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                             ui.add_space(4.0);
-                            selectable_block(
-                                ui,
-                                i,
-                                el,
-                                heading_size(&el.name),
-                                true,
-                                ses,
-                            );
+                            selectable_block(ui, i, el, heading_size(&el.name), true, ses);
                         }
                         "table" => interactive_table(ui, i, el, ses),
                         // 行内富文本块走可选中组件（渲染态直操）；
@@ -1263,8 +1268,8 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
                         | "summary" | "nav" | "address" | "main" | "time" | "abbr" | "acronym"
                         | "bdo" | "bdi" | "cite" | "dfn" | "var" | "samp" | "kbd" | "tt"
                         | "label" | "legend" | "caption" | "tr" | "a" | "b" | "strong" | "i"
-                        | "em" | "u" | "s" | "strike" | "del" | "ins" | "code" | "mark"
-                        | "sub" | "sup" | "small" | "big" => {
+                        | "em" | "u" | "s" | "strike" | "del" | "ins" | "code" | "mark" | "sub"
+                        | "sup" | "small" | "big" => {
                             selectable_block(ui, i, el, 16.0, false, ses);
                         }
                         _ => render_block(ui, el),
@@ -1298,11 +1303,7 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
             let lo = a.min(h);
             let hi = a.max(h);
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("选区格式：")
-                        .weak()
-                        .small(),
-                );
+                ui.label(egui::RichText::new("选区格式：").weak().small());
                 const TAGS: &[(&str, &str, &str)] = &[
                     ("B", "b", ""),
                     ("I", "i", ""),
@@ -1437,7 +1438,12 @@ mod tests {
         let doc =
             biji_enml::Enml::parse("<en-note><p>普通<b>加粗</b>之后<i>斜体</i></p></en-note>")
                 .unwrap();
-        let mut ctx = InlineCtx { runs: vec![], pieces: vec![], char_total: 0, links: vec![] };
+        let mut ctx = InlineCtx {
+            runs: vec![],
+            pieces: vec![],
+            char_total: 0,
+            links: vec![],
+        };
         collect_inline(&doc.root.children, &base_run(16.0), &mut ctx, &[]);
         // 普通 / 加粗 / 之后 / 斜体 —— 样式切换处切段。
         assert_eq!(ctx.runs.len(), 4);
@@ -1449,10 +1455,9 @@ mod tests {
     /// 各贡献一个片段，char 域连续、路径精确到文本节点。
     #[test]
     fn pieces_map_nested_text_nodes() {
-        let doc = biji_enml::Enml::parse(
-            "<en-note><p>普通<b>加粗<i>嵌套</i>尾</b>后</p></en-note>",
-        )
-        .unwrap();
+        let doc =
+            biji_enml::Enml::parse("<en-note><p>普通<b>加粗<i>嵌套</i>尾</b>后</p></en-note>")
+                .unwrap();
         // 块 0 = <p>；片段收集以块为前缀路径
         let p = match &doc.root.children[0] {
             Node::Element(el) => el.clone(),
@@ -1468,11 +1473,11 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                (0, 2, vec![0, 0]),   // 普通（p.children[0]）
-                (2, 2, vec![0, 1, 0]), // 加粗（b.children[0]）
+                (0, 2, vec![0, 0]),       // 普通（p.children[0]）
+                (2, 2, vec![0, 1, 0]),    // 加粗（b.children[0]）
                 (4, 2, vec![0, 1, 1, 0]), // 嵌套（i.children[0]）
-                (6, 1, vec![0, 1, 2]), // 尾（b.children[2]）
-                (7, 1, vec![0, 2]),   // 后（p.children[2]）
+                (6, 1, vec![0, 1, 2]),    // 尾（b.children[2]）
+                (7, 1, vec![0, 2]),       // 后（p.children[2]）
             ]
         );
         assert_eq!(ctx.char_total, 8, "块纯文本域长度");
@@ -1482,14 +1487,19 @@ mod tests {
     #[test]
     fn selection_edits_spanning_pieces() {
         let pieces = vec![
-            Piece { char_start: 0, char_len: 2, path: vec![0, 0] },
-            Piece { char_start: 2, char_len: 2, path: vec![0, 1, 0] },
+            Piece {
+                char_start: 0,
+                char_len: 2,
+                path: vec![0, 0],
+            },
+            Piece {
+                char_start: 2,
+                char_len: 2,
+                path: vec![0, 1, 0],
+            },
         ];
         let apply = selection_edits(&pieces, 4, 1, 3, "b", vec![]);
-        assert_eq!(
-            apply.edits,
-            vec![(vec![0, 0], 1, 2), (vec![0, 1, 0], 0, 1)]
-        );
+        assert_eq!(apply.edits, vec![(vec![0, 0], 1, 2), (vec![0, 1, 0], 0, 1)]);
     }
 
     /// 单文本节点中部包裹（CJK char 安全）：拆为 前 + <b>选</b> + 后。
@@ -1503,10 +1513,7 @@ mod tests {
         };
         assert_eq!(apply_format_edits(&mut doc, &apply), 1);
         let xml = doc.to_xml();
-        assert!(
-            xml.contains("你<b>好世</b>界"),
-            "拆分包裹失真：{xml}"
-        );
+        assert!(xml.contains("你<b>好世</b>界"), "拆分包裹失真：{xml}");
     }
 
     /// 同一父节点内两处编辑（选区横跨兄弟文本节点）：逆序应用保证
@@ -1517,8 +1524,16 @@ mod tests {
             biji_enml::Enml::parse("<en-note><p>一二<b>三四</b>五六</p></en-note>").unwrap();
         // 选区 [1..5)：覆盖 一二的后半 + 三四的前半 → 两条编辑
         let pieces = vec![
-            Piece { char_start: 0, char_len: 2, path: vec![0, 0] },  // 一二
-            Piece { char_start: 2, char_len: 2, path: vec![0, 1, 0] }, // 三四
+            Piece {
+                char_start: 0,
+                char_len: 2,
+                path: vec![0, 0],
+            }, // 一二
+            Piece {
+                char_start: 2,
+                char_len: 2,
+                path: vec![0, 1, 0],
+            }, // 三四
         ];
         let apply = selection_edits(&pieces, 4, 1, 3, "b", vec![]);
         assert_eq!(apply.edits.len(), 2);

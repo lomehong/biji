@@ -13,8 +13,13 @@ use std::process::Command;
 pub trait PdfPageFileRenderer {
     /// 渲染 `pdf` 的第 `page` 页（1 起）到 `out_png`；`scale_to` > 0 时
     /// 按长边缩放（对位 pdftoppm `-scale-to`）。
-    fn render_to_file(&self, pdf: &Path, page: u32, scale_to: i32, out_png: &Path)
-        -> Result<(), String>;
+    fn render_to_file(
+        &self,
+        pdf: &Path,
+        page: u32,
+        scale_to: i32,
+        out_png: &Path,
+    ) -> Result<(), String>;
     fn describe(&self) -> String;
 }
 

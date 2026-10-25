@@ -642,11 +642,7 @@ impl EdamClient {
     /// NoteStore.getResource → 附件全量（guid + body + mime + fileName）。
     /// chunk 只带资源元数据，大附件 body 经此按需拉取（EDAM 分页语义）；
     /// 参数序对齐 EDAM IDL：f2 guid / f3 withBinary / f4 withData。
-    pub fn get_resource(
-        &self,
-        note_url: &str,
-        guid: &str,
-    ) -> Result<RemoteEdamResource, String> {
+    pub fn get_resource(&self, note_url: &str, guid: &str) -> Result<RemoteEdamResource, String> {
         let fields = self.rpc(note_url, "getResource", 1, |w| {
             w.field_string(1, &self.token);
             w.field_string(2, guid);
@@ -963,11 +959,10 @@ fn parse_resource_struct(r: &TVal) -> Option<RemoteEdamResource> {
             .and_then(|f| f.as_str())
             .unwrap_or_default()
             .to_string(),
-        data: r.field(3).and_then(|d| d.field(1)).map(|b| {
-            b.as_bytes()
-                .unwrap_or_default()
-                .to_vec()
-        }),
+        data: r
+            .field(3)
+            .and_then(|d| d.field(1))
+            .map(|b| b.as_bytes().unwrap_or_default().to_vec()),
     })
 }
 
@@ -1168,10 +1163,7 @@ mod tests {
 
         // 包进 chunk 容器：f4 notes list 首元素
         let note_fields = read_struct(&w.buf, &mut 0usize).expect("note 解析失败");
-        let chunk_fields = vec![(
-            4i16,
-            TVal::List(vec![TVal::Struct(note_fields)]),
-        )];
+        let chunk_fields = vec![(4i16, TVal::List(vec![TVal::Struct(note_fields)]))];
         let chunk = parse_sync_chunk(&chunk_fields);
         assert_eq!(chunk.notes.len(), 1);
         let rs = &chunk.notes[0].resources;

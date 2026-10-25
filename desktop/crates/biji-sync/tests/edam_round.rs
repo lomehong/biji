@@ -138,11 +138,9 @@ fn full_sync_round_against_in_memory_edam() {
             "updateNotebook" | "updateTag" => reply_raw("updateNotebook", |w| {
                 w.field_i32(0, 7); // updateSequenceNum
             }),
-            "expungeNotebook" | "expungeTag" | "expungeNote" => {
-                reply_raw("expungeNote", |w| {
-                    w.field_i64(0, 7);
-                })
-            }
+            "expungeNotebook" | "expungeTag" | "expungeNote" => reply_raw("expungeNote", |w| {
+                w.field_i64(0, 7);
+            }),
             "createTag" => reply("createTag", |w| {
                 w.field_string(1, "srv-tag-x");
             }),
@@ -156,10 +154,8 @@ fn full_sync_round_against_in_memory_edam() {
     let transport_log =
         { move |url: &str, body: &[u8]| -> Result<Vec<u8>, String> { dbg_transport(url, body) } };
 
-    let mut remote = ServerRemote::with_token(
-        biji_sync::DEFAULT_SERVER_URL,
-        Some("TEST-TOKEN".into()),
-    );
+    let mut remote =
+        ServerRemote::with_token(biji_sync::DEFAULT_SERVER_URL, Some("TEST-TOKEN".into()));
     remote.set_transport("TEST-TOKEN", Rc::new(transport_log), note_url.to_string());
 
     // ---- 本地库：一条待推送笔记 ----
@@ -211,15 +207,23 @@ fn full_sync_round_against_in_memory_edam() {
         "标签 guid 映射缺失"
     );
     // f12 笔记本删除账已对账（未知 guid 幂等无操作，此处验证通路不 panic）
-    assert!(store.identity_get_local("notebook", "srv-nb-expunged-1").is_none());
+    assert!(store
+        .identity_get_local("notebook", "srv-nb-expunged-1")
+        .is_none());
     assert_eq!(
         store.identity_get_local("notebook", "srv-nb-1"),
         Some(nb.uid),
         "笔记本 guid 映射缺失"
     );
-    let note_uid = store.identity_get_local("note", "srv-note-1").expect("笔记映射缺失");
+    let note_uid = store
+        .identity_get_local("note", "srv-note-1")
+        .expect("笔记映射缺失");
     let full = store.get_note(note_uid).expect("笔记缺失");
-    assert_eq!(full.note.notebook_uid, Some(nb.uid), "笔记归属未落到远端笔记本");
+    assert_eq!(
+        full.note.notebook_uid,
+        Some(nb.uid),
+        "笔记归属未落到远端笔记本"
+    );
 
     // 附件经 getResource 按需拉取并落库（chunk 只带元数据）
     let res_uid = store
@@ -274,7 +278,10 @@ fn full_sync_round_against_in_memory_edam() {
         let title = note_fields.iter().find(|f| f.id == 2).expect("缺 title");
         assert_eq!(title.val, independent::TVal::Str("本地笔记".into()));
         // 笔记本归属上云：note.notebookGuid（f11）= 先推笔记本时登记的服务器 guid
-        let nb = note_fields.iter().find(|f| f.id == 11).expect("缺 notebookGuid");
+        let nb = note_fields
+            .iter()
+            .find(|f| f.id == 11)
+            .expect("缺 notebookGuid");
         assert_eq!(nb.val, independent::TVal::Str("srv-nb-cloud".into()));
         let content = note_fields.iter().find(|f| f.id == 3).expect("缺 content");
         if let independent::TVal::Str(c) = &content.val {
@@ -532,7 +539,11 @@ fn notebook_stack_round_trips_on_wire() {
         })
     };
     let mut remote = ServerRemote::with_token("http://t", Some("T".into()));
-    remote.set_transport("T", std::rc::Rc::new(transport), "http://test/edam/note".into());
+    remote.set_transport(
+        "T",
+        std::rc::Rc::new(transport),
+        "http://test/edam/note".into(),
+    );
     SyncEngine::new(&store).sync_round(&mut remote).unwrap();
 
     // 请求 wire 断言：createNotebook 的 notebook 结构含 f2 name + f7 stack
@@ -599,8 +610,14 @@ fn pulled_notebook_stack_lands_in_store() {
     SyncEngine::new(&store).sync_round(&mut remote).unwrap();
 
     let nbs = store.list_notebooks().unwrap();
-    let nb = nbs.iter().find(|n| n.name == "远端本").expect("笔记本未落库");
-    assert_eq!(store.notebook_stack(nb.uid).unwrap().flatten(), Some("远端分组".to_string()));
+    let nb = nbs
+        .iter()
+        .find(|n| n.name == "远端本")
+        .expect("笔记本未落库");
+    assert_eq!(
+        store.notebook_stack(nb.uid).unwrap().flatten(),
+        Some("远端分组".to_string())
+    );
 }
 
 /// S3：分页拉取循环——两页截断 chunk + 终页，全部笔记落库。

@@ -38,7 +38,6 @@ pub fn now_epoch() -> f64 {
         .unwrap_or_default()
 }
 
-
 /// 打开附件目录布局的推导：`notes.exb` → `notes.exb.attachments`（镜像原客户端）。
 pub fn attachments_dir_for(db_path: &Path) -> PathBuf {
     let mut name = db_path
@@ -273,12 +272,20 @@ impl Store {
         let mut cur = self.shortcuts();
         let joined = if let Some(pos) = cur.iter().position(|&u| u == uid) {
             cur.remove(pos);
-            let v = cur.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+            let v = cur
+                .iter()
+                .map(|u| u.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             self.meta_set("shortcuts", &v)?;
             false
         } else {
             cur.push(uid);
-            let v = cur.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+            let v = cur
+                .iter()
+                .map(|u| u.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             self.meta_set("shortcuts", &v)?;
             true
         };
@@ -317,9 +324,9 @@ impl Store {
     }
 
     pub fn sync_journal_since(&self, usn: i64) -> Result<Vec<JournalEntry>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT seq, kind, item_uid, op, usn FROM sync_journal WHERE usn > ?1 ORDER BY usn")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, kind, item_uid, op, usn FROM sync_journal WHERE usn > ?1 ORDER BY usn",
+        )?;
         let rows = stmt
             .query_map(params![usn], |r| {
                 Ok(JournalEntry {
@@ -373,12 +380,7 @@ impl Store {
     /// 按 guid 应用远端笔记本：本地已有 identity 映射则改名/分组对齐，
     /// 否则按名建库（远端创建，非本地）并登记映射。幂等。
     /// stack：Some 更新分组（空串清除），None 保持本地现值。
-    pub fn apply_remote_notebook(
-        &self,
-        guid: &str,
-        name: &str,
-        stack: Option<&str>,
-    ) -> Result<()> {
+    pub fn apply_remote_notebook(&self, guid: &str, name: &str, stack: Option<&str>) -> Result<()> {
         if let Some(uid) = self.identity_get_local("notebook", guid) {
             match stack {
                 Some(s) => {
@@ -556,10 +558,8 @@ impl Store {
                     .execute("DELETE FROM notebook_attr WHERE uid = ?1", params![uid])?;
             }
             "tag" => {
-                self.conn.execute(
-                    "DELETE FROM tag_attr WHERE uid = ?1",
-                    params![uid],
-                )?;
+                self.conn
+                    .execute("DELETE FROM tag_attr WHERE uid = ?1", params![uid])?;
             }
             _ => {}
         }
@@ -770,11 +770,15 @@ impl Store {
                 if c == uid {
                     return Err(StoreError::NotFound(uid)); // 成环
                 }
-                cur = self.conn.query_row(
-                    "SELECT parent_uid FROM tag_attr WHERE uid = ?1",
-                    params![c],
-                    |r| r.get::<_, Option<i64>>(0),
-                ).optional()?.flatten();
+                cur = self
+                    .conn
+                    .query_row(
+                        "SELECT parent_uid FROM tag_attr WHERE uid = ?1",
+                        params![c],
+                        |r| r.get::<_, Option<i64>>(0),
+                    )
+                    .optional()?
+                    .flatten();
                 hops += 1;
                 if hops > 64 {
                     break;
@@ -803,8 +807,9 @@ impl Store {
             return Err(StoreError::NotFound(uid));
         }
         let note_ids: Vec<i64> = {
-            let mut stmt =
-                self.conn.prepare("SELECT note_uid FROM note_tag WHERE tag_uid = ?1")?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT note_uid FROM note_tag WHERE tag_uid = ?1")?;
             let rows = stmt.query_map(params![uid], |r| r.get(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
@@ -883,9 +888,9 @@ impl Store {
     /// 写删除账（对位 delete_notebook 的删除账语义）。
     pub fn delete_tag(&self, uid: i64) -> Result<()> {
         let note_ids: Vec<i64> = {
-            let mut stmt =
-                self.conn
-                    .prepare("SELECT note_uid FROM note_tag WHERE tag_uid = ?1")?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT note_uid FROM note_tag WHERE tag_uid = ?1")?;
             let rows = stmt.query_map(params![uid], |r| r.get(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
@@ -1378,10 +1383,7 @@ impl Store {
     }
 
     /// `(uid, sender, body, date_sent)`，按时间正序。
-    pub fn list_messages(
-        &self,
-        thread_uid: i64,
-    ) -> Result<Vec<(i64, String, String, f64)>> {
+    pub fn list_messages(&self, thread_uid: i64) -> Result<Vec<(i64, String, String, f64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT uid, sender, body, date_sent FROM message_attr WHERE thread_uid = ?1 ORDER BY date_sent, uid",
         )?;
@@ -1438,9 +1440,11 @@ impl Store {
             "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = ?1",
             params![key],
         )?;
-        let v: i64 = self
-            .conn
-            .query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?1", params![key], |r| r.get(0))?;
+        let v: i64 = self.conn.query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )?;
         Ok(v)
     }
 }
@@ -1521,10 +1525,7 @@ mod tests {
         s.restore_note(uid).unwrap();
         assert_eq!(s.list_notes(ListNotes::All).unwrap().len(), 1);
         s.expunge_note(uid).unwrap();
-        assert!(matches!(
-            s.get_note(uid),
-            Err(StoreError::NotFound(_))
-        ));
+        assert!(matches!(s.get_note(uid), Err(StoreError::NotFound(_))));
     }
 
     #[test]
@@ -1569,13 +1570,14 @@ mod tests {
         s.attach_tag(n1, t).unwrap();
         assert_eq!(s.note_tags(n1).unwrap(), vec![(t, "重要".to_string())]);
         assert_eq!(s.note_tags(n2).unwrap(), vec![(t, "重要".to_string())]);
-        let other = s.create_note(&NoteDraft {
-            title: "n3".into(),
-            notebook_uid: Some(nb),
-            enml: "<en-note/>".into(),
-            ..Default::default()
-        })
-        .unwrap();
+        let other = s
+            .create_note(&NoteDraft {
+                title: "n3".into(),
+                notebook_uid: Some(nb),
+                enml: "<en-note/>".into(),
+                ..Default::default()
+            })
+            .unwrap();
         assert!(s.note_tags(other).unwrap().is_empty());
     }
 
@@ -1612,12 +1614,8 @@ mod tests {
             })
             .unwrap();
         let data = b"hello attachment".to_vec();
-        let r1 = s
-            .add_resource(note, "a.txt", "text/plain", &data)
-            .unwrap();
-        let r2 = s
-            .add_resource(note, "b.txt", "text/plain", &data)
-            .unwrap();
+        let r1 = s.add_resource(note, "a.txt", "text/plain", &data).unwrap();
+        let r2 = s.add_resource(note, "b.txt", "text/plain", &data).unwrap();
         assert_ne!(r1, r2, "两条 resource 记录，但共享同一 blob");
         let (meta, bytes) = s.get_resource(r2).unwrap();
         assert_eq!(bytes, data);
@@ -1643,9 +1641,11 @@ mod tests {
         s.move_note(uid, Some(nb_b)).unwrap();
         let got: Option<i64> = s
             .conn
-            .query_row("SELECT notebook_uid FROM note_attr WHERE uid = ?1", params![uid], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT notebook_uid FROM note_attr WHERE uid = ?1",
+                params![uid],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(got, Some(nb_b));
         let nbs = s.list_notebooks().unwrap();
@@ -1658,15 +1658,20 @@ mod tests {
         assert_eq!(count_of("旧名"), 0, "原笔记本计数应归零");
         assert_eq!(count_of("目标本"), 1, "新笔记本计数应为 1");
         let last = s.sync_journal_since(0).unwrap().pop().unwrap();
-        assert_eq!((last.kind.as_str(), last.item_uid, last.op.as_str()), ("note", uid, "update"));
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("note", uid, "update")
+        );
 
         // 移动到未分类：notebook_uid 置 NULL
         s.move_note(uid, None).unwrap();
         let got: Option<i64> = s
             .conn
-            .query_row("SELECT notebook_uid FROM note_attr WHERE uid = ?1", params![uid], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT notebook_uid FROM note_attr WHERE uid = ?1",
+                params![uid],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(got, None);
 
@@ -1714,7 +1719,10 @@ mod tests {
 
         // 存活过滤：回收站/彻底删除的笔记从快捷方式清单消失，其余保留
         s.trash_note(b).unwrap();
-        assert!(s.shortcut_notes().is_empty(), "回收站笔记不应出现在快捷方式");
+        assert!(
+            s.shortcut_notes().is_empty(),
+            "回收站笔记不应出现在快捷方式"
+        );
         assert_eq!(s.shortcuts(), vec![b], "原始 uid 列表保留（还原后可恢复）");
         s.restore_note(b).unwrap();
         assert_eq!(s.shortcut_notes(), vec![(b, "乙".to_string())]);
@@ -1749,10 +1757,7 @@ mod tests {
             ("tag", mid, "update")
         );
         // 防环：根→叶（会成环 根→叶→中→根）
-        assert!(
-            s.set_tag_parent(root, Some(leaf)).is_err(),
-            "成环应被拒绝"
-        );
+        assert!(s.set_tag_parent(root, Some(leaf)).is_err(), "成环应被拒绝");
         // 自引用
         assert!(s.set_tag_parent(root, Some(root)).is_err());
         // 移出父级
@@ -1880,8 +1885,10 @@ mod tests {
     #[test]
     fn material_registry() {
         let s = store();
-        s.add_material("设计稿", "image/png", 2048, "abc", 0).unwrap();
-        s.add_material("规格文档", "application/pdf", 4096, "def", 0).unwrap();
+        s.add_material("设计稿", "image/png", 2048, "abc", 0)
+            .unwrap();
+        s.add_material("规格文档", "application/pdf", 4096, "def", 0)
+            .unwrap();
         let list = s.list_materials().unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].1, "规格文档", "按创建时间倒序");

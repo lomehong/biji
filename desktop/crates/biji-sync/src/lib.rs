@@ -638,9 +638,7 @@ impl SyncRemote for ServerRemote {
                         Some(guid) => {
                             client.update_note(&url, guid, title, content, nb_guid.as_deref(), &[])
                         }
-                        None => {
-                            client.create_note(&url, title, content, nb_guid.as_deref(), &[])
-                        }
+                        None => client.create_note(&url, title, content, nb_guid.as_deref(), &[]),
                     }
                     .map_err(SyncError::Edam)?;
                     if guid_existing.is_none() {
@@ -652,15 +650,15 @@ impl SyncRemote for ServerRemote {
                     // 附件变更优先走 putResource 快路径：该资源已有服务端 guid
                     // （上一轮 pull 经 chunk 元数据建立 identity）时单传字节，
                     // 不重推整条笔记。失败/无身份则回退全量重推。
-                    let Some(payload) = &ch.resource else { continue };
+                    let Some(payload) = &ch.resource else {
+                        continue;
+                    };
                     let Some(note_guid) = identities.lookup("note", payload.note_uid) else {
                         continue; // 所属笔记尚未上云（journal 序保证先笔记后附件）
                     };
                     if let Some(res_guid) = identities.lookup("resource", ch.item_uid) {
-                        if let Some(item) = payload
-                            .items
-                            .iter()
-                            .find(|it| it.local_uid == ch.item_uid)
+                        if let Some(item) =
+                            payload.items.iter().find(|it| it.local_uid == ch.item_uid)
                         {
                             if client
                                 .put_resource(
@@ -760,7 +758,11 @@ impl SyncRemote for ServerRemote {
                 chunk_notebooks.push(RemoteNotebook {
                     guid: nb.guid.clone(),
                     name: nb.name.clone(),
-                    stack: if nb.stack.is_empty() { None } else { Some(nb.stack.clone()) },
+                    stack: if nb.stack.is_empty() {
+                        None
+                    } else {
+                        Some(nb.stack.clone())
+                    },
                 });
             }
             for tg in &chunk.tags {
@@ -859,7 +861,10 @@ impl<'a> SyncEngine<'a> {
     }
 
     pub fn pending_count(&self) -> Result<usize> {
-        Ok(self.store.sync_journal_since(self.journal_push_mark())?.len())
+        Ok(self
+            .store
+            .sync_journal_since(self.journal_push_mark())?
+            .len())
     }
 
     /// 汇总上次同步点之后的全部变更与删除（含标题/正文/名称快照）。
@@ -913,30 +918,30 @@ impl<'a> SyncEngine<'a> {
                         .ok()
                         .flatten()
                         .and_then(|meta| {
-                        let full = self.store.get_note(meta.note_uid).ok()?;
-                        let items: Vec<_> = self
-                            .store
-                            .list_resources(meta.note_uid)
-                            .ok()?
-                            .into_iter()
-                            .filter_map(|r| {
-                                let bytes = self.store.get_resource(r.uid).ok()?.1;
-                                Some(edam::ResourceUploadItem {
-                                    local_uid: r.uid,
-                                    file_name: r.file_name,
-                                    mime: r.mime,
-                                    bytes,
+                            let full = self.store.get_note(meta.note_uid).ok()?;
+                            let items: Vec<_> = self
+                                .store
+                                .list_resources(meta.note_uid)
+                                .ok()?
+                                .into_iter()
+                                .filter_map(|r| {
+                                    let bytes = self.store.get_resource(r.uid).ok()?.1;
+                                    Some(edam::ResourceUploadItem {
+                                        local_uid: r.uid,
+                                        file_name: r.file_name,
+                                        mime: r.mime,
+                                        bytes,
+                                    })
                                 })
+                                .collect();
+                            Some(ResourceUpload {
+                                note_uid: meta.note_uid,
+                                title: full.note.title,
+                                content: full.enml,
+                                notebook_uid: full.note.notebook_uid,
+                                items,
                             })
-                            .collect();
-                        Some(ResourceUpload {
-                            note_uid: meta.note_uid,
-                            title: full.note.title,
-                            content: full.enml,
-                            notebook_uid: full.note.notebook_uid,
-                            items,
-                        })
-                    });
+                        });
                     (None, None, None, None, payload, None)
                 }
                 _ => (None, None, None, None, None, None),
@@ -1066,8 +1071,13 @@ impl<'a> SyncEngine<'a> {
                     if bytes.is_empty() {
                         continue;
                     }
-                    self.store
-                        .apply_remote_resource(note_uid, &r.guid, &r.file_name, &r.mime, &bytes)?;
+                    self.store.apply_remote_resource(
+                        note_uid,
+                        &r.guid,
+                        &r.file_name,
+                        &r.mime,
+                        &bytes,
+                    )?;
                 }
             }
             report.pulled_notes += 1;
@@ -1311,7 +1321,11 @@ mod tests {
         }
         s.delete_tag(tag_uid).unwrap();
         let mark_before = s.meta_get("sync.journal_mark");
-        assert_eq!(mark_before.as_deref(), Some("2"), "首轮后 journal 水位应为 2");
+        assert_eq!(
+            mark_before.as_deref(),
+            Some("2"),
+            "首轮后 journal 水位应为 2"
+        );
 
         // 修复前：plan_push 以服务器同步点 6 为界，usn=6 的删除账被漏推
         let report = SyncEngine::new(&s).sync_round(&mut ra).unwrap();
@@ -1322,7 +1336,10 @@ mod tests {
         let mut rb2 = LocalEdamRemote::new(server.clone());
         SyncEngine::new(&s_b).sync_round(&mut rb2).unwrap();
         assert!(
-            !s_b.list_tags().unwrap().iter().any(|t| t.name == "边界标签"),
+            !s_b.list_tags()
+                .unwrap()
+                .iter()
+                .any(|t| t.name == "边界标签"),
             "删除账未跨端对账"
         );
     }

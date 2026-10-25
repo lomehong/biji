@@ -4,13 +4,11 @@
 //! 双 Thrift 服务的两条命令通路（分析文档 §5）。
 
 use std::io::Read as _;
-use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 
-use biji_service::{
-    LoggingFrontend, NodeWebkitCommand, NoteService, note_link,
-};
+use biji_service::{note_link, LoggingFrontend, NodeWebkitCommand, NoteService};
 use biji_store::{ListNotes, Store};
 use biji_sync::{LocalEdamRemote, MockEdamServer, ServerRemote, SyncEngine, SyncRemote};
 use clap::{Parser, Subcommand};
@@ -88,7 +86,9 @@ enum NbCmd {
         stack: Option<String>,
     },
     List,
-    Rm { name: String },
+    Rm {
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -128,7 +128,10 @@ enum NoteCmd {
         #[arg(long, help = "彻底删除（写删除账）")]
         hard: bool,
     },
-    Title { uid: i64, new_title: String },
+    Title {
+        uid: i64,
+        new_title: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -139,7 +142,9 @@ enum ResCmd {
         #[arg(long, default_value = "application/octet-stream")]
         mime: String,
     },
-    Ls { note_uid: i64 },
+    Ls {
+        note_uid: i64,
+    },
     Extract {
         uid: i64,
         #[arg(long)]
@@ -229,7 +234,10 @@ fn run(cli: Cli) -> Result<(), String> {
             let mut svc = service(&cli.db)?;
             svc.dispatch(NodeWebkitCommand::Markup {
                 resource_url: "biji://resource/1".to_string(),
-                title: format!("标注：{}", svc.get_note_title(note_uid).map_err(|e| e.to_string())?),
+                title: format!(
+                    "标注：{}",
+                    svc.get_note_title(note_uid).map_err(|e| e.to_string())?
+                ),
                 x: 100,
                 y: 100,
                 width: 640,
@@ -249,7 +257,10 @@ fn run(cli: Cli) -> Result<(), String> {
 
 fn service(db: &Path) -> Result<NoteService, String> {
     let store = Store::open(db).map_err(|e| e.to_string())?;
-    Ok(NoteService::new(store, Box::new(LoggingFrontend::default())))
+    Ok(NoteService::new(
+        store,
+        Box::new(LoggingFrontend::default()),
+    ))
 }
 
 fn nb(db: &Path, cmd: NbCmd) -> Result<(), String> {
@@ -266,7 +277,10 @@ fn nb(db: &Path, cmd: NbCmd) -> Result<(), String> {
             for nb in svc.store().list_notebooks().map_err(|e| e.to_string())? {
                 println!(
                     "{}\t{}\t[{}]\t{} 条",
-                    nb.uid, nb.name, nb.stack.as_deref().unwrap_or("-"), nb.note_count
+                    nb.uid,
+                    nb.name,
+                    nb.stack.as_deref().unwrap_or("-"),
+                    nb.note_count
                 );
             }
         }
@@ -278,7 +292,9 @@ fn nb(db: &Path, cmd: NbCmd) -> Result<(), String> {
                 .into_iter()
                 .find(|n| n.name == name)
                 .ok_or_else(|| format!("笔记本不存在：{name}"))?;
-            svc.store().delete_notebook(nb.uid).map_err(|e| e.to_string())?;
+            svc.store()
+                .delete_notebook(nb.uid)
+                .map_err(|e| e.to_string())?;
             println!("notebook {} 已删除（笔记移入回收站）", nb.uid);
         }
     }
@@ -289,7 +305,10 @@ fn tag(db: &Path, cmd: TagCmd) -> Result<(), String> {
     let svc = service(db)?;
     match cmd {
         TagCmd::Add { name } => {
-            let uid = svc.store().create_tag(&name, None).map_err(|e| e.to_string())?;
+            let uid = svc
+                .store()
+                .create_tag(&name, None)
+                .map_err(|e| e.to_string())?;
             println!("tag {uid} 已创建：{name}");
         }
         TagCmd::List => {
@@ -305,7 +324,9 @@ fn tag(db: &Path, cmd: TagCmd) -> Result<(), String> {
                 .into_iter()
                 .find(|t| t.name == name)
                 .ok_or_else(|| format!("标签不存在：{name}"))?;
-            svc.store().attach_tag(note_uid, tag.uid).map_err(|e| e.to_string())?;
+            svc.store()
+                .attach_tag(note_uid, tag.uid)
+                .map_err(|e| e.to_string())?;
             println!("已给笔记 {note_uid} 打标签「{name}」");
         }
         TagCmd::Rm { name } => {
@@ -326,7 +347,11 @@ fn tag(db: &Path, cmd: TagCmd) -> Result<(), String> {
 fn note(db: &Path, cmd: NoteCmd) -> Result<(), String> {
     let svc = service(db)?;
     match cmd {
-        NoteCmd::Add { title, notebook, file } => {
+        NoteCmd::Add {
+            title,
+            notebook,
+            file,
+        } => {
             let content = read_content(file.as_deref())?;
             let notebook_uid = match notebook {
                 Some(name) => {
@@ -351,8 +376,7 @@ fn note(db: &Path, cmd: NoteCmd) -> Result<(), String> {
             if html {
                 print!("{}", view.html);
             } else if text {
-                let mut doc = biji_enml::Enml::parse(&view.html)
-                    .map_err(|e| e.to_string())?;
+                let mut doc = biji_enml::Enml::parse(&view.html).map_err(|e| e.to_string())?;
                 doc.sanitize();
                 println!("{}", doc.to_plain_text());
             } else {
@@ -361,8 +385,7 @@ fn note(db: &Path, cmd: NoteCmd) -> Result<(), String> {
                 println!("来源:   {}", view.source_url.as_deref().unwrap_or("-"));
                 println!("作者:   {}", view.author.as_deref().unwrap_or("-"));
                 println!("正文:");
-                let mut doc = biji_enml::Enml::parse(&view.html)
-                    .map_err(|e| e.to_string())?;
+                let mut doc = biji_enml::Enml::parse(&view.html).map_err(|e| e.to_string())?;
                 doc.sanitize();
                 println!("{}", doc.to_plain_text());
             }
@@ -414,7 +437,11 @@ fn note(db: &Path, cmd: NoteCmd) -> Result<(), String> {
 fn res(db: &Path, cmd: ResCmd) -> Result<(), String> {
     let svc = service(db)?;
     match cmd {
-        ResCmd::Add { note_uid, file, mime } => {
+        ResCmd::Add {
+            note_uid,
+            file,
+            mime,
+        } => {
             let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
             let name = file
                 .file_name()
@@ -427,7 +454,11 @@ fn res(db: &Path, cmd: ResCmd) -> Result<(), String> {
             println!("resource {uid} 已添加（{}B）", bytes.len());
         }
         ResCmd::Ls { note_uid } => {
-            for r in svc.store().list_resources(note_uid).map_err(|e| e.to_string())? {
+            for r in svc
+                .store()
+                .list_resources(note_uid)
+                .map_err(|e| e.to_string())?
+            {
                 println!("{}\t{}\t{}\t{}B", r.uid, r.file_name, r.mime, r.size);
             }
         }
@@ -437,7 +468,12 @@ fn res(db: &Path, cmd: ResCmd) -> Result<(), String> {
             std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
             println!("已导出 {}B → {}", bytes.len(), target.display());
         }
-        ResCmd::Render { uid, page, width, height } => {
+        ResCmd::Render {
+            uid,
+            page,
+            width,
+            height,
+        } => {
             let url = format!("biji://resource/{uid}");
             let path = svc
                 .render_page(&url, 0, width, height, page)
@@ -510,9 +546,14 @@ fn sync(db: &Path, cmd: SyncCmd) -> Result<(), String> {
             };
             match result {
                 Ok(0) => println!("无待推送变更"),
-                Ok(n) => println!("已推送 {n} 条变更，同步点推进至 {}", engine.last_synced_usn()),
+                Ok(n) => println!(
+                    "已推送 {n} 条变更，同步点推进至 {}",
+                    engine.last_synced_usn()
+                ),
                 Err(biji_sync::SyncError::Unsupported(msg)) => {
-                    return Err(format!("自有后端未接通：{msg}（或用 --demo 演示内置 mock 闭环）"));
+                    return Err(format!(
+                        "自有后端未接通：{msg}（或用 --demo 演示内置 mock 闭环）"
+                    ));
                 }
                 Err(e) => return Err(e.to_string()),
             }
@@ -531,7 +572,12 @@ fn account(db: &Path, cmd: AccountCmd) -> Result<(), String> {
         }
         AccountCmd::Show => {
             let u = svc.get_current_user_info().map_err(|e| e.to_string())?;
-            println!("{}#{}（{}）", u.username, u.service_host, u.email.as_deref().unwrap_or("未绑定邮箱"));
+            println!(
+                "{}#{}（{}）",
+                u.username,
+                u.service_host,
+                u.email.as_deref().unwrap_or("未绑定邮箱")
+            );
         }
     }
     Ok(())

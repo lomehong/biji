@@ -17,22 +17,97 @@ pub const EN_NOTE: &str = "en-note";
 
 /// ENML2 DTD 允许的元素全集（en-* 扩展单列）。
 const ALLOWED_TAGS: &[&str] = &[
-    "a", "abbr", "acronym", "address", "area", "article", "aside", "b", "bdi", "bdo",
-    "blockquote", "br", "button", "canvas", "caption", "center", "cite", "code", "col",
-    "colgroup", "dd", "del", "details", "dfn", "div", "dl", "dt", "em", "fieldset",
-    "figcaption", "figure", "font", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
-    "header", "hr", "i", "img", "input", "ins", "kbd", "label", "legend", "li", "map",
-    "mark", "menu", "nav", "ol", "p", "pre", "q", "s", "samp", "small", "span", "strike",
-    "strong", "sub", "summary", "sup", "table", "tbody", "td", "textarea", "tfoot", "th",
-    "thead", "time", "tr", "tt", "u", "ul", "var", "en-note", "en-crypt", "en-media",
-    "en-todo", "en-codeblock",
+    "a",
+    "abbr",
+    "acronym",
+    "address",
+    "area",
+    "article",
+    "aside",
+    "b",
+    "bdi",
+    "bdo",
+    "blockquote",
+    "br",
+    "button",
+    "canvas",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "dd",
+    "del",
+    "details",
+    "dfn",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "font",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "i",
+    "img",
+    "input",
+    "ins",
+    "kbd",
+    "label",
+    "legend",
+    "li",
+    "map",
+    "mark",
+    "menu",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "tr",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "en-note",
+    "en-crypt",
+    "en-media",
+    "en-todo",
+    "en-codeblock",
 ];
 
 /// 出现即整棵剪除（连同子树）的元素。
 const STRIP_WITH_CONTENT: &[&str] = &[
-    "script", "style", "iframe", "object", "embed", "applet", "frame", "frameset",
-    "noscript", "title", "head", "html", "body", "base", "link", "meta", "svg", "math",
-    "xml",
+    "script", "style", "iframe", "object", "embed", "applet", "frame", "frameset", "noscript",
+    "title", "head", "html", "body", "base", "link", "meta", "svg", "math", "xml",
 ];
 
 /// 无子元素的 void 元素（序列化为自闭合）。
@@ -40,7 +115,13 @@ const VOID_TAGS: &[&str] = &["br", "hr", "img", "input", "area", "col", "en-medi
 
 /// `href`/`src` 允许的 URL scheme 前缀（ENML2 协议白名单的常用子集）。
 const ALLOWED_SCHEMES: &[&str] = &[
-    "http://", "https://", "evernote://", "mailto:", "ftp://", "tel:", "callto:",
+    "http://",
+    "https://",
+    "evernote://",
+    "mailto:",
+    "ftp://",
+    "tel:",
+    "callto:",
 ];
 
 #[derive(Error, Debug)]
@@ -117,15 +198,41 @@ impl fmt::Display for Violation {
 /// 真实笔记中高频出现的 HTML 命名实体 → 数字引用。
 fn normalize_entities(input: &str) -> String {
     const NAMED: &[(&str, u32)] = &[
-        ("nbsp", 160), ("copy", 169), ("reg", 174), ("trade", 8482),
-        ("hellip", 8230), ("mdash", 8212), ("ndash", 8211), ("ldquo", 8220),
-        ("rdquo", 8221), ("lsquo", 8216), ("rsquo", 8217), ("bull", 8226),
-        ("deg", 176), ("middot", 183), ("laquo", 171), ("raquo", 187),
-        ("times", 215), ("divide", 247), ("euro", 8364), ("pound", 163),
-        ("yen", 165), ("cent", 162), ("sect", 167), ("para", 182),
-        ("larr", 8592), ("uarr", 8593), ("rarr", 8594), ("darr", 8595),
-        ("harr", 8596), ("minus", 8722), ("frac12", 189), ("sup2", 178),
-        ("sup3", 179), ("micro", 181), ("plusmn", 177),
+        ("nbsp", 160),
+        ("copy", 169),
+        ("reg", 174),
+        ("trade", 8482),
+        ("hellip", 8230),
+        ("mdash", 8212),
+        ("ndash", 8211),
+        ("ldquo", 8220),
+        ("rdquo", 8221),
+        ("lsquo", 8216),
+        ("rsquo", 8217),
+        ("bull", 8226),
+        ("deg", 176),
+        ("middot", 183),
+        ("laquo", 171),
+        ("raquo", 187),
+        ("times", 215),
+        ("divide", 247),
+        ("euro", 8364),
+        ("pound", 163),
+        ("yen", 165),
+        ("cent", 162),
+        ("sect", 167),
+        ("para", 182),
+        ("larr", 8592),
+        ("uarr", 8593),
+        ("rarr", 8594),
+        ("darr", 8595),
+        ("harr", 8596),
+        ("minus", 8722),
+        ("frac12", 189),
+        ("sup2", 178),
+        ("sup3", 179),
+        ("micro", 181),
+        ("plusmn", 177),
     ];
     let mut out = input.to_string();
     for (name, code) in NAMED {
@@ -195,12 +302,7 @@ fn convert_node(src: roxmltree::Node) -> Option<Node> {
         let name = src.tag_name().name().to_ascii_lowercase();
         let attrs = src
             .attributes()
-            .map(|a: roxmltree::Attribute| {
-                (
-                    a.name().to_ascii_lowercase(),
-                    a.value().to_string(),
-                )
-            })
+            .map(|a: roxmltree::Attribute| (a.name().to_ascii_lowercase(), a.value().to_string()))
             .collect();
         let children = src.children().filter_map(convert_node).collect();
         Some(Node::Element(Element {
@@ -218,9 +320,13 @@ impl Enml {
     pub fn parse(input: &str) -> Result<Self, EnmlError> {
         let normalized = normalize_entities(input);
         let doc = parse_xml(&normalized).ok_or(EnmlError::Parse("无法解析为 XML 文档".into()))?;
-        if doc.root_element().tag_name().name().eq_ignore_ascii_case(EN_NOTE) {
-            let root = convert_node(doc.root_element())
-                .expect("en-note 根元素必然转换为 Element");
+        if doc
+            .root_element()
+            .tag_name()
+            .name()
+            .eq_ignore_ascii_case(EN_NOTE)
+        {
+            let root = convert_node(doc.root_element()).expect("en-note 根元素必然转换为 Element");
             Ok(Enml {
                 root: into_element(root),
             })
@@ -242,15 +348,12 @@ impl Enml {
             // html 文档取 body 的孩子；其他情况取顶层元素的孩子。
             let source = if top.tag_name().name().eq_ignore_ascii_case("html") {
                 top.children()
-                    .find(|n| {
-                        n.is_element() && n.tag_name().name().eq_ignore_ascii_case("body")
-                    })
+                    .find(|n| n.is_element() && n.tag_name().name().eq_ignore_ascii_case("body"))
                     .unwrap_or(top)
             } else {
                 top
             };
-            let children: Vec<Node> =
-                source.children().filter_map(convert_node).collect();
+            let children: Vec<Node> = source.children().filter_map(convert_node).collect();
             return Ok(Enml {
                 root: Element {
                     name: EN_NOTE.to_string(),
@@ -262,8 +365,7 @@ impl Enml {
         // 碎片（多个顶层元素等）：剥掉声明后整体包进 en-note。
         let stripped = strip_declarations(&normalized);
         if let Some(doc) = parse_xml(&format!("<en-note>{stripped}</en-note>")) {
-            let root =
-                convert_node(doc.root_element()).expect("en-note 包裹后根元素必然存在");
+            let root = convert_node(doc.root_element()).expect("en-note 包裹后根元素必然存在");
             return Ok(Enml {
                 root: into_element(root),
             });
@@ -395,7 +497,8 @@ pub fn escape_attr(s: &str) -> String {
 }
 
 fn sanitize_element(el: &mut Element) {
-    el.attrs.retain(|(k, _)| !k.to_ascii_lowercase().starts_with("on"));
+    el.attrs
+        .retain(|(k, _)| !k.to_ascii_lowercase().starts_with("on"));
     let mut new_children = Vec::with_capacity(el.children.len());
     for child in el.children.drain(..) {
         match child {
@@ -437,7 +540,9 @@ fn validate_element(el: &Element, out: &mut Vec<Violation>) {
             });
         }
         if (k.eq_ignore_ascii_case("href") || k.eq_ignore_ascii_case("src"))
-            && !ALLOWED_SCHEMES.iter().any(|s| v.to_ascii_lowercase().starts_with(s))
+            && !ALLOWED_SCHEMES
+                .iter()
+                .any(|s| v.to_ascii_lowercase().starts_with(s))
         {
             // 形如 "#anchor"、相对路径按违例记（与 DTD 白名单一致）。
             out.push(Violation {
@@ -454,9 +559,32 @@ fn validate_element(el: &Element, out: &mut Vec<Violation>) {
 }
 
 const BLOCK_TAGS: &[&str] = &[
-    "p", "div", "li", "tr", "ul", "ol", "dl", "table", "blockquote", "pre", "h1", "h2",
-    "h3", "h4", "h5", "h6", "address", "article", "aside", "details", "figure",
-    "figcaption", "footer", "header", "summary", "en-codeblock",
+    "p",
+    "div",
+    "li",
+    "tr",
+    "ul",
+    "ol",
+    "dl",
+    "table",
+    "blockquote",
+    "pre",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "address",
+    "article",
+    "aside",
+    "details",
+    "figure",
+    "figcaption",
+    "footer",
+    "header",
+    "summary",
+    "en-codeblock",
 ];
 
 fn plain_text_node(node: &Node, out: &mut String) {
@@ -526,10 +654,9 @@ mod tests {
 
     #[test]
     fn sanitize_strips_script_keeps_text() {
-        let mut enml = Enml::parse_loose(
-            "<p>前</p><script>alert('x')</script><style>.x{}</style><p>后</p>",
-        )
-        .unwrap();
+        let mut enml =
+            Enml::parse_loose("<p>前</p><script>alert('x')</script><style>.x{}</style><p>后</p>")
+                .unwrap();
         enml.sanitize();
         let text = enml.to_plain_text();
         assert!(text.contains("前") && text.contains("后"));
