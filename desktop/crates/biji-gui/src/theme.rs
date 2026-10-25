@@ -44,6 +44,8 @@ pub struct Palette {
     pub list_snip: Color32,
     /// 摘要视图日期文字（官方采样蓝灰 #7C97AB）。
     pub list_date: Color32,
+    /// 弹层/下拉描边中灰（官方下拉实拍 ~#9B9B9B，白底上清晰可见）。
+    pub menu_border: Color32,
     /// AI 助理紫（图标与文字）。
     pub ai_purple: Color32,
     /// 发丝分隔线。
@@ -78,6 +80,7 @@ pub static LIGHT: Palette = Palette {
     list_sel: Color32::from_rgb(0xC5, 0xE0, 0xEE),
     list_snip: Color32::from_rgb(0x5B, 0x64, 0x73),
     list_date: Color32::from_rgb(0x7C, 0x97, 0xAB),
+    menu_border: Color32::from_rgb(0xA6, 0xA6, 0xA6),
     ai_purple: Color32::from_rgb(0x9C, 0x8C, 0xFB),
     hairline: Color32::from_rgb(0xE2, 0xE2, 0xE6),
     card_border: Color32::from_rgb(0xF0, 0xF0, 0xF0),
@@ -108,6 +111,7 @@ pub static DARK: Palette = Palette {
     list_sel: Color32::from_rgb(0x2E, 0x4A, 0x5E),
     list_snip: Color32::from_rgb(0x93, 0xA6, 0xB4),
     list_date: Color32::from_rgb(0x72, 0x92, 0xAC),
+    menu_border: Color32::from_rgb(0x5C, 0x57, 0x54),
     ai_purple: Color32::from_rgb(0xA9, 0x9C, 0xFF),
     hairline: Color32::from_rgb(0x46, 0x41, 0x3F),
     card_border: Color32::from_rgb(0x42, 0x3E, 0x3C),
@@ -182,7 +186,7 @@ pub fn apply(ctx: &Context) {
     v.hyperlink_color = p.link;
     v.selection.bg_fill = p.green.gamma_multiply(if dark { 0.30 } else { 0.22 });
     v.selection.stroke = Stroke::new(1.0_f32, p.green);
-    v.window_stroke = Stroke::new(1.0_f32, p.hairline);
+    v.window_stroke = Stroke::new(1.0_f32, p.menu_border);
     v.window_rounding = 6.0.into();
     v.window_shadow = egui::epaint::Shadow::NONE;
     for w in [

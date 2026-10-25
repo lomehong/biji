@@ -1302,14 +1302,65 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
                     ("U", "u", ""),
                     ("S", "s", ""),
                     ("代码", "code", ""),
+                    ("高亮", "span", "style=\"background-color:#ffd54f\""),
                     ("链接", "a", "href=\"\""),
                 ];
                 for (label, tag, attr) in TAGS {
-                    if ui.small_button(*label).clicked() {
+                    if ui
+                        .small_button(*label)
+                        .on_hover_text(match *label {
+                            "B" => "粗体(Ctrl+B)",
+                            "I" => "斜体(Ctrl+I)",
+                            "U" => "下划线(Ctrl+U)",
+                            "高亮" => "高亮(Ctrl+Shift+H)",
+                            _ => *label,
+                        })
+                        .clicked()
+                    {
                         let attrs: Vec<(String, String)> = if attr.is_empty() {
                             Vec::new()
                         } else {
                             let (k, v) = attr.split_once('=').unwrap_or(("href", "\"\""));
+                            vec![(k.to_string(), v.trim_matches('"').to_string())]
+                        };
+                        ses.request_format = Some(selection_edits(
+                            &ses.sel_pieces,
+                            ses.sel_pieces
+                                .last()
+                                .map(|p| p.char_start + p.char_len)
+                                .unwrap_or(0),
+                            lo,
+                            hi,
+                            tag,
+                            attrs,
+                        ));
+                        ses.sel = None;
+                    }
+                }
+                // 官方对位快捷键：Ctrl+B/I/U、Ctrl+Shift+H 高亮作用于所见选区
+                const KEY_TAGS: &[(bool, egui::Key, &str, &str)] = &[
+                    (false, egui::Key::B, "b", ""),
+                    (false, egui::Key::I, "i", ""),
+                    (false, egui::Key::U, "u", ""),
+                    (
+                        true,
+                        egui::Key::H,
+                        "span",
+                        "style=\"background-color:#ffd54f\"",
+                    ),
+                ];
+                for (need_shift, key, tag, attr) in KEY_TAGS {
+                    let pressed = ui.input(|i| {
+                        i.modifiers.ctrl
+                            && i.modifiers.shift == *need_shift
+                            && !i.modifiers.alt
+                            && i.key_pressed(*key)
+                    });
+                    if pressed {
+                        let attrs: Vec<(String, String)> = if attr.is_empty() {
+                            Vec::new()
+                        } else {
+                            let (k, v) = attr.split_once('=').unwrap_or(("style", "\"\""));
                             vec![(k.to_string(), v.trim_matches('"').to_string())]
                         };
                         ses.request_format = Some(selection_edits(

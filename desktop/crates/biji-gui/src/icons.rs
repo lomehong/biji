@@ -862,6 +862,17 @@ pub fn x_mark(p: &Painter, r: Rect, c: Color32) {
 /// 菜单/弹层内图标行（图标 + 文字，整行可点，悬停灰底）。
 /// 弹层宽度由调用方 `ui.set_min_width` 保证。返回是否被点击。
 pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool {
+    menu_item_sel(ui, icon, label, false)
+}
+
+/// 带当前项态的菜单行（官方下拉实拍：当前项整行极浅绿底 + 品牌绿
+/// 图标与文字，如「移动笔记」下拉中的当前笔记本行）。
+pub fn menu_item_sel(
+    ui: &mut egui::Ui,
+    icon: Option<&PaintFn>,
+    label: &str,
+    selected: bool,
+) -> bool {
     // 自然宽度（量文字后拼行）：egui 弹层按内容测宽，整行撑满会把菜单
     // 顶到弹层宽度上限（实测 1600 宽下 400px），且离锚点过远难以命中
     let text_w = ui
@@ -875,9 +886,13 @@ pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool
         .x;
     let w = (10.0 + if icon.is_some() { 22.0 } else { 0.0 } + text_w + 10.0).max(120.0);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), egui::Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 4.0, theme::pal().hovered);
+    let pal = theme::pal();
+    if selected {
+        ui.painter().rect_filled(rect, 4.0, pal.green_tint);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, pal.hovered);
     }
+    let accent = if selected { pal.green_dark } else { pal.text };
     if let Some(icon) = icon {
         icon(
             ui.painter(),
@@ -885,13 +900,13 @@ pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool
                 egui::pos2(rect.min.x + 15.0, rect.center().y),
                 egui::vec2(13.0, 13.0),
             ),
-            theme::pal().text,
+            accent,
         );
     }
     let g = ui.painter().layout_no_wrap(
         label.to_string(),
         egui::FontId::new(14.0, egui::FontFamily::Proportional),
-        theme::pal().text,
+        accent,
     );
     ui.painter().galley(
         egui::pos2(
@@ -899,7 +914,7 @@ pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool
             rect.center().y - g.size().y * 0.5,
         ),
         g,
-        theme::pal().text,
+        accent,
     );
     resp.clicked()
 }
