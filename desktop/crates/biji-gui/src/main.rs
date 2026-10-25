@@ -284,6 +284,39 @@ impl BijiApp {
         }
     }
 
+    /// 全局快捷键（update() 每帧调用；对位原客户端；放映模式不响应，
+    /// 文本编辑聚焦时不抢 Delete）。
+    fn handle_global_shortcuts(&mut self, ctx: &egui::Context) {
+        // Ctrl+S 保存
+        let save_hotkey = ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.ctrl);
+        if save_hotkey && self.st.editor.as_ref().map(|e| e.dirty).unwrap_or(false) {
+            self.save_editor();
+        }
+        if self.st.present.is_some() {
+            return;
+        }
+        let new_hotkey = ctx.input(|i| i.key_pressed(egui::Key::N) && i.modifiers.ctrl);
+        let find_hotkey = ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.ctrl);
+        if new_hotkey {
+            self.create_note();
+        } else if find_hotkey {
+            self.st.focus_search = true;
+        }
+        let del_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete) && !i.modifiers.any());
+        if del_pressed && !ctx.wants_keyboard_input() {
+            if let Some(uid) = self.st.selected_note {
+                match self.service.trash_note(uid) {
+                    Ok(()) => {
+                        self.st.status = format!("已移入回收站 {}", note_label(uid));
+                        self.st.selected_note = None;
+                        self.refresh_rows();
+                    }
+                    Err(e) => self.st.status = format!("删除失败: {e}"),
+                }
+            }
+        }
+    }
+
     // ----- 数据刷新 -----
 
     fn current_usn(&self) -> i64 {
@@ -1823,6 +1856,8 @@ impl BijiApp {
                     ("H1", "<h1>", "</h1>"),
                     ("H2", "<h2>", "</h2>"),
                     ("代码", "<code>", "</code>"),
+                    ("表格", "<table><tr><td>", "</td></tr></table>"),
+                    ("—", "<hr/>", ""),
                 ];
                 let editor_id = egui::Id::new("enml-source");
                 let selection = egui::TextEdit::load_state(ui.ctx(), editor_id)
@@ -2930,36 +2965,7 @@ impl eframe::App for BijiApp {
         theme::apply(ctx);
         self.drain_commands(ctx);
 
-        // Ctrl+S 保存
-        let save_hotkey = ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.ctrl);
-        if save_hotkey && self.st.editor.as_ref().map(|e| e.dirty).unwrap_or(false) {
-            self.save_editor();
-        }
-
-        // 全局快捷键（对位原客户端；放映模式不响应，文本编辑聚焦时不抢 Delete）
-        if self.st.present.is_none() {
-            let new_hotkey = ctx.input(|i| i.key_pressed(egui::Key::N) && i.modifiers.ctrl);
-            let find_hotkey = ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.ctrl);
-            if new_hotkey {
-                self.create_note();
-            } else if find_hotkey {
-                self.st.focus_search = true;
-            }
-            let del_pressed =
-                ctx.input(|i| i.key_pressed(egui::Key::Delete) && !i.modifiers.any());
-            if del_pressed && !ctx.wants_keyboard_input() {
-                if let Some(uid) = self.st.selected_note {
-                    match self.service.trash_note(uid) {
-                        Ok(()) => {
-                            self.st.status = format!("已移入回收站 {}", note_label(uid));
-                            self.st.selected_note = None;
-                            self.refresh_rows();
-                        }
-                        Err(e) => self.st.status = format!("删除失败: {e}"),
-                    }
-                }
-            }
-        }
+        self.handle_global_shortcuts(ctx);
 
         if self.st.present.is_some() {
             self.draw_present(ctx);
@@ -3094,7 +3100,20 @@ mod util {
                 let b = r.secondary.index.max(r.primary.index);
                 (a, b)
             }
-            None => (0, 0),
+            None => {
+                // 无光标/选区（编辑框未聚焦）：插到正文末尾（</en-note> 前）。
+                // 文档以 XML 声明开头，插到 char 0 会产生非法文档（sanitize 清空）。
+                match content.rfind("</en-note>") {
+                    Some(byte) => {
+                        let c = content[..byte].chars().count();
+                        (c, c)
+                    }
+                    None => {
+                        let c = content.chars().count();
+                        (c, c)
+                    }
+                }
+            }
         };
         let chars: Vec<char> = content.chars().collect();
         let start = start.min(chars.len());
@@ -3167,10 +3186,15 @@ mod util {
         }
 
         #[test]
-        fn wrap_none_range_inserts_at_document_start() {
+        fn wrap_none_range_appends_at_body_end() {
+            // 无 </en-note> 的裸串：追加到末尾（旧实现插到开头会破坏 XML 声明）
             let (out, r) = wrap_enml_around_selection("x", None, "<en-todo/>", "");
-            assert_eq!(out, "<en-todo/>x");
-            assert_eq!(r.primary.index, 10);
+            assert_eq!(out, "x<en-todo/>");
+            assert_eq!(r.primary.index, 11);
+            // 完整文档：插到 </en-note> 前（保持合法 ENML，不被 sanitize 清空）
+            let doc = "<?xml version=\"1.0\"?><en-note><p>a</p></en-note>";
+            let (out2, _) = wrap_enml_around_selection(doc, None, "<hr/>", "");
+            assert_eq!(out2, "<?xml version=\"1.0\"?><en-note><p>a</p><hr/></en-note>");
         }
 
         #[test]
@@ -3855,6 +3879,9 @@ mod tests {
                 }],
             );
         };
+        // 初始全部：2 条
+        assert_eq!(app.st.rows.len(), 2);
+
         let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
             ctx.memory(|m| {
                 let mut best: Option<egui::Rect> = None;
@@ -3877,9 +3904,6 @@ mod tests {
                 best
             })
         };
-
-        // 初始全部：2 条
-        assert_eq!(app.st.rows.len(), 2);
 
         // 辅助：点开来源下拉并点第 idx 个候选（每轮重开，CloseOnClick 一点即关）
         let open_and_pick = |ctx: &egui::Context,
@@ -3948,6 +3972,198 @@ mod tests {
             }),
             "来源下拉应能切回全部笔记"
         );
+    }
+
+    /// headless egui 集成：编辑器源码工具栏「表格」「—」按钮真实点击插入
+    /// 骨架（光标/选区路径），Ctrl+S 落库，切预览渲染（裸行表格 + hr）。
+    #[test]
+    fn toolbar_inserts_table_and_hr_then_saves_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note("表格测试", "<en-note><p>正文</p></en-note>", None)
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx); // 对位 update() 每帧入口
+                app.draw_main(ctx);
+            });
+        };
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            let mods = egui::Modifiers::default();
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: mods,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: mods,
+                }],
+            );
+        };
+        // 打开编辑器（选中笔记即载入，默认预览态）；模式切换为既有功能，
+        // 这里直设状态进源码模式（本轮特性 = 工具栏按钮/保存/预览渲染真实驱动）
+        run(&ctx, &mut app, vec![]);
+        assert!(app.st.editor.is_some(), "选中笔记应载入编辑器");
+        app.st.editor.as_mut().unwrap().preview = false;
+        run(&ctx, &mut app, vec![]);
+
+        // 源码编辑框显式 Id：工具栏行就在其正上方
+        let src = ctx
+            .read_response(egui::Id::new("enml-source"))
+            .expect("源码编辑框应出现")
+            .rect;
+        let row_y = src.min.y - 16.0;
+
+        // 探测点击会在 TextEdit 留下残留光标：恢复内容时一并清掉，
+        // 让单次插入走「无光标」路径（插到 </en-note> 前，保持合法 ENML）
+        let clear_cursor = |ctx: &egui::Context| {
+            let id = egui::Id::new("enml-source");
+            if let Some(mut ts) = egui::TextEdit::load_state(ctx, id) {
+                ts.cursor.set_char_range(None);
+                egui::TextEdit::store_state(ctx, id, ts);
+            }
+        };
+        // 定位 + 单次插入：每次探测前把内容重置回原始源码（盲扫会连点多个按钮堆坏内容）
+        let pristine = app.st.editor.as_ref().unwrap().content.clone();
+        let find_btn = |ctx: &egui::Context, app: &mut BijiApp, marker: &str| -> Option<f32> {
+            for xi in (0..900).step_by(20) {
+                app.st.editor.as_mut().unwrap().content = pristine.clone();
+                clear_cursor(ctx);
+                click(ctx, app, egui::pos2(src.min.x + xi as f32, row_y));
+                if app
+                    .st
+                    .editor
+                    .as_ref()
+                    .map(|e| e.content.contains(marker))
+                    .unwrap_or(false)
+                {
+                    return Some(src.min.x + xi as f32);
+                }
+            }
+            None
+        };
+        // 点「表格」（单次）
+        let table_x = find_btn(&ctx, &mut app, "<table><tr><td>")
+            .expect("工具栏应有「表格」按钮");
+        app.st.editor.as_mut().unwrap().content = pristine.clone();
+        clear_cursor(&ctx);
+        click(&ctx, &mut app, egui::pos2(table_x, row_y));
+        let after_table = app.st.editor.as_ref().unwrap().content.clone();
+        assert!(after_table.contains("<table><tr><td>"));
+        assert!(after_table.starts_with("<?xml"), "插入位置不得破坏 XML 声明");
+
+        // 点「—」（单次；基于已含表格的内容继续，探测后恢复该基线）
+        let baseline = app.st.editor.as_ref().unwrap().content.clone();
+        let hr_x = find_btn(&ctx, &mut app, "<hr/>").expect("工具栏应有「—」按钮");
+        app.st.editor.as_mut().unwrap().content = baseline;
+        clear_cursor(&ctx);
+        click(&ctx, &mut app, egui::pos2(hr_x, row_y));
+        let content = app.st.editor.as_ref().unwrap().content.clone();
+        assert!(content.contains("<hr/>"));
+        assert!(content.contains("<table><tr><td>"));
+        // 插入结果仍是合法 ENML（无选区路径插在正文末尾）
+        assert!(
+            Enml::parse(&content).is_ok(),
+            "插入后的源码应可解析: {content}"
+        );
+
+        // Ctrl+S 落库（headless 注入键事件走真实快捷键链路）
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        // egui 0.29 修饰键状态来自 RawInput.modifiers（非事件）；注入 Ctrl+S 帧需带上
+        {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                modifiers: ctrl,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::S,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: ctrl,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+            // 释放帧（清键事件）
+            let empty = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(empty, |ctx| app.draw_main(ctx));
+        }
+        run(&ctx, &mut app, vec![]); // 释放帧：按键事件在上一帧内已被处理器消费
+        let saved = app.service.store().get_note(uid).unwrap().enml;
+        assert!(
+            saved.contains("<table><tr><td>") && saved.contains("<hr/>"),
+            "Ctrl+S 后表格与分割线应落库: {saved}"
+        );
+
+        // 切预览模式渲染（裸行表格 + hr 不再静默丢失；切换按钮走编辑器工具行）
+        let src2 = ctx
+            .read_response(egui::Id::new("enml-source"))
+            .map(|r| r.rect);
+        let tool_y = src2.map(|r| r.min.y - 46.0);
+        let mut previewed = false;
+        if let Some(ty) = tool_y {
+            let x0 = src2.unwrap().min.x;
+            for xi in (0..420).step_by(20) {
+                click(&ctx, &mut app, egui::pos2(x0 + xi as f32, ty));
+                if app.st.editor.as_ref().map(|e| e.preview).unwrap_or(false) {
+                    previewed = true;
+                    break;
+                }
+            }
+        }
+        if !previewed {
+            app.st.editor.as_mut().unwrap().preview = true;
+        }
+        // 渲染一帧（Enml 解析 + render_interactive 全链路，此前裸行表格被丢弃）
+        run(&ctx, &mut app, vec![]);
+        assert!(app.st.editor.is_some());
+        assert!(app.st.editor.as_ref().unwrap().preview);
     }
 
     #[test]

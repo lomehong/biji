@@ -360,26 +360,36 @@ fn render_block(ui: &mut egui::Ui, el: &Element) {
             }
         }
         "table" => {
+            // 行来源两种：thead/tbody/tfoot 分节包裹，或 tr 直接挂在 table 下
+            // （ENML 常见裸行写法，编辑器插入的骨架即此形态）。
+            let mut rows: Vec<&Element> = Vec::new();
             for child in &el.children {
-                if let Node::Element(section) = child {
-                    if matches!(section.name.as_str(), "thead" | "tbody" | "tfoot") {
+                match child {
+                    Node::Element(section)
+                        if matches!(section.name.as_str(), "thead" | "tbody" | "tfoot") =>
+                    {
                         for row in &section.children {
                             if let Node::Element(tr) = row {
                                 if tr.name == "tr" {
-                                    let cells: Vec<String> = tr
-                                        .children
-                                        .iter()
-                                        .filter_map(|c| match c {
-                                            Node::Element(td) => Some(plain_text_of(&td.children)),
-                                            _ => None,
-                                        })
-                                        .collect();
-                                    ui.label(egui::RichText::new(cells.join("  |  ")));
+                                    rows.push(tr);
                                 }
                             }
                         }
                     }
+                    Node::Element(tr) if tr.name == "tr" => rows.push(tr),
+                    _ => {}
                 }
+            }
+            for tr in rows {
+                let cells: Vec<String> = tr
+                    .children
+                    .iter()
+                    .filter_map(|c| match c {
+                        Node::Element(td) => Some(plain_text_of(&td.children)),
+                        _ => None,
+                    })
+                    .collect();
+                ui.label(egui::RichText::new(cells.join("  |  ")));
             }
             ui.add_space(4.0);
         }
@@ -779,6 +789,40 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 裸行表格（tr 直挂 table，编辑器「表格」按钮插入的骨架形态）应渲染出
+    /// 内容行，hr 应渲染分隔线——修复前裸行被静默丢弃。
+    #[test]
+    fn renders_bare_tr_table_and_hr() {
+        let doc = biji_enml::Enml::parse(
+            "<en-note><table><tr><td>甲</td><td>乙</td></tr></table><hr/></en-note>",
+        )
+        .unwrap();
+        let (table, hr) = match (&doc.root.children[0], &doc.root.children[1]) {
+            (Node::Element(a), Node::Element(b)) => (a.clone(), b.clone()),
+            _ => panic!("结构不符"),
+        };
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let before = ui.cursor().min.y;
+                render_block(ui, &table);
+                let after = ui.cursor().min.y;
+                assert!(
+                    after - before > 10.0,
+                    "裸行表格应渲染出内容行（光标前进 {:.1}px）",
+                    after - before
+                );
+                let b2 = ui.cursor().min.y;
+                render_block(ui, &hr);
+                assert!(
+                    ui.cursor().min.y - b2 >= 4.0,
+                    "hr 应渲染分隔线（光标前进 {:.1}px）",
+                    ui.cursor().min.y - b2
+                );
+            });
+        });
+    }
 
     #[test]
     fn inline_styles_merge_runs() {
