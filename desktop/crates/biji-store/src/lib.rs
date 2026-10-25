@@ -594,6 +594,26 @@ impl Store {
         Ok(uid)
     }
 
+    /// 拖拽排序：把完整 uid 顺序写为 meta（key = "nb_sort"，逗号分隔）。
+    /// 同步侧不推 wire（本地偏好——服务端无笔记本排序字段）。
+    pub fn reorder_notebooks(&self, ordered_uids: &[i64]) -> Result<()> {
+        let v = ordered_uids
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        self.meta_set("nb_sort", &v)
+    }
+
+    /// 读取当前笔记本排序（meta key = "nb_sort"）。
+    pub fn notebook_sort_order(&self) -> Vec<i64> {
+        self.meta_get("nb_sort")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect()
+    }
+
     /// 重命名笔记本（journal 记 update，同步轮次推 updateNotebook 新名）。
     pub fn rename_notebook(&self, uid: i64, new_name: &str) -> Result<()> {
         let n = self.conn.execute(
@@ -647,7 +667,30 @@ impl Store {
         Ok(())
     }
 
+    /// 笔记本列表：sort_order（meta 逗号 uid 序）优先排列，未列入
+    /// sort_order 的笔记本按名称序追加在尾部（新笔记本自然排末尾）。
     pub fn list_notebooks(&self) -> Result<Vec<Notebook>> {
+        let mut all = Self::query_notebooks(self)?;
+        let order: Vec<i64> = self
+            .meta_get("nb_sort")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        if order.is_empty() {
+            return Ok(all); // 无自定义排序——名称序
+        }
+        let mut out: Vec<Notebook> = Vec::with_capacity(all.len());
+        for uid in &order {
+            if let Some(pos) = all.iter().position(|n| n.uid == *uid) {
+                out.push(all.remove(pos));
+            }
+        }
+        out.extend(all); // 未列入 order 的追加
+        Ok(out)
+    }
+
+    fn query_notebooks(&self) -> Result<Vec<Notebook>> {
         let mut stmt = self.conn.prepare(
             "SELECT uid, name, stack, date_created, date_updated, note_count, is_local, is_linked FROM notebook_attr ORDER BY name",
         )?;

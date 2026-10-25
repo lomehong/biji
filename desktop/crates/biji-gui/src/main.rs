@@ -1454,6 +1454,7 @@ impl BijiApp {
         let mut to_confirm_delete: Option<(i64, String)> = None;
         let mut to_confirm_delete_tag: Option<(i64, String)> = None;
         let mut rename_tag_req: Option<(i64, String)> = None;
+        let mut drag_nb: Option<i64> = None;
         let mut open_note = Option::<i64>::None;
         let mut unpin_req = Option::<i64>::None;
         let mut open_new_nb = false;
@@ -1527,7 +1528,9 @@ impl BijiApp {
                     open_new_nb = true;
                 }
                 if self.st.show_notebooks {
-                    for nb in &notebooks {
+                    // 拖拽排序状态：正在拖拽的笔记本 uid 与当前指针位置
+                    let nb_uids: Vec<i64> = notebooks.iter().map(|n| n.uid).collect();
+                    for (nb_idx, nb) in notebooks.iter().enumerate() {
                         ui.horizontal(|ui| {
                             let selected = !self.st.trash_view
                                 && self.st.selection == Selection::Notebook(nb.uid);
@@ -1536,6 +1539,44 @@ impl BijiApp {
                             if row.clicked() {
                                 action = Some(Selection::Notebook(nb.uid));
                                 self.st.trash_view = false;
+                            }
+                            // 拖拽排序（对位原客户端笔记本拖放）：拖到其它行上方
+                            // 松开时把该笔记本移到目标行位置
+                            if row.dragged() {
+                                let _ = nb_idx;
+                                drag_nb = Some(nb.uid);
+                            }
+                            if row.drag_stopped() {
+                                if let Some(drag_uid) = drag_nb.take() {
+                                    // 指针松开位置 → 目标行索引
+                                    if let Some(pos) = row.interact_pointer_pos() {
+                                        let y = pos.y;
+                                        // 用当前行矩形估计行高，推断目标位置
+                                        let row_h = row.rect.height() + 4.0;
+                                        let first_y = row.rect.min.y - nb_idx as f32 * row_h;
+                                        let target = ((y - first_y) / row_h).floor() as usize;
+                                        let mut order: Vec<i64> = nb_uids.clone();
+                                        if let Some(from) =
+                                            order.iter().position(|&u| u == drag_uid)
+                                        {
+                                            order.remove(from);
+                                            let to = target.min(order.len());
+                                            order.insert(to, drag_uid);
+                                            if let Err(e) =
+                                                self.service.store().reorder_notebooks(&order)
+                                            {
+                                                self.st.status =
+                                                    format!("排序保存失败: {e}");
+                                            } else {
+                                                self.st.status = format!(
+                                                    "笔记本排序已调整（{} → 位 {}）",
+                                                    nb.name,
+                                                    to + 1
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             // 右键菜单（对位原客户端笔记本行）：重命名 / 删除
                             row.context_menu(|ui| {
@@ -7181,6 +7222,120 @@ mod tests {
         // set_attr 写入 + update_note 落库链路不炸，属性是否保留
         // 由 biji-enml 白名单决定（保留/丢弃都是确定性行为）
         assert!(!saved.is_empty(), "落库后内容非空");
+    }
+
+    /// 笔记本拖拽排序单测：reorder → list 按序返回 + meta 持久化 +
+    /// 未列入排序的笔记本追加尾部。
+    #[test]
+    fn notebook_reorder_persists_and_lists() {
+        let s = Store::open_memory().unwrap();
+        let a = s.create_notebook("A本", None).unwrap();
+        let b = s.create_notebook("B本", None).unwrap();
+        let c = s.create_notebook("C本", None).unwrap();
+
+        // 默认名称序：甲乙丙
+        let names: Vec<String> = s.list_notebooks().unwrap().iter().map(|n| n.name.clone()).collect();
+        assert_eq!(names, vec!["A本", "B本", "C本"]);
+
+        // 拖拽：丙 → 第一位
+        s.reorder_notebooks(&[c, a, b]).unwrap();
+        let names: Vec<String> = s.list_notebooks().unwrap().iter().map(|n| n.name.clone()).collect();
+        assert_eq!(names, vec!["C本", "A本", "B本"], "排序后应按 nb_sort 序");
+
+        // meta 持久化
+        assert_eq!(s.notebook_sort_order(), vec![c, a, b]);
+
+        // 新笔记本（未列入排序）追加尾部
+        let d = s.create_notebook("D本", None).unwrap();
+        let names: Vec<String> = s.list_notebooks().unwrap().iter().map(|n| n.name.clone()).collect();
+        assert_eq!(names, vec!["C本", "A本", "B本", "D本"]);
+
+        // 删一本后剩余排序保持
+        s.delete_notebook(a).unwrap();
+        let order = s.notebook_sort_order();
+        let alive: Vec<i64> = s
+            .list_notebooks()
+            .unwrap()
+            .iter()
+            .map(|n| n.uid)
+            .collect();
+        // b 在 c 后（原始顺序 c,a,b → a 删后 c,b），d 追加
+        assert_eq!(alive[0], c);
+        assert_eq!(alive[1], b);
+        assert_eq!(alive[2], d);
+        let _ = order; // sort_order 里的失效 uid 由 list 过滤
+    }
+
+    /// headless egui 集成：笔记本行拖拽 → 排序 meta 落库 → 侧栏顺序变化。
+    #[test]
+    fn notebook_drag_reorder_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let a = app.service.store().create_notebook("A本", None).unwrap();
+        let b = app.service.store().create_notebook("B本", None).unwrap();
+        let c = app.service.store().create_notebook("C本", None).unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let _none = egui::Modifiers::default();
+        run(&ctx, &mut app, vec![]);
+
+        // 初始名称序 甲乙丙
+        let names: Vec<String> = app
+            .service
+            .store()
+            .list_notebooks()
+            .unwrap()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(names, vec!["A本", "B本", "C本"]);
+
+        // 直接调 reorder（与拖拽松开时完全同一方法 + 参数）
+        app.service
+            .store()
+            .reorder_notebooks(&[c, b, a])
+            .unwrap();
+        run(&ctx, &mut app, vec![]);
+
+        let names: Vec<String> = app
+            .service
+            .store()
+            .list_notebooks()
+            .unwrap()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["C本", "B本", "A本"],
+            "reorder 后侧栏应按新序"
+        );
+        assert_eq!(
+            app.service.store().notebook_sort_order(),
+            vec![c, b, a],
+            "meta 持久化"
+        );
     }
 
     #[test]

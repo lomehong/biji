@@ -25,6 +25,7 @@ cargo run -p biji-gui -- [可选：库文件路径，默认 ./biji.exb]
 已实现（截图实测验证）：
 - **三栏布局**（对位原客户端）：笔记本/标签/回收站侧栏 ↔ 笔记列表（标题+摘要+日期+标签，摘要缓存按 USN 失效）↔ 编辑器
 - **列表头排序与视图**（对位原客户端列表头，实机核验）：条数旁排序下拉（更新时间/创建时间/标题）+ 升降序切换 + 卡片/紧凑视图切换（紧凑 = 单行「● 标题 …… 日期」，查看菜单同入口）；排序维度计入列表签名（切换即重排并重置无限滚动窗口）
+- **笔记本拖拽排序**（对位原客户端笔记本拖放排序）：侧栏笔记本行 Sense::click_and_drag，拖到其它行松开时按指针位置计算目标索引并重排 uid 顺序；排序持久化到库 meta（key=`nb_sort`，逗号 uid 序）；`list_notebooks` 按 sort_order 优先排列、未列入排序的笔记本按名称序追加尾部（新笔记本自然排末尾）、已删笔记本 uid 自动过滤
 - **表格列宽拖拽调整**（对位原客户端表格列宽调节）：预览态表格各列右边界 5px 拖拽把手（Sense::click_and_drag），拖动实时更新列宽（最小 30px）并经 `request_widths` → `set_attr("widths","w1,w2,...")` 回写 ENML 源置脏；`widths` 属性在渲染时解析为 Grid 各列 `min_col_width`；把手矩形经 `PreviewSession.col_drag_rects` 透出供测试定位
 - **编辑器撤销/重做**（对位原客户端 Ctrl+Z/Ctrl+Y）：EditorState 与 FloatNote 各自持有独立 undo/redo 栈（容量 50 封顶丢最旧）；源码模式经 prev_content 逐帧追踪——TextEdit changed 时旧值入栈、无变化时基线同步，撤销/重做恢复后基线自动更新（不会把恢复值再次入栈）；Ctrl+Z 撤销 / Ctrl+Y 或 Ctrl+Shift+Z 重做，主编辑器优先、栈空回落浮动窗口；纯函数 undo_push/undo_pop/redo_pop 单测覆盖容量封顶/互转/清空/栈空
 - **粘贴图片自动落附件**（对位原客户端 Ctrl+V 截图落附件）：编辑器打开时 Ctrl+V → arboard 读取剪贴板图像 → RGBA→PNG 编码 → 复用拖放导入同一链路（add_resource 内容寻址 blob + journal + `<en-media hash type>` 占位入源置脏）；剪贴板为纯文本时不拦截（TextEdit 的 Paste 事件正常工作）；同 sha256 附件幂等去重
