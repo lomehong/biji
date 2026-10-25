@@ -614,6 +614,20 @@ impl Store {
             .collect()
     }
 
+    /// 设置笔记本栈（分组）：Some(s) 入栈（空串 = 移出栈置 NULL），
+    /// journal 记 update——同步轮次经 updateNotebook f7 携带新栈值。
+    pub fn set_notebook_stack(&self, uid: i64, stack: Option<&str>) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE notebook_attr SET stack = ?2, date_updated = ?3 WHERE uid = ?1",
+            params![uid, stack, now_epoch()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(uid));
+        }
+        self.journal("notebook", uid, "update")?;
+        Ok(())
+    }
+
     /// 重命名笔记本（journal 记 update，同步轮次推 updateNotebook 新名）。
     pub fn rename_notebook(&self, uid: i64, new_name: &str) -> Result<()> {
         let n = self.conn.execute(

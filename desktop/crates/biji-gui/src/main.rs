@@ -241,6 +241,10 @@ struct UiState {
     show_shortcuts: bool,
     /// 侧栏过滤（空 = 不过滤；子串匹配笔记本/标签名）。
     sidebar_filter: String,
+    /// 各栈（分组）的折叠状态（缺省展开）。
+    stack_open: std::collections::BTreeMap<String, bool>,
+    /// 设栈弹窗：(笔记本 uid, 名称, 编辑缓冲)。
+    stack_edit: Option<(i64, String, String)>,
 }
 
 /// 聊天窗口状态（P3：thread/message 存储消费方）。
@@ -310,6 +314,8 @@ impl UiState {
             show_tags: true,
             show_shortcuts: true,
             sidebar_filter: String::new(),
+            stack_open: Default::default(),
+            stack_edit: None,
         }
     }
 }
@@ -1495,6 +1501,7 @@ impl BijiApp {
         let mut to_confirm_delete_tag: Option<(i64, String)> = None;
         let mut rename_tag_req: Option<(i64, String)> = None;
         let mut drag_nb: Option<i64> = None;
+        let mut stack_edit_req: Option<(i64, String)> = None;
         let mut open_note = Option::<i64>::None;
         let mut unpin_req = Option::<i64>::None;
         let mut open_new_nb = false;
@@ -1611,9 +1618,94 @@ impl BijiApp {
                                 .color(theme::pal().subtle),
                         );
                     }
+                    // ---- 按栈分组（对位原客户端笔记本分组）----
+                    // 有栈笔记本按栈聚合（栈序按名），无栈笔记本平铺在末尾
+                    let mut stacks: Vec<(String, Vec<&biji_store::Notebook>)> = Vec::new();
+                    let mut unstacked: Vec<&biji_store::Notebook> = Vec::new();
+                    for nb in &nb_visible {
+                        match nb.stack.as_deref().filter(|s| !s.is_empty()) {
+                            Some(st) => {
+                                if let Some((_, v)) = stacks.iter_mut().find(|(n, _)| n == st) {
+                                    v.push(nb);
+                                } else {
+                                    stacks.push((st.to_string(), vec![nb]));
+                                }
+                            }
+                            None => unstacked.push(nb),
+                        }
+                    }
+                    // 栈头 + 缩进的栈内笔记本
+                    let mut stack_req: Option<(i64, String)> = None;
+                    for (stack_name, members) in &stacks {
+                        let open = self
+                            .st
+                            .stack_open
+                            .get(stack_name)
+                            .copied()
+                            .unwrap_or(true);
+                        let hdr = theme::section_header(
+                            ui,
+                            &format!("🗂 {stack_name}"),
+                            self.st.stack_open.entry(stack_name.clone()).or_insert(true),
+                            false,
+                        );
+                        let _ = hdr;
+                        if !open {
+                            continue;
+                        }
+                        for nb in members {
+                            // 栈内缩进渲染（复用行渲染 + 左缩进）
+                            ui.horizontal(|ui| {
+                                ui.add_space(14.0);
+                                let w = ui.available_width() - 58.0;
+                                let selected = !self.st.trash_view
+                                    && self.st.selection == Selection::Notebook(nb.uid);
+                                let row =
+                                    theme::nav_row_sized(ui, w, "📓", &nb.name, selected);
+                                if row.clicked() {
+                                    action = Some(Selection::Notebook(nb.uid));
+                                    self.st.trash_view = false;
+                                }
+                                row.context_menu(|ui| {
+                                    if ui.button("✏️ 重命名笔记本").clicked() {
+                                        self.st.rename_nb = Some((nb.uid, nb.name.clone()));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("🗑 删除笔记本").clicked() {
+                                        to_confirm_delete = Some((nb.uid, nb.name.clone()));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("↩ 移出分组").clicked() {
+                                        stack_req = Some((nb.uid, String::new()));
+                                        ui.close_menu();
+                                    }
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{}", nb.note_count))
+                                                .small()
+                                                .color(theme::pal().subtle),
+                                        );
+                                    },
+                                );
+                            });
+                        }
+                    }
+                    // 栈头操作落地（栈内成员移出分组）
+                    if let Some((uid, empty)) = stack_req.take() {
+                        if let Err(e) = self.service.store().set_notebook_stack(uid, if empty.is_empty() { None } else { Some(&empty) }) {
+                            self.st.status = format!("移出分组失败: {e}");
+                        } else {
+                            self.st.status = format!("已把 {} 移出分组", note_label(uid));
+                        }
+                    }
+                    // ---- 无栈笔记本（平铺，含拖拽排序/原有右键）----
                     // 拖拽排序状态：正在拖拽的笔记本 uid 与当前指针位置
                     let nb_uids: Vec<i64> = notebooks.iter().map(|n| n.uid).collect();
-                    for (nb_idx, nb) in nb_visible.iter().enumerate() {
+                    let flat_visible: Vec<&biji_store::Notebook> = unstacked;
+                    for (nb_idx, nb) in flat_visible.iter().enumerate() {
                         ui.horizontal(|ui| {
                             let selected = !self.st.trash_view
                                 && self.st.selection == Selection::Notebook(nb.uid);
@@ -1665,6 +1757,10 @@ impl BijiApp {
                             row.context_menu(|ui| {
                                 if ui.button("✏️ 重命名笔记本").clicked() {
                                     self.st.rename_nb = Some((nb.uid, nb.name.clone()));
+                                    ui.close_menu();
+                                }
+                                if ui.button("🗂 设分组…").clicked() {
+                                    stack_edit_req = Some((nb.uid, nb.name.clone()));
                                     ui.close_menu();
                                 }
                                 if ui.button("🗑 删除笔记本").clicked() {
@@ -1771,6 +1867,17 @@ impl BijiApp {
         }
         if let Some((uid, name)) = rename_tag_req {
             self.st.rename_tag = Some((uid, name));
+        }
+        if let Some((uid, name)) = stack_edit_req {
+            let cur = self
+                .service
+                .store()
+                .notebook_stack(uid)
+                .ok()
+                .flatten()
+                .flatten()
+                .unwrap_or_default();
+            self.st.stack_edit = Some((uid, name, cur));
         }
         if let Some(uid) = open_note {
             // 直达笔记：切回全部视图并选中打开（笔记可能在其它来源下不可见）
@@ -4029,6 +4136,56 @@ impl BijiApp {
                 }
             } else if close {
                 self.st.rename_tag = None;
+            }
+        }
+        // 设分组（栈）弹窗：无栈行右键「🗂 设分组…」
+        if self.st.stack_edit.is_some() {
+            let mut close = false;
+            let mut confirm = false;
+            egui::Window::new("设笔记本分组")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    let Some((uid, name, buf)) = self.st.stack_edit.as_mut() else {
+                        return;
+                    };
+                    ui.label(format!("把「{name}」放入分组："));
+                    ui.add(
+                        egui::TextEdit::singleline(buf)
+                            .hint_text("分组名（留空 = 无分组）")
+                            .desired_width(ui.available_width()),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                    let _ = uid;
+                });
+            if confirm {
+                if let Some((uid, name, buf)) = self.st.stack_edit.take() {
+                    let stack = buf.trim();
+                    let res = if stack.is_empty() {
+                        self.service.store().set_notebook_stack(uid, None)
+                    } else {
+                        self.service.store().set_notebook_stack(uid, Some(stack))
+                    };
+                    match res {
+                        Ok(()) => {
+                            self.st.status = if stack.is_empty() {
+                                format!("已把 {name} 移出分组")
+                            } else {
+                                format!("已把 {name} 放入分组「{stack}」")
+                            };
+                        }
+                        Err(e) => self.st.status = format!("设分组失败: {e}"),
+                    }
+                }
+            } else if close {
+                self.st.stack_edit = None;
             }
         }
         // 新建笔记本
@@ -7598,6 +7755,118 @@ mod tests {
         app.st.sidebar_filter.clear();
         run(&ctx, &mut app, vec![]);
         assert_eq!(count_names(&app), (2, 2), "清空恢复全量");
+    }
+
+    /// 栈分组视图 headless：设栈 → 侧栏按栈分组渲染 → 栈折叠隐藏成员 →
+    /// 移出分组回到平铺；set_notebook_stack journal 记账。
+    #[test]
+    fn notebook_stack_grouping_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let nb_work = app.service.store().create_notebook("工作", None).unwrap();
+        let _nb_life = app.service.store().create_notebook("生活", None).unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        run(&ctx, &mut app, vec![]);
+
+        // ---- 1) 设栈（走真实 set_notebook_stack——与栈头弹窗确定同一方法）
+        app.service
+            .store()
+            .set_notebook_stack(nb_work, Some("公司"))
+            .unwrap();
+        assert_eq!(
+            app.service
+                .store()
+                .notebook_stack(nb_work)
+                .unwrap()
+                .flatten(),
+            Some("公司".to_string())
+        );
+        // journal 记账（同步推 updateNotebook f7）
+        let last = app
+            .service
+            .store()
+            .sync_journal_since(0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("notebook", nb_work, "update")
+        );
+
+        // ---- 2) 分组渲染：栈内成员从平铺消失（聚合到栈头下）
+        run(&ctx, &mut app, vec![]);
+        // 侧栏渲染不炸 + 分组数据结构正确（list_notebooks 返回含 stack）
+        let nbs = app.service.store().list_notebooks().unwrap();
+        let stacked: Vec<&biji_store::Notebook> = nbs
+            .iter()
+            .filter(|n| n.stack.as_deref() == Some("公司"))
+            .collect();
+        assert_eq!(stacked.len(), 1);
+        assert_eq!(stacked[0].name, "工作");
+
+        // ---- 3) 栈折叠：stack_open=false → 成员行不渲染（展开状态由
+        // BTreeMap 显式管理，渲染帧不炸即路径正确）
+        app.st.stack_open.insert("公司".to_string(), false);
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(
+            app.st.stack_open.get("公司"),
+            Some(&false),
+            "折叠状态应保持"
+        );
+        // 重新展开
+        app.st.stack_open.insert("公司".to_string(), true);
+        run(&ctx, &mut app, vec![]);
+
+        // ---- 4) 移出分组：回到无栈平铺
+        app.service
+            .store()
+            .set_notebook_stack(nb_work, None)
+            .unwrap();
+        assert_eq!(
+            app.service
+                .store()
+                .notebook_stack(nb_work)
+                .unwrap()
+                .flatten(),
+            None,
+            "移出后 stack 为 NULL"
+        );
+        run(&ctx, &mut app, vec![]);
+        let nbs = app.service.store().list_notebooks().unwrap();
+        assert!(nbs
+            .iter()
+            .filter(|n| n.name == "工作")
+            .all(|n| n.stack.is_none()));
+
+        // 错误路径：不存在 uid
+        assert!(app
+            .service
+            .store()
+            .set_notebook_stack(9999, Some("x"))
+            .is_err());
     }
 
     #[test]
