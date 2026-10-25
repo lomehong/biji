@@ -78,11 +78,17 @@ jobs:
           set -euxo pipefail
           OUT="biji-${{ matrix.artifact }}"
           APP="biji.app"
+          # 版本：tag 构建（refs/tags/vX.Y.Z → X.Y.Z），非 tag 回退 0.0.0-dev
+          VER="${GITHUB_REF_NAME#v}"
+          case "$GITHUB_REF" in
+            refs/tags/*) ;;
+            *) VER="0.0.0-dev" ;;
+          esac
           mkdir -p "$APP/Contents/MacOS"
           cp "desktop/target/${{ matrix.target }}/release/biji-gui" "$APP/Contents/MacOS/"
           cp "desktop/target/${{ matrix.target }}/release/biji" .
           cp desktop/README.md .
-          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -92,7 +98,7 @@ jobs:
             <key>CFBundleName</key><string>biji</string>
             <key>CFBundleDisplayName</key><string>biji 笔记</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>CFBundleShortVersionString</key><string>$VER</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict>
           </plist>
