@@ -167,6 +167,8 @@ struct UiState {
     focus_search: bool,
     /// 笔记信息弹窗（ℹ）。
     note_info: Option<i64>,
+    /// 重命名笔记本弹窗（uid + 编辑缓冲）。
+    rename_nb: Option<(i64, String)>,
     present: Option<(Vec<i64>, usize)>,
     status: String,
     show_new_notebook: bool,
@@ -226,6 +228,7 @@ impl UiState {
             list_compact: false,
             focus_search: false,
             note_info: None,
+            rename_nb: None,
             present: None,
             status: "就绪".into(),
             show_new_notebook: false,
@@ -300,6 +303,35 @@ impl BijiApp {
         if !asc {
             rows.reverse();
         }
+    }
+
+    /// 笔记卡右键菜单（对位原客户端）：移入回收站 + 移动到笔记本（平铺各笔记本
+    /// 与「未分类」——直列目标比悬停子菜单更可用，键盘可达）。
+    fn note_context_menu(
+        resp: &egui::Response,
+        uid: i64,
+        notebooks: &[(i64, String)],
+        trash_req: &mut Option<i64>,
+        move_req: &mut Option<(i64, Option<i64>)>,
+    ) {
+        resp.context_menu(|ui| {
+            if ui.button("🗑 移入回收站").clicked() {
+                *trash_req = Some(uid);
+                ui.close_menu();
+            }
+            ui.separator();
+            ui.label(egui::RichText::new("移动到笔记本").small().weak());
+            for (nb_uid, nb_name) in notebooks {
+                if ui.button(format!("→ {nb_name}")).clicked() {
+                    *move_req = Some((uid, Some(*nb_uid)));
+                    ui.close_menu();
+                }
+            }
+            if ui.button("→ （未分类）").clicked() {
+                *move_req = Some((uid, None));
+                ui.close_menu();
+            }
+        });
     }
 
     fn refresh_rows(&mut self) {
@@ -890,10 +922,22 @@ impl BijiApp {
                             let selected = !self.st.trash_view
                                 && self.st.selection == Selection::Notebook(nb.uid);
                             let w = ui.available_width() - 58.0;
-                            if theme::nav_row_sized(ui, w, "📓", &nb.name, selected).clicked() {
+                            let row = theme::nav_row_sized(ui, w, "📓", &nb.name, selected);
+                            if row.clicked() {
                                 action = Some(Selection::Notebook(nb.uid));
                                 self.st.trash_view = false;
                             }
+                            // 右键菜单（对位原客户端笔记本行）：重命名 / 删除
+                            row.context_menu(|ui| {
+                                if ui.button("✏️ 重命名笔记本").clicked() {
+                                    self.st.rename_nb = Some((nb.uid, nb.name.clone()));
+                                    ui.close_menu();
+                                }
+                                if ui.button("🗑 删除笔记本").clicked() {
+                                    to_confirm_delete = Some((nb.uid, nb.name.clone()));
+                                    ui.close_menu();
+                                }
+                            });
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -1076,6 +1120,17 @@ impl BijiApp {
                     self.refresh_rows();
                 }
                 ui.add_space(2.0);
+                // 右键上下文菜单所需（对位原客户端笔记卡右键：删除/移动到笔记本）
+                let notebooks: Vec<(i64, String)> = self
+                    .service
+                    .store()
+                    .list_notebooks()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|n| (n.uid, n.name))
+                    .collect();
+                let mut trash_req: Option<i64> = None;
+                let mut move_req: Option<(i64, Option<i64>)> = None;
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // 无限滚动：只渲染可见窗口内的卡片，滚动到底自动扩展
                     let total = self.st.rows.len();
@@ -1156,6 +1211,13 @@ impl BijiApp {
                                 if hit.clicked() {
                                     self.st.selected_note = Some(row.uid);
                                 }
+                                Self::note_context_menu(
+                                    &hit,
+                                    row.uid,
+                                    &notebooks,
+                                    &mut trash_req,
+                                    &mut move_req,
+                                );
                             }
                             ui.add_space(2.0);
                             continue;
@@ -1241,6 +1303,15 @@ impl BijiApp {
                         if card_resp.clicked() && !self.st.trash_view {
                             self.st.selected_note = Some(row.uid);
                         }
+                        if !self.st.trash_view {
+                            Self::note_context_menu(
+                                &card_resp,
+                                row.uid,
+                                &notebooks,
+                                &mut trash_req,
+                                &mut move_req,
+                            );
+                        }
                         ui.add_space(6.0);
                     }
                     // 哨兵：进入视口即扩展窗口（步长 LIST_PAGE，封顶 total）
@@ -1257,6 +1328,34 @@ impl BijiApp {
                         }
                     }
                 });
+                // 右键菜单动作落地（面板闭包外，避开交叉借用）
+                if let Some(uid) = trash_req {
+                    match self.service.trash_note(uid) {
+                        Ok(()) => {
+                            self.st.status = format!("已移入回收站 {}", note_label(uid));
+                            self.st.selected_note = None;
+                            self.refresh_rows();
+                        }
+                        Err(e) => self.st.status = format!("删除失败: {e}"),
+                    }
+                }
+                if let Some((uid, nb)) = move_req {
+                    match self.service.store().move_note(uid, nb) {
+                        Ok(()) => {
+                            let target = nb
+                                .and_then(|n| {
+                                    notebooks
+                                        .iter()
+                                        .find(|(u, _)| *u == n)
+                                        .map(|(_, name)| name.clone())
+                                })
+                                .unwrap_or_else(|| "未分类".into());
+                            self.st.status = format!("已移动 {} → {target}", note_label(uid));
+                            self.refresh_rows();
+                        }
+                        Err(e) => self.st.status = format!("移动失败: {e}"),
+                    }
+                }
             });
     }
 
@@ -2501,6 +2600,56 @@ impl BijiApp {
                 self.st.note_info = None;
             }
         }
+        // 重命名笔记本（侧栏右键入口）
+        if self.st.rename_nb.is_some() {
+            let mut close = false;
+            let mut confirm = false;
+            egui::Window::new("重命名笔记本")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    let Some((uid, buf)) = self.st.rename_nb.as_mut() else {
+                        return;
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label("名称:");
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(buf)
+                                .desired_width(ui.available_width()),
+                        );
+                        if !resp.has_focus() && ui.rect_contains_pointer(ui.max_rect()) {
+                            resp.request_focus();
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                    let _ = uid;
+                });
+            if confirm {
+                if let Some((uid, buf)) = self.st.rename_nb.take() {
+                    let name = buf.trim().to_string();
+                    if name.is_empty() {
+                        self.st.status = "笔记本名称不能为空".into();
+                    } else {
+                        match self.service.store().rename_notebook(uid, &name) {
+                            Ok(()) => {
+                                self.st.status = format!("笔记本已重命名为「{name}」");
+                                self.refresh_rows();
+                            }
+                            Err(e) => self.st.status = format!("重命名失败: {e}"),
+                        }
+                    }
+                }
+            } else if close {
+                self.st.rename_nb = None;
+            }
+        }
         // 新建笔记本
         if self.st.show_new_notebook {
             let mut create = false;
@@ -2882,6 +3031,221 @@ mod tests {
         // 标题升序：A B C（中文按 Unicode 码点序）
         BijiApp::sort_rows(&mut rows, ListSort::Title, true);
         assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![2, 1, 3]);
+    }
+
+    /// headless egui 集成：注入 PointerButton(Secondary/Primary) 事件走真实控件
+    /// 代码路径——右键笔记本行→重命名对话框→确定；右键笔记卡→移动到笔记本→
+    /// 子菜单；右键笔记卡→移入回收站。断言全部落在 store 真实状态上。
+    #[test]
+    fn context_menu_flows_rename_move_trash_headless() {
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let nb_a = app.service.store().create_notebook("工作", None).unwrap();
+        let nb_b = app.service.store().create_notebook("生活", None).unwrap();
+        let note = app
+            .service
+            .create_note("移动我", "<en-note><p>正文</p></en-note>", Some(nb_a))
+            .unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.draw_main(ctx));
+        };
+        run(&ctx, &mut app, vec![]);
+
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2, secondary: bool| {
+            let btn = if secondary {
+                egui::PointerButton::Secondary
+            } else {
+                egui::PointerButton::Primary
+            };
+            let mods = egui::Modifiers::default();
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: true,
+                    modifiers: mods,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: false,
+                    modifiers: mods,
+                }],
+            );
+        };
+
+        // 点击点附近的小型 Foreground 浮层（右键菜单 / 子菜单）
+        let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
+            ctx.memory(|m| {
+                let mut best: Option<egui::Rect> = None;
+                let mut best_d = f32::MAX;
+                for layer in m.layer_ids() {
+                    if layer.order != egui::Order::Foreground {
+                        continue;
+                    }
+                    let Some(r) = m.area_rect(layer.id) else {
+                        continue;
+                    };
+                    if r.width() < 30.0 || r.width() > 420.0 || r.height() > 420.0 {
+                        continue;
+                    }
+                    // 菜单从点击点弹出：中心与点击点距离应不远
+                    let d = r.center().distance(near);
+                    if d < 80.0 && d < best_d {
+                        best_d = d;
+                        best = Some(r);
+                    }
+                }
+                best
+            })
+        };
+
+        // ---- 1) 右键「工作」笔记本行 → 菜单 → 重命名 → 对话框 → 确定
+        let mut menu = None;
+        for yi in (60..280).step_by(8) {
+            let y = yi as f32;
+            let pos = egui::pos2(100.0, y);
+            click(&ctx, &mut app, pos, true);
+            if let Some(r) = popup_near(&ctx, pos) {
+                menu = Some(r);
+                break;
+            }
+        }
+        let menu = menu.expect("侧栏笔记本行右键应弹出菜单");
+        // 第一项：重命名笔记本
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(menu.center().x, menu.min.y + 18.0),
+            false,
+        );
+        assert!(
+            app.st.rename_nb.is_some(),
+            "点「重命名笔记本」应打开重命名对话框"
+        );
+        // 对话框出现：填充新名（对话框缓冲即菜单打开时的名字）
+        if let Some((_, buf)) = app.st.rename_nb.as_mut() {
+            buf.clear();
+            buf.push_str("新工作");
+        }
+        // 找重命名窗口，扫按钮行点「确定」
+        let win = ctx
+            .memory(|m| m.area_rect(egui::Id::new("重命名笔记本")))
+            .expect("重命名窗口应出现");
+        'confirm: for x in 20..(win.width() as i32 - 20) {
+            let pos = egui::pos2(win.min.x + x as f32 + 0.5, win.max.y - 22.0);
+            click(&ctx, &mut app, pos, false);
+            if app.st.rename_nb.is_none() {
+                break 'confirm;
+            }
+        }
+        assert!(app.st.rename_nb.is_none(), "应能点到「确定」关闭对话框");
+        let names: Vec<String> = app
+            .service
+            .store()
+            .list_notebooks()
+            .unwrap()
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        assert!(names.contains(&"新工作".to_string()), "重命名应落库: {names:?}");
+        assert!(!names.contains(&"工作".to_string()));
+
+        // ---- 2) 右键笔记卡 → 移动到笔记本（平铺菜单：回收站/分隔/标签/工作/生活/未分类）
+        let card = ctx
+            .read_response(egui::Id::new(("note-card", note)))
+            .expect("笔记卡应已渲染");
+        let pos2 = card.rect.center();
+        click(&ctx, &mut app, pos2, true);
+        let menu2 = popup_near(&ctx, pos2).expect("笔记卡右键应弹出菜单");
+        // 底部最后一项 = 「→ （未分类）」；其上一项 = 名称序最后一本（生活）
+        let mut moved = false;
+        for dy in [14.0, 18.0, 10.0, 22.0] {
+            click(
+                &ctx,
+                &mut app,
+                egui::pos2(menu2.center().x, menu2.max.y - dy),
+                false,
+            );
+            if app
+                .service
+                .store()
+                .get_note(note)
+                .unwrap()
+                .note
+                .notebook_uid
+                .is_none()
+            {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "应能点「→ （未分类）」把笔记移出笔记本");
+        // 重开菜单，点倒数第二项（生活：名称序在 工作 之后）
+        click(&ctx, &mut app, pos2, true);
+        let menu2b = popup_near(&ctx, pos2).expect("应再次弹出菜单");
+        let mut moved2 = false;
+        for dy in [36.0, 40.0, 32.0, 44.0] {
+            click(
+                &ctx,
+                &mut app,
+                egui::pos2(menu2b.center().x, menu2b.max.y - dy),
+                false,
+            );
+            let got = app
+                .service
+                .store()
+                .get_note(note)
+                .unwrap()
+                .note
+                .notebook_uid;
+            if got == Some(nb_b) {
+                moved2 = true;
+                break;
+            }
+        }
+        assert!(moved2, "应能点「→ 生活」把笔记移到生活本");
+
+        // ---- 3) 右键笔记卡 → 移入回收站（首项）
+        click(&ctx, &mut app, pos2, true);
+        let menu3 = popup_near(&ctx, pos2).expect("笔记卡右键应再次弹出菜单");
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(menu3.center().x, menu3.min.y + 18.0),
+            false,
+        );
+        assert!(
+            app.service
+                .store()
+                .get_note(note)
+                .unwrap()
+                .note
+                .is_deleted,
+            "右键「移入回收站」应把笔记移入回收站"
+        );
     }
 
     #[test]

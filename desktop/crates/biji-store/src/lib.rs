@@ -555,6 +555,45 @@ impl Store {
         Ok(uid)
     }
 
+    /// 重命名笔记本（journal 记 update，同步轮次推 updateNotebook 新名）。
+    pub fn rename_notebook(&self, uid: i64, new_name: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE notebook_attr SET name = ?2, date_updated = ?3 WHERE uid = ?1",
+            params![uid, new_name, now_epoch()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(uid));
+        }
+        self.journal("notebook", uid, "update")?;
+        Ok(())
+    }
+
+    /// 移动笔记到笔记本（None = 未分类；两侧计数刷新，journal 记 update 以同步归属）。
+    pub fn move_note(&self, note_uid: i64, notebook_uid: Option<i64>) -> Result<()> {
+        let old: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT notebook_uid FROM note_attr WHERE uid = ?1",
+                params![note_uid],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let n = self.conn.execute(
+            "UPDATE note_attr SET notebook_uid = ?2, date_updated = ?3 WHERE uid = ?1 AND is_deleted = 0",
+            params![note_uid, notebook_uid, now_epoch()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(note_uid));
+        }
+        if old != notebook_uid {
+            self.touch_notebook(old)?;
+            self.touch_notebook(notebook_uid)?;
+        }
+        self.journal("note", note_uid, "update")?;
+        Ok(())
+    }
+
     pub fn list_notebooks(&self) -> Result<Vec<Notebook>> {
         let mut stmt = self.conn.prepare(
             "SELECT uid, name, stack, date_created, date_updated, note_count, is_local, is_linked FROM notebook_attr ORDER BY name",
@@ -1415,6 +1454,67 @@ mod tests {
         assert_eq!(bytes, data);
         assert_eq!(meta.size as usize, data.len());
         assert_eq!(s.list_resources(note).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rename_and_move_journal_for_sync() {
+        let s = store();
+        let nb_a = s.create_notebook("旧名", None).unwrap();
+        let nb_b = s.create_notebook("目标本", None).unwrap();
+        let uid = s
+            .create_note(&NoteDraft {
+                title: "被移动".into(),
+                notebook_uid: Some(nb_a),
+                enml: "<en-note/>".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // 移动：归属变更 + 两侧计数刷新 + journal 记 note update（同步推 updateNote 携带 f11）
+        s.move_note(uid, Some(nb_b)).unwrap();
+        let got: Option<i64> = s
+            .conn
+            .query_row("SELECT notebook_uid FROM note_attr WHERE uid = ?1", params![uid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(got, Some(nb_b));
+        let nbs = s.list_notebooks().unwrap();
+        let count_of = |name: &str| {
+            nbs.iter()
+                .find(|n| n.name == name)
+                .map(|n| n.note_count)
+                .unwrap_or(-1)
+        };
+        assert_eq!(count_of("旧名"), 0, "原笔记本计数应归零");
+        assert_eq!(count_of("目标本"), 1, "新笔记本计数应为 1");
+        let last = s.sync_journal_since(0).unwrap().pop().unwrap();
+        assert_eq!((last.kind.as_str(), last.item_uid, last.op.as_str()), ("note", uid, "update"));
+
+        // 移动到未分类：notebook_uid 置 NULL
+        s.move_note(uid, None).unwrap();
+        let got: Option<i64> = s
+            .conn
+            .query_row("SELECT notebook_uid FROM note_attr WHERE uid = ?1", params![uid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(got, None);
+
+        // 重命名：改名 + journal 记 notebook update（同步推 updateNotebook 新名）
+        s.rename_notebook(nb_a, "新名").unwrap();
+        let nbs = s.list_notebooks().unwrap();
+        assert!(nbs.iter().any(|n| n.name == "新名"), "重命名应即时生效");
+        assert!(!nbs.iter().any(|n| n.name == "旧名"));
+        let last = s.sync_journal_since(0).unwrap().pop().unwrap();
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("notebook", nb_a, "update")
+        );
+
+        // 不存在的对象：显式报错而非静默
+        assert!(s.rename_notebook(9999, "x").is_err());
+        assert!(s.move_note(9999, None).is_err());
     }
 
     #[test]
