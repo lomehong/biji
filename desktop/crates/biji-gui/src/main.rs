@@ -185,6 +185,7 @@ struct UiState {
     /// 侧栏分区折叠（对位原客户端的手风琴交互）。
     show_notebooks: bool,
     show_tags: bool,
+    show_shortcuts: bool,
 }
 
 /// 聊天窗口状态（P3：thread/message 存储消费方）。
@@ -245,6 +246,7 @@ impl UiState {
             groupspace: None,
             show_notebooks: true,
             show_tags: true,
+            show_shortcuts: true,
         }
     }
 }
@@ -360,18 +362,31 @@ impl BijiApp {
         }
     }
 
-    /// 笔记卡右键菜单（对位原客户端）：移入回收站 + 移动到笔记本（平铺各笔记本
-    /// 与「未分类」——直列目标比悬停子菜单更可用，键盘可达）。
+    /// 笔记卡右键菜单（对位原客户端）：移入回收站 / 添加-取消快捷方式 /
+    /// 移动到笔记本（平铺各笔记本与「未分类」——直列目标比悬停子菜单更可用）。
     fn note_context_menu(
         resp: &egui::Response,
         uid: i64,
+        pinned: bool,
         notebooks: &[(i64, String)],
         trash_req: &mut Option<i64>,
+        shortcut_req: &mut Option<i64>,
         move_req: &mut Option<(i64, Option<i64>)>,
     ) {
         resp.context_menu(|ui| {
             if ui.button("🗑 移入回收站").clicked() {
                 *trash_req = Some(uid);
+                ui.close_menu();
+            }
+            if ui
+                .button(if pinned {
+                    "📌 取消快捷方式"
+                } else {
+                    "📌 添加到快捷方式"
+                })
+                .clicked()
+            {
+                *shortcut_req = Some(uid);
                 ui.close_menu();
             }
             ui.separator();
@@ -942,10 +957,13 @@ impl BijiApp {
     fn draw_sidebar(&mut self, ctx: &egui::Context) {
         let notebooks = self.service.store().list_notebooks().unwrap_or_default();
         let tags = self.service.store().list_tags().unwrap_or_default();
+        let shortcut_notes = self.service.store().shortcut_notes();
         let mut action: Option<Selection> = None;
         let mut to_confirm_delete: Option<(i64, String)> = None;
         let mut to_confirm_delete_tag: Option<(i64, String)> = None;
         let mut rename_tag_req: Option<(i64, String)> = None;
+        let mut open_note = Option::<i64>::None;
+        let mut unpin_req = Option::<i64>::None;
         let mut open_new_nb = false;
 
         egui::SidePanel::left("sidebar")
@@ -986,6 +1004,25 @@ impl BijiApp {
                     .clicked()
                 {
                     self.create_note();
+                }
+                // 快捷方式分区（对位原客户端侧栏置顶笔记）：点击直达笔记
+                if !shortcut_notes.is_empty() {
+                    ui.add_space(6.0);
+                    theme::section_header(ui, "快捷方式", &mut self.st.show_shortcuts, false);
+                    if self.st.show_shortcuts {
+                        for (uid, title) in &shortcut_notes {
+                            let row = theme::nav_row(ui, "📌", title, false);
+                            if row.clicked() {
+                                open_note = Some(*uid);
+                            }
+                            row.context_menu(|ui| {
+                                if ui.button("✕ 取消快捷方式").clicked() {
+                                    unpin_req = Some(*uid);
+                                    ui.close_menu();
+                                }
+                            });
+                        }
+                    }
                 }
                 let all_sel = !self.st.trash_view && self.st.selection == Selection::All;
                 if theme::nav_row(ui, "📄", "全部笔记", all_sel).clicked() {
@@ -1111,6 +1148,20 @@ impl BijiApp {
         }
         if let Some((uid, name)) = rename_tag_req {
             self.st.rename_tag = Some((uid, name));
+        }
+        if let Some(uid) = open_note {
+            // 直达笔记：切回全部视图并选中打开（笔记可能在其它来源下不可见）
+            self.st.selection = Selection::All;
+            self.st.trash_view = false;
+            self.st.search.clear();
+            self.st.selected_note = Some(uid);
+            self.refresh_rows();
+        }
+        if let Some(uid) = unpin_req {
+            match self.service.store().toggle_shortcut(uid) {
+                Ok(_) => self.st.status = format!("已取消 {} 的快捷方式", note_label(uid)),
+                Err(e) => self.st.status = format!("取消失败: {e}"),
+            }
         }
     }
 
@@ -1279,7 +1330,14 @@ impl BijiApp {
                 }
                 ui.add_space(2.0);
                 let mut trash_req: Option<i64> = None;
+                let mut shortcut_req: Option<i64> = None;
                 let mut move_req: Option<(i64, Option<i64>)> = None;
+                let pinned: std::collections::HashSet<i64> = self
+                    .service
+                    .store()
+                    .shortcuts()
+                    .into_iter()
+                    .collect();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // 无限滚动：只渲染可见窗口内的卡片，滚动到底自动扩展
                     let total = self.st.rows.len();
@@ -1363,8 +1421,10 @@ impl BijiApp {
                                 Self::note_context_menu(
                                     &hit,
                                     row.uid,
+                                    pinned.contains(&row.uid),
                                     &notebooks,
                                     &mut trash_req,
+                                    &mut shortcut_req,
                                     &mut move_req,
                                 );
                             }
@@ -1456,8 +1516,10 @@ impl BijiApp {
                             Self::note_context_menu(
                                 &card_resp,
                                 row.uid,
+                                pinned.contains(&row.uid),
                                 &notebooks,
                                 &mut trash_req,
+                                &mut shortcut_req,
                                 &mut move_req,
                             );
                         }
@@ -1486,6 +1548,18 @@ impl BijiApp {
                             self.refresh_rows();
                         }
                         Err(e) => self.st.status = format!("删除失败: {e}"),
+                    }
+                }
+                if let Some(uid) = shortcut_req {
+                    match self.service.store().toggle_shortcut(uid) {
+                        Ok(true) => {
+                            self.st.status =
+                                format!("已把 {} 加入快捷方式", note_label(uid));
+                        }
+                        Ok(false) => {
+                            self.st.status = format!("已取消 {} 的快捷方式", note_label(uid));
+                        }
+                        Err(e) => self.st.status = format!("快捷方式切换失败: {e}"),
                     }
                 }
                 if let Some((uid, nb)) = move_req {
@@ -3336,7 +3410,7 @@ mod tests {
                     }
                     // 菜单从点击点弹出：中心与点击点距离应不远
                     let d = r.center().distance(near);
-                    if d < 80.0 && d < best_d {
+                    if d < 200.0 && d < best_d {
                         best_d = d;
                         best = Some(r);
                     }
@@ -4164,6 +4238,154 @@ mod tests {
         run(&ctx, &mut app, vec![]);
         assert!(app.st.editor.is_some());
         assert!(app.st.editor.as_ref().unwrap().preview);
+    }
+
+    /// headless egui 集成：笔记卡右键「添加到快捷方式」→ 侧栏快捷方式分区出现 →
+    /// 点击直达笔记 → 分区行右键「取消快捷方式」移除。
+    #[test]
+    fn shortcuts_pin_open_unpin_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note("置顶笔记", "<en-note><p>x</p></en-note>", None)
+            .unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.draw_main(ctx));
+        };
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2, secondary: bool| {
+            let btn = if secondary {
+                egui::PointerButton::Secondary
+            } else {
+                egui::PointerButton::Primary
+            };
+            let mods = egui::Modifiers::default();
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: true,
+                    modifiers: mods,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: false,
+                    modifiers: mods,
+                }],
+            );
+        };
+        let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
+            ctx.memory(|m| {
+                let mut best: Option<egui::Rect> = None;
+                let mut bd = f32::MAX;
+                for layer in m.layer_ids() {
+                    if layer.order != egui::Order::Foreground {
+                        continue;
+                    }
+                    if let Some(r) = m.area_rect(layer.id) {
+                        if r.width() < 30.0 || r.width() > 460.0 || r.height() > 460.0 {
+                            continue;
+                        }
+                        let d = r.center().distance(near);
+                        if d < 200.0 && d < bd {
+                            bd = d;
+                            best = Some(r);
+                        }
+                    }
+                }
+                best
+            })
+        };
+        run(&ctx, &mut app, vec![]);
+
+        // ---- 1) 卡右键 → 「📌 添加到快捷方式」
+        let card = ctx
+            .read_response(egui::Id::new(("note-card", uid)))
+            .expect("卡片应已渲染")
+            .rect;
+        let pos = card.center();
+        let mut pinned = false;
+        // 菜单项序：移入回收站(1) / 📪快捷方式(2)…—— 从第 2 项区间起扫，
+        // 避免先命中第 1 项把笔记删掉
+        for dy in (28..150).step_by(6) {
+            click(&ctx, &mut app, pos, true);
+            if let Some(m) = popup_near(&ctx, pos) {
+                click(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + dy as f32), false);
+                if app.service.store().shortcuts() == vec![uid] {
+                    pinned = true;
+                    break;
+                }
+                assert!(
+                    !app.service.store().get_note(uid).unwrap().note.is_deleted,
+                    "扫描误删笔记（dy={dy}）"
+                );
+            }
+        }
+        assert!(pinned, "卡右键应能添加到快捷方式");
+
+        // ---- 2) 侧栏快捷方式行点击直达笔记
+        run(&ctx, &mut app, vec![]);
+        let mut opened = false;
+        for yi in (60..260).step_by(8) {
+            let pos = egui::pos2(100.0, yi as f32);
+            click(&ctx, &mut app, pos, false);
+            if app.st.selected_note == Some(uid) {
+                opened = true;
+                break;
+            }
+        }
+        assert!(opened, "点击侧栏快捷方式行应直达笔记");
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(
+            app.st.editor.as_ref().map(|e| e.title.clone()),
+            Some("置顶笔记".to_string()),
+            "编辑器应载入置顶笔记"
+        );
+
+        // ---- 3) 快捷方式行右键 → 取消
+        let mut removed = false;
+        for yi in (60..260).step_by(8) {
+            let pos = egui::pos2(100.0, yi as f32);
+            click(&ctx, &mut app, pos, true);
+            if let Some(m) = popup_near(&ctx, pos) {
+                click(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + 18.0), false);
+                if app.service.store().shortcuts().is_empty() {
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        assert!(removed, "快捷方式行右键应能取消置顶");
+        run(&ctx, &mut app, vec![]);
+        assert!(
+            app.service.store().shortcut_notes().is_empty(),
+            "取消后侧栏分区应无置顶笔记"
+        );
     }
 
     #[test]

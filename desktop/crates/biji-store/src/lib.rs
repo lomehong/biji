@@ -259,6 +259,45 @@ impl Store {
         Ok(())
     }
 
+    /// 快捷方式（置顶笔记）uid 列表（meta 持久化，key = "shortcuts"，逗号分隔）。
+    pub fn shortcuts(&self) -> Vec<i64> {
+        self.meta_get("shortcuts")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect()
+    }
+
+    /// 切换置顶；返回切换后的置顶状态（true = 已置顶）。
+    pub fn toggle_shortcut(&self, uid: i64) -> Result<bool> {
+        let mut cur = self.shortcuts();
+        let joined = if let Some(pos) = cur.iter().position(|&u| u == uid) {
+            cur.remove(pos);
+            let v = cur.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+            self.meta_set("shortcuts", &v)?;
+            false
+        } else {
+            cur.push(uid);
+            let v = cur.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+            self.meta_set("shortcuts", &v)?;
+            true
+        };
+        Ok(joined)
+    }
+
+    /// 存活且未删除的置顶笔记（uid, 标题）——失效 uid 自动过滤。
+    pub fn shortcut_notes(&self) -> Vec<(i64, String)> {
+        self.shortcuts()
+            .into_iter()
+            .filter_map(|uid| {
+                self.get_note(uid)
+                    .ok()
+                    .filter(|f| !f.note.is_deleted)
+                    .map(|f| (uid, f.note.title))
+            })
+            .collect()
+    }
+
     fn next_usn(&self) -> Result<i64> {
         let usn: i64 = self.conn.query_row(
             "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'usn' RETURNING CAST(value AS INTEGER)",
@@ -1538,6 +1577,42 @@ mod tests {
         // 不存在的对象：显式报错而非静默
         assert!(s.rename_notebook(9999, "x").is_err());
         assert!(s.move_note(9999, None).is_err());
+    }
+
+    #[test]
+    fn shortcuts_toggle_and_stale_filtering() {
+        let s = store();
+        let a = s
+            .create_note(&NoteDraft {
+                title: "甲".into(),
+                enml: "<en-note/>".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let b = s
+            .create_note(&NoteDraft {
+                title: "乙".into(),
+                enml: "<en-note/>".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // 置顶/取消切换 + meta 持久化
+        assert!(s.toggle_shortcut(a).unwrap(), "首次切换应置顶");
+        assert!(s.toggle_shortcut(b).unwrap());
+        assert_eq!(s.shortcuts(), vec![a, b]);
+        assert_eq!(s.meta_get("shortcuts").as_deref(), Some("1,2"));
+        assert!(!s.toggle_shortcut(a).unwrap(), "再切应取消");
+        assert_eq!(s.shortcuts(), vec![b]);
+
+        // 存活过滤：回收站/彻底删除的笔记从快捷方式清单消失，其余保留
+        s.trash_note(b).unwrap();
+        assert!(s.shortcut_notes().is_empty(), "回收站笔记不应出现在快捷方式");
+        assert_eq!(s.shortcuts(), vec![b], "原始 uid 列表保留（还原后可恢复）");
+        s.restore_note(b).unwrap();
+        assert_eq!(s.shortcut_notes(), vec![(b, "乙".to_string())]);
+        s.expunge_note(b).unwrap();
+        assert!(s.shortcut_notes().is_empty(), "彻底删除后过滤");
     }
 
     #[test]
