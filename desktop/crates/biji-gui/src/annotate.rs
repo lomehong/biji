@@ -455,7 +455,7 @@ static CJK_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
 /// 与 `install_cjk_fonts` 同源的平台候选列表；供文字栅格化复用。
 /// TTC 集合经 index 加载（ab_glyph `try_from_vec_and_index`）。
-pub fn load_cjk_font() -> Option<&'static FontArc> {
+pub(crate) fn load_cjk_font() -> Option<&'static FontArc> {
     CJK_FONT
         .get_or_init(|| {
             #[cfg(target_os = "windows")]
@@ -489,7 +489,7 @@ pub fn load_cjk_font() -> Option<&'static FontArc> {
         .as_ref()
 }
 
-fn draw_text(
+pub(crate) fn draw_text(
     img: &mut RgbaImage,
     pos: [f32; 2],
     text: &str,
