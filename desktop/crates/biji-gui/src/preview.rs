@@ -476,6 +476,10 @@ pub struct PreviewSession {
     pub request_cell: Option<(usize, usize, usize, String)>,
     /// 请求表格结构操作：(块, 操作)。
     pub request_table: Option<(usize, TableOp)>,
+    /// 请求写回表格列宽：(块, "w1,w2,..." 属性值)。
+    pub request_widths: Option<(usize, String)>,
+    /// 本帧表格列拖拽把手矩形（测试定位）。
+    pub col_drag_rects: Vec<egui::Rect>,
     /// 本帧表格交互矩形透出（自动化/测试确定性定位；生产亦可作热区调试）。
     pub tbl_cells: Vec<(usize, usize, egui::Rect)>,
     pub tbl_ops: Vec<(&'static str, egui::Rect)>,
@@ -695,6 +699,20 @@ fn interactive_table(ui: &mut egui::Ui, block: usize, el: &Element, ses: &mut Pr
     let font = egui::TextStyle::Body.resolve(ui.style());
     let small = egui::TextStyle::Small.resolve(ui.style());
 
+    // 解析 widths 属性（"w1,w2,..."）；拖拽中用会话宽，否则用属性值
+    let attr_widths: Vec<f32> = el
+        .attr("widths")
+        .map(|v| {
+            v.split(',')
+                .filter_map(|x| x.trim().parse::<f32>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut widths: Vec<f32> = (0..ncols)
+        .map(|i| attr_widths.get(i).copied().unwrap_or(80.0))
+        .collect();
+    let mut drag_delta: Vec<(usize, f32)> = Vec::new();
+    let mut drag_rects: Vec<egui::Rect> = Vec::new();
     egui::Grid::new(egui::Id::new(("tbl", block)))
         .num_columns(ncols + 1)
         .striped(true)
@@ -788,6 +806,66 @@ fn interactive_table(ui: &mut egui::Ui, block: usize, el: &Element, ses: &mut Pr
             ses.tbl_cells = cells_out;
             ses.tbl_ops = ops_out;
         });
+    // ---- 列宽拖拽把手：各列右边界 6px 条 ----
+    // Grid 完成后 col_bounds 可从本帧 cell_rects 推算边界——用网格行首
+    // 单元格矩形宽度作为列边界参考（简化：用第一行 cells 的 x 坐标）
+    if let Some((_, _, first_rect)) = ses
+        .tbl_cells
+        .iter()
+        .find(|(r, c, _)| *r == 0 && *c == 0)
+    {
+        // 以第一行各列 x 坐标推算列边界（近似——Grid 布局稳定时可靠）
+        let _ = first_rect;
+    }
+    // 简化实现：在 Grid 正上方绘制拖拽条（Grid 头部区域）
+    // 每列边界处一个 6px 竖条，drag 时更新 widths 并 request_widths
+    let (grid_rect, _) = ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
+    let _ = grid_rect;
+    // 以 tbl_cells 中第一行各列矩形的右边界作为把手位置
+    let row0: Vec<(usize, egui::Rect)> = ses
+        .tbl_cells
+        .iter()
+        .filter(|(r, _, _)| *r == 0)
+        .map(|(_r, c, rect)| (*c, *rect))
+        .collect();
+    let max_row_h: f32 = ses
+        .tbl_cells
+        .iter()
+        .filter(|(r, _, _)| *r == 0)
+        .map(|(_, _, rect)| rect.height())
+        .fold(0.0f32, f32::max);
+    for (ci, rect) in &row0 {
+        // 列右边界把手（最后一列也有——可调 table 总宽内分布）
+        let handle = egui::Rect::from_min_size(
+            egui::pos2(rect.max.x - 2.0, rect.min.y),
+            egui::vec2(5.0, max_row_h.max(18.0)),
+        );
+        drag_rects.push(handle);
+        let resp = ui.interact(
+            handle,
+            egui::Id::new(("tblcol", block, ci)),
+            egui::Sense::click_and_drag(),
+        );
+        if resp.dragged() {
+            let dx = resp.drag_delta().x;
+            if let Some(w) = widths.get_mut(*ci) {
+                *w = (*w + dx).max(30.0);
+                drag_delta.push((*ci, *w));
+            }
+        }
+    }
+    if !drag_delta.is_empty() {
+        // 更新全部列宽并请求回写
+        for (ci, w) in &drag_delta {
+            if let Some(width) = widths.get_mut(*ci) {
+                *width = *w;
+            }
+        }
+        let ws: Vec<String> = widths.iter().map(|w| format!("{w:.0}")).collect();
+        ses.request_widths = Some((block, ws.join(",")));
+    }
+    ses.col_drag_rects = drag_rects;
+
     if let Some((ri, ci)) = enter_edit {
         let t = rows
             .get(ri)
