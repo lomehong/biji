@@ -637,6 +637,39 @@ pub fn sync_arrows(p: &Painter, r: Rect, c: Color32) {
     }
 }
 
+/// 太阳（浅色模式标记：圆 + 八向短芒）。
+pub fn sun(p: &Painter, r: Rect, c: Color32) {
+    let cc = r.center();
+    let rad = r.height() * 0.24;
+    p.circle_filled(cc, rad, c);
+    let s = Stroke::new(sw(r) * 1.1, c);
+    for i in 0..8 {
+        let a = i as f32 * std::f32::consts::FRAC_PI_4;
+        let (dx, dy) = (a.cos(), a.sin());
+        let r0 = rad * 1.7;
+        let r1 = rad * 2.5;
+        p.line_segment(
+            [
+                egui::pos2(cc.x + dx * r0, cc.y + dy * r0),
+                egui::pos2(cc.x + dx * r1, cc.y + dy * r1),
+            ],
+            s,
+        );
+    }
+}
+
+/// 月亮（深色模式标记：圆盘被背景色圆切出月牙；carve 传所在底色）。
+pub fn moon(p: &Painter, r: Rect, c: Color32, carve: Color32) {
+    let cc = r.center();
+    let rad = r.height() * 0.38;
+    p.circle_filled(cc, rad, c);
+    p.circle_filled(
+        egui::pos2(cc.x + rad * 0.62, cc.y - rad * 0.42),
+        rad * 0.92,
+        carve,
+    );
+}
+
 // ---------- 图标按钮 ----------
 
 /// 朴素图标钮（列表头/元信息行）：悬停显灰底，图标居中。

@@ -1362,17 +1362,38 @@ impl BijiApp {
                             self.do_sync();
                         }
                         let _ = sresp.on_hover_text(format!("同步（待同步 {pending} 条）"));
-                        // 主题快捷切换（对位原客户端工具栏的明暗切换钮）
-                        if ui
-                            .button(if theme::is_dark() { "☀️" } else { "🌙" })
-                            .on_hover_text(if theme::is_dark() {
+                        // 主题快捷切换（自绘太阳/月亮钮，深浅两态都清晰）
+                        {
+                            let (tr, tresp) = ui.allocate_exact_size(
+                                egui::vec2(26.0, 26.0),
+                                egui::Sense::click(),
+                            );
+                            if tresp.hovered() {
+                                ui.painter().rect_filled(tr, 6.0, theme::pal().hovered);
+                            }
+                            let icon_rect = tr.shrink(5.0);
+                            if theme::is_dark() {
+                                crate::icons::sun(
+                                    ui.painter(),
+                                    icon_rect,
+                                    theme::pal().text,
+                                );
+                            } else {
+                                crate::icons::moon(
+                                    ui.painter(),
+                                    icon_rect,
+                                    theme::pal().text,
+                                    theme::pal().white,
+                                );
+                            }
+                            if tresp.clicked() {
+                                self.toggle_theme();
+                            }
+                            let _ = tresp.on_hover_text(if theme::is_dark() {
                                 "切换到浅色模式"
                             } else {
                                 "切换到深色模式"
-                            })
-                            .clicked()
-                        {
-                            self.toggle_theme();
+                            });
                         }
                     });
                 });
@@ -2533,6 +2554,14 @@ impl BijiApp {
                             let row_resp = ui
                                 .horizontal(|ui| {
                                     ui.set_min_width(ui.available_width());
+                                    // 选中态整行浅底（深浅两主题共用 sel_bg/hover）
+                                    if selected {
+                                        let bg = egui::Rect::from_min_size(
+                                            ui.cursor().min,
+                                            egui::vec2(ui.available_width(), 26.0),
+                                        );
+                                        ui.painter().rect_filled(bg, 6.0, theme::pal().sel_bg);
+                                    }
                                     ui.label(
                                         egui::RichText::new(if selected { "●" } else { "○" })
                                             .small()
