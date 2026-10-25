@@ -121,6 +121,8 @@ struct ListRow {
     date: f64,
     /// 创建时间（列表头「创建时间」排序用）。
     created: f64,
+    /// 共享标识（对位原客户端共享笔记徽标）。
+    shared: bool,
     tags: Option<String>,
 }
 
@@ -612,6 +614,7 @@ impl BijiApp {
                     snippet,
                     date: meta.date_updated,
                     created: meta.date_created,
+                    shared: meta.is_shared,
                     tags: meta.tags_text,
                 });
             }
@@ -1586,6 +1589,13 @@ impl BijiApp {
                                             .size(13.0)
                                             .color(theme::pal().text),
                                     );
+                                    if row.shared {
+                                        ui.label(
+                                            egui::RichText::new("🌐")
+                                                .small()
+                                                .color(theme::pal().green_dark),
+                                        );
+                                    }
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -1671,6 +1681,13 @@ impl BijiApp {
                                     .strong()
                                     .color(theme::pal().text),
                             );
+                            if row.shared {
+                                ui.label(
+                                    egui::RichText::new("🌐 共享")
+                                        .small()
+                                        .color(theme::pal().green_dark),
+                                );
+                            }
                             if !row.snippet.is_empty() {
                                 ui.label(
                                     egui::RichText::new(&row.snippet)
@@ -1907,6 +1924,8 @@ impl BijiApp {
             /// 给当前笔记打/摘标签（底部标签行）。
             AttachTag(i64),
             DetachTag(i64),
+            /// 切换共享状态（元信息行入口）。
+            ToggleShared,
         }
         let (action, uid, info_req, find_action) = {
             let Some(ed) = self.st.editor.as_mut() else {
@@ -1963,6 +1982,24 @@ impl BijiApp {
                             .clicked()
                         {
                             show_info = true;
+                        }
+                        if full.note.is_shared {
+                            ui.label(
+                                egui::RichText::new("🌐 已共享")
+                                    .small()
+                                    .color(theme::pal().green_dark),
+                            );
+                        }
+                        if ui
+                            .small_button(if full.note.is_shared {
+                                "取消共享"
+                            } else {
+                                "共享"
+                            })
+                            .on_hover_text("切换共享状态（计入待同步）")
+                            .clicked()
+                        {
+                            action = Action::ToggleShared;
                         }
                     });
                 }
@@ -2490,6 +2527,25 @@ impl BijiApp {
                     self.st.status = "已添加标签".into();
                     self.st.tag_filter.clear();
                     self.refresh_rows();
+                }
+            }
+            Action::ToggleShared => {
+                let shared = self
+                    .service
+                    .store()
+                    .get_note(uid)
+                    .map(|f| f.note.is_shared)
+                    .unwrap_or(false);
+                match self.service.store().set_note_shared(uid, !shared) {
+                    Ok(()) => {
+                        self.st.status = if shared {
+                            format!("已取消共享 {}", note_label(uid))
+                        } else {
+                            format!("已共享 {}（计入待同步）", note_label(uid))
+                        };
+                        self.refresh_rows();
+                    }
+                    Err(e) => self.st.status = format!("共享切换失败: {e}"),
                 }
             }
             Action::DetachTag(tag_uid) => {
@@ -3252,6 +3308,13 @@ impl BijiApp {
                                     ui.label(egui::RichText::new("标签").color(theme::pal().subtle));
                                     ui.label(full.note.tags_text.unwrap_or_else(|| "—".into()));
                                     ui.end_row();
+                                    ui.label(egui::RichText::new("共享").color(theme::pal().subtle));
+                                    ui.label(if full.note.is_shared {
+                                        "🌐 已共享"
+                                    } else {
+                                        "未共享"
+                                    });
+                                    ui.end_row();
                                     if let Some(url) =
                                         full.note.source_url.as_deref().filter(|s| !s.is_empty())
                                     {
@@ -3765,6 +3828,7 @@ mod tests {
             snippet: String::new(),
             date,
             created,
+            shared: false,
             tags: None,
         };
         let mut rows = vec![mk(1, "B", 3.0, 1.0), mk(2, "A", 1.0, 3.0), mk(3, "C", 2.0, 2.0)];
@@ -5042,6 +5106,7 @@ mod tests {
             snippet: String::new(),
             date,
             created: date,
+            shared: false,
             tags: None,
         };
         let rows = vec![mk(3, 30.0), mk(2, 20.0), mk(1, 10.0)]; // 列表序（更新时间降序）
@@ -5546,6 +5611,126 @@ mod tests {
         assert_eq!(BijiApp::mime_of("笔记.txt"), "text/plain");
         assert_eq!(BijiApp::mime_of("无扩展名"), "application/octet-stream");
         assert_eq!(BijiApp::mime_of("压缩包.zip"), "application/zip");
+    }
+
+    /// headless egui 集成：编辑器「共享」切换 → is_shared 落库 + 列表行徽标
+    /// + journal 记账；再点「取消共享」回退。
+    #[test]
+    fn shared_toggle_badge_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note("共享测试", "<en-note><p>x</p></en-note>", None)
+            .unwrap();
+        app.refresh_rows();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: none,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: none,
+                }],
+            );
+        };
+        run(&ctx, &mut app, vec![]);
+        assert!(!app.st.rows[0].shared, "初始无徽标");
+
+        // 编辑器元信息行（笔记本 chip/日期/ℹ 旁）扫「共享」按钮
+        let mut toggled = false;
+        // 「共享」按钮在元信息行最右（ℹ 在其左会弹窗拦截）——从右向左扫
+        'outer: for yi in (40..140).step_by(8) {
+            for xi in (505..1100).step_by(20).rev() {
+                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
+                if app
+                    .service
+                    .store()
+                    .get_note(uid)
+                    .unwrap()
+                    .note
+                    .is_shared
+                {
+                    toggled = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(toggled, "应能点到「共享」按钮");
+        run(&ctx, &mut app, vec![]);
+        assert!(
+            app.st.rows.iter().any(|r| r.shared),
+            "列表行应带共享徽标数据"
+        );
+        let last = app
+            .service
+            .store()
+            .sync_journal_since(0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("note", uid, "update"),
+            "共享应记同步账"
+        );
+
+        // 再点「取消共享」回退
+        let mut undone = false;
+        'outer2: for yi in (40..140).step_by(8) {
+            for xi in (505..1100).step_by(20).rev() {
+                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
+                if !app
+                    .service
+                    .store()
+                    .get_note(uid)
+                    .unwrap()
+                    .note
+                    .is_shared
+                {
+                    undone = true;
+                    break 'outer2;
+                }
+            }
+        }
+        assert!(undone, "应能点到「取消共享」回退");
     }
 
     #[test]

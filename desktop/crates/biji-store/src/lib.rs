@@ -607,6 +607,20 @@ impl Store {
         Ok(())
     }
 
+    /// 设置共享标识（journal 记 note update——本地标识随整笔记重推记账；
+    /// 服务端 wire 无独立 shared 字段，状态本地生效）。
+    pub fn set_note_shared(&self, uid: i64, shared: bool) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE note_attr SET is_shared = ?2 WHERE uid = ?1",
+            params![uid, shared],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(uid));
+        }
+        self.journal("note", uid, "update")?;
+        Ok(())
+    }
+
     /// 移动笔记到笔记本（None = 未分类；两侧计数刷新，journal 记 update 以同步归属）。
     pub fn move_note(&self, note_uid: i64, notebook_uid: Option<i64>) -> Result<()> {
         let old: Option<i64> = self
@@ -1645,6 +1659,30 @@ mod tests {
         );
         // 不存在的标签显式报错
         assert!(s.rename_tag(9999, "x").is_err());
+    }
+
+    #[test]
+    fn set_note_shared_persists_and_journals() {
+        let s = store();
+        let uid = s
+            .create_note(&NoteDraft {
+                title: "x".into(),
+                enml: "<en-note/>".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!s.get_note(uid).unwrap().note.is_shared, "默认不共享");
+        s.set_note_shared(uid, true).unwrap();
+        assert!(s.get_note(uid).unwrap().note.is_shared, "共享应落库");
+        let last = s.sync_journal_since(0).unwrap().pop().unwrap();
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("note", uid, "update"),
+            "共享切换应记 journal（同步轮次推 updateNote）"
+        );
+        s.set_note_shared(uid, false).unwrap();
+        assert!(!s.get_note(uid).unwrap().note.is_shared, "取消应落库");
+        assert!(s.set_note_shared(9999, true).is_err(), "不存在应报错");
     }
 
     #[test]
