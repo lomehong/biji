@@ -3019,19 +3019,41 @@ impl BijiApp {
                                     .color(theme::pal().green_dark),
                             );
                         }
-                        if crate::icons::chrome_btn(
-                            ui,
-                            24.0,
-                            if full.note.is_shared {
-                                "取消共享（计入待同步）"
-                            } else {
-                                "共享（计入待同步）"
-                            },
-                            &crate::icons::person_plus,
-                        )
-                        .clicked()
+                        // 手机预览 + AI 渐变胶囊（对位原客户端编辑器顶栏右端）
+                        if crate::icons::icon_btn(ui, 24.0, "手机预览", &crate::icons::phone)
+                            .clicked()
                         {
-                            action = Action::ToggleShared;
+                            self.st.status = "手机预览暂未开放".into();
+                        }
+                        {
+                            let (ar, aresp) = ui
+                                .allocate_exact_size(egui::vec2(58.0, 24.0), egui::Sense::click());
+                            crate::icons::gradient_pill(
+                                ui.painter(),
+                                ar,
+                                egui::Color32::from_rgb(0x6D, 0x97, 0xFF),
+                                egui::Color32::from_rgb(0x91, 0x84, 0xFF),
+                                theme::pal().bg,
+                            );
+                            let sp = egui::Rect::from_center_size(
+                                egui::pos2(ar.min.x + 17.0, ar.center().y),
+                                egui::vec2(11.0, 11.0),
+                            );
+                            crate::icons::sparkle(ui.painter(), sp, theme::pal().white);
+                            let g = ui.painter().layout_no_wrap(
+                                "AI".into(),
+                                egui::FontId::new(13.0, theme::bold_family()),
+                                theme::pal().white,
+                            );
+                            ui.painter().galley(
+                                egui::pos2(ar.min.x + 27.0, ar.center().y - g.size().y * 0.5),
+                                g,
+                                theme::pal().white,
+                            );
+                            if aresp.clicked() {
+                                self.st.status = "AI 助理暂未开放".into();
+                            }
+                            let _ = aresp.on_hover_text("AI 助理");
                         }
                     });
                     // AI 助理行（对位原客户端编辑器顶部 AI 入口；视觉占位）
@@ -3185,6 +3207,16 @@ impl BijiApp {
                     self.st.status = "把文件拖入笔记正文区即可添加附件".into();
                 }
                 // 共享（灰底圆角钮，对位原客户端分享钮）
+                if crate::icons::chrome_btn(
+                    ui,
+                    24.0,
+                    "协作（暂未开放）",
+                    &crate::icons::person_plus,
+                )
+                .clicked()
+                {
+                    self.st.status = "协作暂未开放".into();
+                }
                 if crate::icons::chrome_btn(
                     ui,
                     24.0,
@@ -7125,19 +7157,22 @@ mod tests {
         run(&ctx, &mut app, vec![]);
         assert!(!app.st.rows[0].shared, "初始无徽标");
 
-        // 编辑器元信息行（笔记本 chip/日期/ℹ 旁）扫「共享」按钮
-        let mut toggled = false;
-        // 「共享」按钮在元信息行最右（ℹ 在其左会弹窗拦截）——从右向左扫
-        'outer: for yi in (40..140).step_by(8) {
-            for xi in (505..1100).step_by(20).rev() {
-                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
-                if app.service.store().get_note(uid).unwrap().note.is_shared {
-                    toggled = true;
-                    break 'outer;
-                }
-            }
-        }
-        assert!(toggled, "应能点到「共享」按钮");
+        // 编辑器工具行「共享」钮：以「版本 pill」id 定位（动态、免盲扫），
+        // 共享钮在其右侧 +clip(24)+协作(24)+三倍间距(8)
+        let vrect = ctx
+            .read_response(egui::Id::new("version-pill"))
+            .expect("版本 pill 应已渲染")
+            .rect;
+        let share_pos = egui::pos2(
+            vrect.max.x + 8.0 + 24.0 + 8.0 + 24.0 + 8.0 + 12.0,
+            vrect.center().y,
+        );
+        click(&ctx, &mut app, share_pos);
+        assert!(
+            app.service.store().get_note(uid).unwrap().note.is_shared,
+            "应能点到「共享」按钮（定位于版本 pill 右侧 {}）",
+            share_pos
+        );
         run(&ctx, &mut app, vec![]);
         assert!(
             app.st.rows.iter().any(|r| r.shared),
@@ -7157,17 +7192,12 @@ mod tests {
         );
 
         // 再点「取消共享」回退
-        let mut undone = false;
-        'outer2: for yi in (40..140).step_by(8) {
-            for xi in (505..1100).step_by(20).rev() {
-                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
-                if !app.service.store().get_note(uid).unwrap().note.is_shared {
-                    undone = true;
-                    break 'outer2;
-                }
-            }
-        }
-        assert!(undone, "应能点到「取消共享」回退");
+        // 「取消共享」回退：同一位置再点一次
+        click(&ctx, &mut app, share_pos);
+        assert!(
+            !app.service.store().get_note(uid).unwrap().note.is_shared,
+            "应能点到「取消共享」回退"
+        );
     }
 
     /// headless egui 集成：文件菜单「🖨 导出 PDF」→ 产物生成且字节合法

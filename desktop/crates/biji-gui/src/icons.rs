@@ -670,6 +670,57 @@ pub fn moon(p: &Painter, r: Rect, c: Color32, carve: Color32) {
     );
 }
 
+/// 手机（线性竖机 + 底部横杠）。
+pub fn phone(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let body = Rect::from_center_size(r.center(), egui::vec2(r.width() * 0.62, r.height() * 0.92));
+    p.rect_stroke(body, egui::Rounding::same(3.0), s);
+    p.line_segment(
+        [
+            egui::pos2(
+                body.center().x - body.width() * 0.14,
+                body.max.y - body.height() * 0.1,
+            ),
+            egui::pos2(
+                body.center().x + body.width() * 0.14,
+                body.max.y - body.height() * 0.1,
+            ),
+        ],
+        s,
+    );
+}
+
+/// 水平渐变圆角胶囊（四角以底色圆盖出圆角；bg 传所在面板底色）。
+pub fn gradient_pill(p: &Painter, r: Rect, left: Color32, right: Color32, bg: Color32) {
+    // 内部渐变（24 根竖条线性插值；无纹理依赖）
+    let steps = 24usize;
+    let w = r.width() / steps as f32;
+    for i in 0..steps {
+        let t = i as f32 / (steps - 1) as f32;
+        let c = Color32::from_rgb(
+            lerp(left.r() as f32, t, right.r() as f32) as u8,
+            lerp(left.g() as f32, t, right.g() as f32) as u8,
+            lerp(left.b() as f32, t, right.b() as f32) as u8,
+        );
+        let x0 = r.min.x + w * i as f32;
+        p.rect_filled(
+            Rect::from_min_size(egui::pos2(x0, r.min.y), egui::vec2(w + 0.6, r.height())),
+            0.0,
+            c,
+        );
+    }
+    // 四角用底色圆盖出圆角（rounding = 半高）
+    let rad = r.height() * 0.5;
+    for cc in [
+        r.left_top(),
+        r.right_top(),
+        r.left_bottom(),
+        r.right_bottom(),
+    ] {
+        p.circle_filled(cc, rad + 0.5, bg);
+    }
+}
+
 // ---------- 图标按钮 ----------
 
 /// 朴素图标钮（列表头/元信息行）：悬停显灰底，图标居中。
