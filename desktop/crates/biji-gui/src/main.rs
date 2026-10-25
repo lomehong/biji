@@ -1017,6 +1017,7 @@ impl BijiApp {
                     ui.label(
                         egui::RichText::new(&title)
                             .size(30.0)
+                            .family(theme::bold_family())
                             .strong()
                             .color(egui::Color32::from_rgb(235, 235, 240)),
                     );
@@ -1552,6 +1553,7 @@ impl BijiApp {
                         ui.label(
                             egui::RichText::new("新建笔记")
                                 .size(16.0)
+                                .family(theme::bold_family())
                                 .strong()
                                 .color(theme::pal().text),
                         );
@@ -2274,7 +2276,7 @@ impl BijiApp {
                 // 全部笔记/各笔记本/各标签）
                 let title_galley = ui.painter().layout_no_wrap(
                     header.clone(),
-                    egui::FontId::new(19.0, egui::FontFamily::Proportional),
+                    egui::FontId::new(19.0, theme::bold_family()),
                     theme::pal().text,
                 );
                 let title_w = title_galley.size().x + 22.0;
@@ -2664,6 +2666,7 @@ impl BijiApp {
                             ui.label(
                                 egui::RichText::new(&row.title)
                                     .size(15.0)
+                                    .family(theme::bold_family())
                                     .strong()
                                     .color(theme::pal().text),
                             );
@@ -3565,7 +3568,12 @@ impl BijiApp {
                     };
                     // 字体样式组（排版字形对位原客户端 B/I/U/S）
                     if ui
-                        .button(egui::RichText::new("B").strong().size(15.0))
+                        .button(
+                            egui::RichText::new("B")
+                                .family(theme::bold_family())
+                                .strong()
+                                .size(15.0),
+                        )
                         .on_hover_text("粗体")
                         .clicked()
                     {
@@ -4311,7 +4319,11 @@ impl BijiApp {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (_uid, sender_name, body, date) in &chat.messages {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(sender_name).strong());
+                            ui.label(
+                                egui::RichText::new(sender_name)
+                                    .family(theme::bold_family())
+                                    .strong(),
+                            );
                             ui.label(egui::RichText::new(util::fmt_epoch(*date)).small().weak());
                         });
                         ui.label(body);
@@ -5021,8 +5033,28 @@ fn install_cjk_fonts(ctx: &egui::Context) {
                 .families
                 .entry(egui::FontFamily::Monospace)
                 .or_default()
-                .push(name);
+                .push(name.clone());
+            // 真字重粗体（egui 0.29 无字重支持，标题类文本走独立字族；
+            // 无粗体面时 cjk-bold 回退常规体，调用点无需分支）
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(bbytes) = std::fs::read("C:/Windows/Fonts/msyhbd.ttc") {
+                    let mut bdata = egui::FontData::from_owned(bbytes);
+                    bdata.index = 0;
+                    fonts.font_data.insert("cjk-bold".into(), bdata);
+                    fonts.families.insert(
+                        egui::FontFamily::Name(std::sync::Arc::from("cjk-bold")),
+                        vec!["cjk-bold".into(), name.clone()],
+                    );
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            fonts.families.insert(
+                egui::FontFamily::Name(std::sync::Arc::from("cjk-bold")),
+                vec![name.clone()],
+            );
             ctx.set_fonts(fonts);
+            theme::set_bold_registered(true);
             return;
         }
     }

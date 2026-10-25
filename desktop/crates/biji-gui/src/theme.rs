@@ -114,6 +114,24 @@ pub fn set_dark(on: bool) {
     DARK_MODE.store(on, Ordering::Relaxed);
 }
 
+/// 真字重粗体字族（`install_cjk_fonts` 注册雅黑 Bold；未注册时回退常规体）。
+/// egui 0.29 无字重支持（RichText::strong 只加强颜色），标题类文本用本字族。
+pub fn bold_family() -> egui::FontFamily {
+    if BOLD_REGISTERED.load(Ordering::Relaxed) {
+        egui::FontFamily::Name(std::sync::Arc::from("cjk-bold"))
+    } else {
+        egui::FontFamily::Proportional
+    }
+}
+
+static BOLD_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+/// install_cjk_fonts 注册粗体面后调用（headless 测试进程不注册，
+/// bold_family 随之回退常规字族，避免未绑定字族 panic）。
+pub fn set_bold_registered(on: bool) {
+    BOLD_REGISTERED.store(on, Ordering::Relaxed);
+}
+
 /// 当前调色板。
 pub fn pal() -> &'static Palette {
     if is_dark() {
@@ -183,7 +201,7 @@ pub fn apply(ctx: &Context) {
         );
         ts.insert(
             egui::TextStyle::Heading,
-            egui::FontId::new(24.0, egui::FontFamily::Proportional),
+            egui::FontId::new(24.0, bold_family()),
         );
         ts.insert(
             egui::TextStyle::Monospace,
