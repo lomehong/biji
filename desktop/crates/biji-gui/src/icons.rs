@@ -862,7 +862,18 @@ pub fn x_mark(p: &Painter, r: Rect, c: Color32) {
 /// 菜单/弹层内图标行（图标 + 文字，整行可点，悬停灰底）。
 /// 弹层宽度由调用方 `ui.set_min_width` 保证。返回是否被点击。
 pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool {
-    let w = ui.available_width();
+    // 自然宽度（量文字后拼行）：egui 弹层按内容测宽，整行撑满会把菜单
+    // 顶到弹层宽度上限（实测 1600 宽下 400px），且离锚点过远难以命中
+    let text_w = ui
+        .painter()
+        .layout_no_wrap(
+            label.to_string(),
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            theme::pal().text,
+        )
+        .size()
+        .x;
+    let w = (10.0 + if icon.is_some() { 22.0 } else { 0.0 } + text_w + 10.0).max(120.0);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), egui::Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, theme::pal().hovered);
@@ -891,6 +902,97 @@ pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool
         theme::pal().text,
     );
     resp.clicked()
+}
+
+/// 图钉（快捷方式）。
+pub fn pin(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    p.circle_filled(
+        egui::pos2(r.center().x, lerp(r.min.y, 0.3, r.max.y)),
+        r.height() * 0.2,
+        c,
+    );
+    p.line_segment(
+        [
+            egui::pos2(r.center().x, lerp(r.min.y, 0.48, r.max.y)),
+            egui::pos2(r.center().x, lerp(r.min.y, 0.72, r.max.y)),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            egui::pos2(lerp(r.min.x, 0.3, r.max.x), lerp(r.min.y, 0.86, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.7, r.max.x), lerp(r.min.y, 0.86, r.max.y)),
+        ],
+        s,
+    );
+}
+
+/// 左弯箭头（移出/还原）。
+pub fn undo(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    let mid_y = lerp(r.min.y, 0.4, r.max.y);
+    let mut pts = Vec::new();
+    for i in 0..=10 {
+        let t = i as f32 / 10.0;
+        let a = std::f32::consts::PI * t; // 上半圆从左到右
+        pts.push(egui::pos2(
+            lerp(r.min.x, 0.28, r.max.x) + r.width() * 0.36 * (1.0 - a.cos().abs()),
+            mid_y - r.height() * 0.3 * a.sin().abs() + r.height() * 0.18,
+        ));
+    }
+    p.add(egui::Shape::line(pts, s));
+    p.line_segment(
+        [
+            egui::pos2(lerp(r.min.x, 0.28, r.max.x), mid_y + r.height() * 0.18),
+            egui::pos2(lerp(r.min.x, 0.28, r.max.x), lerp(r.min.y, 0.86, r.max.y)),
+        ],
+        s,
+    );
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.14, r.max.x), lerp(r.min.y, 0.52, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.42, r.max.x), lerp(r.min.y, 0.52, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.28, r.max.x), lerp(r.min.y, 0.7, r.max.y)),
+        ],
+        c,
+        egui::Stroke::NONE,
+    ));
+}
+
+/// 浮动窗口（矩形 + 标题条）。
+pub fn window(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.rect_stroke(r, egui::Rounding::same(2.0), s);
+    p.line_segment(
+        [
+            egui::pos2(r.min.x, lerp(r.min.y, 0.28, r.max.y)),
+            egui::pos2(r.max.x, lerp(r.min.y, 0.28, r.max.y)),
+        ],
+        s,
+    );
+}
+
+/// 右箭头（移动到）。
+pub fn arrow(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    let cy = r.center().y;
+    p.line_segment(
+        [
+            egui::pos2(r.min.x, cy),
+            egui::pos2(lerp(r.min.x, 0.82, r.max.x), cy),
+        ],
+        s,
+    );
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.7, r.max.x), lerp(r.min.y, 0.22, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.7, r.max.x), lerp(r.min.y, 0.78, r.max.y)),
+            egui::pos2(r.max.x, cy),
+        ],
+        c,
+        egui::Stroke::NONE,
+    ));
 }
 
 // ---------- 图标按钮 ----------

@@ -104,6 +104,12 @@ pub static DARK: Palette = Palette {
 
 static DARK_MODE: AtomicBool = AtomicBool::new(false);
 
+/// headless 测试串行化：DARK_MODE 是进程级全局，并行测试会互踩主题态。
+/// 触碰主题的测试在开头取此锁（用 unwrap_or_else 容忍毒化）。
+/// 仅测试引用，非测试构建下 dead_code。
+#[cfg_attr(not(test), allow(dead_code))]
+pub static TEST_THEME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 当前是否深色模式（进程级状态，随库 meta 持久化恢复）。
 pub fn is_dark() -> bool {
     DARK_MODE.load(Ordering::Relaxed)

@@ -707,34 +707,36 @@ impl BijiApp {
         move_req: &mut Option<(i64, Option<i64>)>,
     ) {
         resp.context_menu(|ui| {
-            if ui.button("🗑 移入回收站").clicked() {
+            ui.set_min_width(170.0);
+            if crate::icons::menu_item(ui, Some(&crate::icons::trash), "移入回收站") {
                 *trash_req = Some(uid);
                 ui.close_menu();
             }
-            if ui.button("🗔 在浮动窗口打开").clicked() {
+            if crate::icons::menu_item(ui, Some(&crate::icons::window), "在浮动窗口打开") {
                 *float_req = Some(uid);
                 ui.close_menu();
             }
-            if ui
-                .button(if pinned {
-                    "📌 取消快捷方式"
+            if crate::icons::menu_item(
+                ui,
+                Some(&crate::icons::pin),
+                if pinned {
+                    "取消快捷方式"
                 } else {
-                    "📌 添加到快捷方式"
-                })
-                .clicked()
-            {
+                    "添加到快捷方式"
+                },
+            ) {
                 *shortcut_req = Some(uid);
                 ui.close_menu();
             }
             ui.separator();
             ui.label(egui::RichText::new("移动到笔记本").small().weak());
             for (nb_uid, nb_name) in notebooks {
-                if ui.button(format!("→ {nb_name}")).clicked() {
+                if crate::icons::menu_item(ui, Some(&crate::icons::arrow), nb_name) {
                     *move_req = Some((uid, Some(*nb_uid)));
                     ui.close_menu();
                 }
             }
-            if ui.button("→ （未分类）").clicked() {
+            if crate::icons::menu_item(ui, Some(&crate::icons::arrow), "（未分类）") {
                 *move_req = Some((uid, None));
                 ui.close_menu();
             }
@@ -1667,7 +1669,11 @@ impl BijiApp {
                                 open_note = Some(*uid);
                             }
                             row.context_menu(|ui| {
-                                if ui.button("✕ 取消快捷方式").clicked() {
+                                if crate::icons::menu_item(
+                                    ui,
+                                    Some(&crate::icons::x_mark),
+                                    "取消快捷方式",
+                                ) {
                                     unpin_req = Some(*uid);
                                     ui.close_menu();
                                 }
@@ -1788,15 +1794,28 @@ impl BijiApp {
                                     self.st.trash_view = false;
                                 }
                                 row.context_menu(|ui| {
-                                    if ui.button("✏️ 重命名笔记本").clicked() {
+                                    ui.set_min_width(150.0);
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::pencil),
+                                        "重命名笔记本",
+                                    ) {
                                         self.st.rename_nb = Some((nb.uid, nb.name.clone()));
                                         ui.close_menu();
                                     }
-                                    if ui.button("🗑 删除笔记本").clicked() {
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::trash),
+                                        "删除笔记本",
+                                    ) {
                                         to_confirm_delete = Some((nb.uid, nb.name.clone()));
                                         ui.close_menu();
                                     }
-                                    if ui.button("↩ 移出分组").clicked() {
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::undo),
+                                        "移出分组",
+                                    ) {
                                         stack_req = Some((nb.uid, String::new()));
                                         ui.close_menu();
                                     }
@@ -1879,15 +1898,28 @@ impl BijiApp {
                             }
                             // 右键菜单（对位原客户端笔记本行）：重命名 / 删除
                             row.context_menu(|ui| {
-                                if ui.button("✏️ 重命名笔记本").clicked() {
+                                ui.set_min_width(150.0);
+                                if crate::icons::menu_item(
+                                    ui,
+                                    Some(&crate::icons::pencil),
+                                    "重命名笔记本",
+                                ) {
                                     self.st.rename_nb = Some((nb.uid, nb.name.clone()));
                                     ui.close_menu();
                                 }
-                                if ui.button("🗂 设分组…").clicked() {
+                                if crate::icons::menu_item(
+                                    ui,
+                                    Some(&crate::icons::folder),
+                                    "设分组…",
+                                ) {
                                     stack_edit_req = Some((nb.uid, nb.name.clone()));
                                     ui.close_menu();
                                 }
-                                if ui.button("🗑 删除笔记本").clicked() {
+                                if crate::icons::menu_item(
+                                    ui,
+                                    Some(&crate::icons::trash),
+                                    "删除笔记本",
+                                ) {
                                     to_confirm_delete = Some((nb.uid, nb.name.clone()));
                                     ui.close_menu();
                                 }
@@ -2028,15 +2060,29 @@ impl BijiApp {
                                 app.st.trash_view = false;
                             }
                             row.context_menu(|ui| {
-                                if ui.button("✏️ 重命名标签").clicked() {
+                                ui.set_min_width(140.0);
+                                if crate::icons::menu_item(
+                                    ui,
+                                    Some(&crate::icons::pencil),
+                                    "重命名标签",
+                                ) {
                                     app.st.rename_tag = Some((t.uid, t.name.clone()));
                                     ui.close_menu();
                                 }
-                                if ui.button("🌳 设为子标签…").clicked() {
+                                if crate::icons::menu_item(
+                                    ui,
+                                    Some(&crate::icons::folder),
+                                    "设为子标签…",
+                                ) {
                                     *parent_edit = Some((t.uid, t.name.clone(), String::new()));
                                     ui.close_menu();
                                 }
-                                if t.parent_uid.is_some() && ui.button("↩ 移出父标签").clicked()
+                                if t.parent_uid.is_some()
+                                    && crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::undo),
+                                        "移出父标签",
+                                    )
                                 {
                                     app.st.status = format!("已把标签「{}」移出父级", t.name);
                                     let _ = &app.st.status;
@@ -2044,7 +2090,11 @@ impl BijiApp {
                                     // 直接落地（record 通过 action 标记）
                                     *action = Some(Selection::Tag(-t.uid)); // 负 uid = 移出父级信号
                                 }
-                                if ui.button("🗑 删除标签").clicked() {
+                                if crate::icons::menu_item(
+                                    ui,
+                                    Some(&crate::icons::trash),
+                                    "删除标签",
+                                ) {
                                     // 复用既有确认（DeleteTag）
                                     app.st.confirm =
                                         Some(Confirm::DeleteTag(t.uid, t.name.clone()));
@@ -5784,26 +5834,27 @@ mod tests {
         );
 
         // ---- 2) 右键标签行 → 删除标签 → 确认弹窗 → 删除
-        // 双层扫描：找标签行（右键弹菜单）→ 该行上探测菜单第二项；
-        // 每轮重开菜单（点击即关）；过滤行使布局位移，固定坐标不可靠
+        // （本测试无笔记本：首个右键菜单即标签菜单；等弹层稳定后点
+        //   第 3 项「删除标签」，前两项为重命名/设为子标签）
         let mut del_done = false;
         'rowscan: for yi in (150..520).step_by(8) {
             let pos = egui::pos2(100.0, yi as f32);
-            for probe in [24.0, 30.0, 36.0, 42.0, 48.0] {
-                click(&ctx, &mut app, pos, true);
-                let Some(m) = popup_near(&ctx, pos) else {
-                    continue;
-                };
-                click(
-                    &ctx,
-                    &mut app,
-                    egui::pos2(m.center().x, m.min.y + probe),
-                    false,
-                );
-                if st_confirm(&app).is_some() {
-                    del_done = true;
-                    break 'rowscan;
-                }
+            app.st.rename_tag = None; // 重命名弹窗会遮挡菜单——先清
+            click(&ctx, &mut app, pos, true);
+            let Some(m) = popup_near(&ctx, pos) else {
+                continue;
+            };
+            run(&ctx, &mut app, vec![]);
+            run(&ctx, &mut app, vec![]);
+            click(
+                &ctx,
+                &mut app,
+                egui::pos2(m.center().x, m.min.y + 76.0),
+                false,
+            );
+            if matches!(st_confirm(&app), Some(ConfirmKind::Tag)) {
+                del_done = true;
+                break 'rowscan;
             }
         }
         assert!(del_done, "应能点到「删除标签」项");
@@ -5852,6 +5903,9 @@ mod tests {
     /// 四路生效；重开同一库恢复深色；切回浅色持久化。
     #[test]
     fn dark_mode_toggles_and_persists_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("theme.exb");
@@ -5975,6 +6029,9 @@ mod tests {
     /// 全部笔记 / 各笔记本 / 各标签；切换后 selection 与列表内容即时生效。
     #[test]
     fn list_header_source_dropdown_switches_view() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -6132,6 +6189,9 @@ mod tests {
     /// 骨架（光标/选区路径），Ctrl+S 落库，切预览渲染（裸行表格 + hr）。
     #[test]
     fn toolbar_inserts_table_and_hr_then_saves_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -6326,6 +6386,9 @@ mod tests {
     /// 点击直达笔记 → 分区行右键「取消快捷方式」移除。
     #[test]
     fn shortcuts_pin_open_unpin_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -6414,7 +6477,7 @@ mod tests {
         let mut pinned = false;
         // 菜单项序：移入回收站(1) / 📪快捷方式(2)…—— 从第 2 项区间起扫，
         // 避免先命中第 1 项把笔记删掉
-        for dy in (28..150).step_by(6) {
+        for dy in (42..150).step_by(4) {
             click(&ctx, &mut app, pos, true);
             if let Some(m) = popup_near(&ctx, pos) {
                 click(
@@ -6488,6 +6551,9 @@ mod tests {
     /// → 批量「移入回收站」；断言全部落在 store 真实状态。
     #[test]
     fn multi_select_batch_ops_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -6714,6 +6780,9 @@ mod tests {
     /// 未命中输入「＋ 新建」创建并挂载。
     #[test]
     fn tag_autocomplete_filter_create_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -6853,6 +6922,9 @@ mod tests {
     /// 循环定位（光标选中断言）→ 替换当前 → 全部替换 → Ctrl+S 落库 → Esc 关闭。
     #[test]
     fn find_replace_flow_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -7064,6 +7136,9 @@ mod tests {
     /// en-media 占位入源置脏 → 重复拖放幂等 → Ctrl+S 落库 → 预览渲染不炸。
     #[test]
     fn drag_drop_imports_attachment_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         // 真实临时文件（桌面拖放形态：DroppedFile 带 path、无 bytes）
         let dir = tempfile::tempdir().unwrap();
@@ -7193,6 +7268,9 @@ mod tests {
     /// + journal 记账；再点「取消共享」回退。
     #[test]
     fn shared_toggle_badge_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -7297,6 +7375,9 @@ mod tests {
     ///（%PDF 头 / 页对象 / %%EOF / startxref 指向 xref）。
     #[test]
     fn export_pdf_menu_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -7413,6 +7494,9 @@ mod tests {
     /// （编辑器载入目标标题）；链接指向不存在的笔记时状态栏诚实提示。
     #[test]
     fn note_link_navigation_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -7543,6 +7627,9 @@ mod tests {
     /// ENML 源回写 → Ctrl+S 落库。
     #[test]
     fn table_visual_edit_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -7713,6 +7800,9 @@ mod tests {
     /// 双源码并行编辑各自保存落库互不干扰。
     #[test]
     fn float_window_parallel_edit_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -7827,7 +7917,7 @@ mod tests {
             .rect
             .center();
         let mut opened = false;
-        for dy in (36..78).step_by(6) {
+        for dy in (42..90).step_by(4) {
             rclick(&ctx, &mut app, card);
             let Some(m) = popup_near(&ctx, card) else {
                 continue;
@@ -7939,6 +8029,9 @@ mod tests {
     /// paste_clipboard_image 的内部逻辑等价验证（直调 add_resource 路径）。
     #[test]
     fn paste_image_resource_chain() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -8036,6 +8129,9 @@ mod tests {
     /// 多步回退；浮动窗口独立栈。
     #[test]
     fn undo_redo_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -8214,6 +8310,9 @@ mod tests {
     /// headless：拖拽把手 → request_widths 产生 → ENML widths 属性回写。
     #[test]
     fn table_col_drag_widths_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -8358,6 +8457,9 @@ mod tests {
     /// headless egui 集成：笔记本行拖拽 → 排序 meta 落库 → 侧栏顺序变化。
     #[test]
     fn notebook_drag_reorder_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -8448,6 +8550,9 @@ mod tests {
     /// 透出 stats——直接断言 count_stats 与缓冲内容一致）。
     #[test]
     fn word_count_bar_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -8501,6 +8606,9 @@ mod tests {
     /// 清空恢复；无匹配时给空态提示。
     #[test]
     fn sidebar_filter_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -8580,6 +8688,9 @@ mod tests {
     /// 移出分组回到平铺；set_notebook_stack journal 记账。
     #[test]
     fn notebook_stack_grouping_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -8692,6 +8803,9 @@ mod tests {
     /// 折叠状态保持 → 移出父级 → 防环拒绝。
     #[test]
     fn tag_tree_parent_headless() {
+        let _theme_guard = theme::TEST_THEME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         theme::set_dark(false);
         let store = Store::open_memory().unwrap();
         let (tx, _rx) = mpsc::channel();
