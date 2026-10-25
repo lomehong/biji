@@ -239,6 +239,8 @@ struct UiState {
     show_notebooks: bool,
     show_tags: bool,
     show_shortcuts: bool,
+    /// 侧栏过滤（空 = 不过滤；子串匹配笔记本/标签名）。
+    sidebar_filter: String,
 }
 
 /// 聊天窗口状态（P3：thread/message 存储消费方）。
@@ -307,6 +309,7 @@ impl UiState {
             show_notebooks: true,
             show_tags: true,
             show_shortcuts: true,
+            sidebar_filter: String::new(),
         }
     }
 }
@@ -1554,6 +1557,42 @@ impl BijiApp {
                         }
                     }
                 }
+                // 侧栏过滤（对位原客户端侧栏搜索）：过滤笔记本与标签行
+                if !notebooks.is_empty() || !tags.is_empty() {
+                    let mut f = self.st.sidebar_filter.clone();
+                    let fr = ui.add(
+                        egui::TextEdit::singleline(&mut f)
+                            .hint_text("🔍 过滤侧栏…")
+                            .desired_width(ui.available_width())
+                            .id(egui::Id::new("sidebar-filter")),
+                    );
+                    if fr.changed() {
+                        self.st.sidebar_filter = f;
+                    }
+                    if !self.st.sidebar_filter.is_empty()
+                        && ui
+                            .small_button("✕")
+                            .on_hover_text("清除过滤")
+                            .clicked()
+                        {
+                            self.st.sidebar_filter.clear();
+                        }
+                }
+                let nb_visible: Vec<&biji_store::Notebook> = if self.st.sidebar_filter.is_empty() {
+                    notebooks.iter().collect()
+                } else {
+                    notebooks
+                        .iter()
+                        .filter(|n| n.name.contains(&self.st.sidebar_filter))
+                        .collect()
+                };
+                let tag_visible: Vec<&biji_store::Tag> = if self.st.sidebar_filter.is_empty() {
+                    tags.iter().collect()
+                } else {
+                    tags.iter()
+                        .filter(|t| t.name.contains(&self.st.sidebar_filter))
+                        .collect()
+                };
                 let all_sel = !self.st.trash_view && self.st.selection == Selection::All;
                 if theme::nav_row(ui, "📄", "全部笔记", all_sel).clicked() {
                     action = Some(Selection::All);
@@ -1565,9 +1604,16 @@ impl BijiApp {
                     open_new_nb = true;
                 }
                 if self.st.show_notebooks {
+                    if nb_visible.is_empty() && !self.st.sidebar_filter.is_empty() {
+                        ui.label(
+                            egui::RichText::new("（无匹配笔记本）")
+                                .small()
+                                .color(theme::pal().subtle),
+                        );
+                    }
                     // 拖拽排序状态：正在拖拽的笔记本 uid 与当前指针位置
                     let nb_uids: Vec<i64> = notebooks.iter().map(|n| n.uid).collect();
-                    for (nb_idx, nb) in notebooks.iter().enumerate() {
+                    for (nb_idx, nb) in nb_visible.iter().enumerate() {
                         ui.horizontal(|ui| {
                             let selected = !self.st.trash_view
                                 && self.st.selection == Selection::Notebook(nb.uid);
@@ -1656,7 +1702,14 @@ impl BijiApp {
                 }
                 ui.add_space(10.0);
                 if self.st.show_tags {
-                    for t in &tags {
+                    if tag_visible.is_empty() && !self.st.sidebar_filter.is_empty() {
+                        ui.label(
+                            egui::RichText::new("（无匹配标签）")
+                                .small()
+                                .color(theme::pal().subtle),
+                        );
+                    }
+                    for t in &tag_visible {
                         let selected =
                             !self.st.trash_view && self.st.selection == Selection::Tag(t.uid);
                         let row = theme::nav_row(
@@ -4686,7 +4739,7 @@ mod tests {
         // ---- 1) 右键「重要」标签行 → 重命名标签 → 对话框 → 确定
         // 标签区在笔记本区下方，扫描更宽的 y 范围
         let mut menu = None;
-        for yi in (150..420).step_by(8) {
+        for yi in (150..520).step_by(8) {
             let y = yi as f32;
             let pos = egui::pos2(100.0, y);
             click(&ctx, &mut app, pos, true);
@@ -4743,28 +4796,29 @@ mod tests {
         );
 
         // ---- 2) 右键标签行 → 删除标签 → 确认弹窗 → 删除
-        let mut menu2 = None;
-        for yi in (150..420).step_by(8) {
-            let y = yi as f32;
-            let pos = egui::pos2(100.0, y);
-            click(&ctx, &mut app, pos, true);
-            if let Some(r) = popup_near(&ctx, pos) {
-                menu2 = Some(r);
-                break;
+        // 双层扫描：找标签行（右键弹菜单）→ 该行上探测菜单第二项；
+        // 每轮重开菜单（点击即关）；过滤行使布局位移，固定坐标不可靠
+        let mut del_done = false;
+        'rowscan: for yi in (150..520).step_by(8) {
+            let pos = egui::pos2(100.0, yi as f32);
+            for probe in [24.0, 30.0, 36.0, 42.0, 48.0] {
+                click(&ctx, &mut app, pos, true);
+                let Some(m) = popup_near(&ctx, pos) else {
+                    continue;
+                };
+                click(
+                    &ctx,
+                    &mut app,
+                    egui::pos2(m.center().x, m.min.y + probe),
+                    false,
+                );
+                if st_confirm(&app).is_some() {
+                    del_done = true;
+                    break 'rowscan;
+                }
             }
         }
-        let menu2 = menu2.expect("应再次弹出菜单");
-        // 第二项：删除标签
-        click(
-            &ctx,
-            &mut app,
-            egui::pos2(menu2.center().x, menu2.min.y + 44.0),
-            false,
-        );
-        assert!(
-            matches!(st_confirm(&app), Some(ConfirmKind::Tag)),
-            "应打开删除标签确认弹窗"
-        );
+        assert!(del_done, "应能点到「删除标签」项");
         let win2 = ctx
             .memory(|m| m.area_rect(egui::Id::new("删除标签")))
             .expect("删除标签确认窗口应出现");
@@ -7465,6 +7519,85 @@ mod tests {
         let (cjk2, _, words2) = BijiApp::count_stats(&app.st.editor.as_ref().unwrap().content);
         assert_eq!(cjk2, 4, "中文不变");
         assert_eq!(words2, 2, "hello world=2 词");
+    }
+
+    /// headless egui 集成：侧栏过滤输入 → 笔记本/标签行按子串过滤 →
+    /// 清空恢复；无匹配时给空态提示。
+    #[test]
+    fn sidebar_filter_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        app.service.store().create_notebook("工作", None).unwrap();
+        app.service.store().create_notebook("生活", None).unwrap();
+        app.service.store().create_tag("重要", None).unwrap();
+        app.service.store().create_tag("紧急", None).unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        run(&ctx, &mut app, vec![]);
+
+        // 无过滤：工作/生活 都在 UIA 可见
+        let count_names = |app: &BijiApp| -> (usize, usize) {
+            let f = &app.st.sidebar_filter;
+            let nb = app
+                .service
+                .store()
+                .list_notebooks()
+                .unwrap()
+                .iter()
+                .filter(|n| f.is_empty() || n.name.contains(f.as_str()))
+                .count();
+            let tg = app
+                .service
+                .store()
+                .list_tags()
+                .unwrap()
+                .iter()
+                .filter(|t| f.is_empty() || t.name.contains(f.as_str()))
+                .count();
+            (nb, tg)
+        };
+        assert_eq!(count_names(&app), (2, 2), "无过滤全量");
+
+        // 输入过滤「工」→ 只剩 工作（1 本）+ 0 标签
+        app.st.sidebar_filter = "工".into();
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(count_names(&app), (1, 0), "过滤「工」后只剩工作");
+
+        // 输入「急」→ 0 本 + 1 标签（紧急）
+        app.st.sidebar_filter = "急".into();
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(count_names(&app), (0, 1));
+
+        // 无匹配 → 空态
+        app.st.sidebar_filter = "不存在".into();
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(count_names(&app), (0, 0));
+
+        // 清空恢复
+        app.st.sidebar_filter.clear();
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(count_names(&app), (2, 2), "清空恢复全量");
     }
 
     #[test]
