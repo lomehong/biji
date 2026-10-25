@@ -245,6 +245,10 @@ struct UiState {
     stack_open: std::collections::BTreeMap<String, bool>,
     /// 设栈弹窗：(笔记本 uid, 名称, 编辑缓冲)。
     stack_edit: Option<(i64, String, String)>,
+    /// 标签树折叠状态（缺省展开）。
+    tag_tree_open: std::collections::BTreeMap<i64, bool>,
+    /// 设标签父级弹窗：(标签 uid, 名称, 目标父标签名缓冲)。
+    tag_parent_edit: Option<(i64, String, String)>,
 }
 
 /// 聊天窗口状态（P3：thread/message 存储消费方）。
@@ -316,6 +320,8 @@ impl UiState {
             sidebar_filter: String::new(),
             stack_open: Default::default(),
             stack_edit: None,
+            tag_tree_open: Default::default(),
+            tag_parent_edit: None,
         }
     }
 }
@@ -1805,7 +1811,188 @@ impl BijiApp {
                                 .color(theme::pal().subtle),
                         );
                     }
-                    for t in &tag_visible {
+                    // ---- 标签树（对位原客户端父子标签）：根标签平铺，子标签
+                    // 缩进挂在父下；过滤时按子串命中后仍保持树形。
+                    let _parent_of = |uid: i64| -> Option<i64> {
+                        tags.iter()
+                            .find(|t| t.uid == uid)
+                            .and_then(|t| t.parent_uid)
+                    };
+                    let _name_of = |uid: i64| -> String {
+                        tags.iter()
+                            .find(|t| t.uid == uid)
+                            .map(|t| t.name.clone())
+                            .unwrap_or_default()
+                    };
+                    // 递归渲染（depth 缩进；父折叠时跳过子树）
+                    #[allow(clippy::too_many_arguments)]
+                    fn render_tag_node(
+                        ui: &mut egui::Ui,
+                        t: &biji_store::Tag,
+                        depth: usize,
+                        tags: &[biji_store::Tag],
+                        visible: &[&biji_store::Tag],
+                        app: &mut BijiApp,
+                        action: &mut Option<Selection>,
+                        parent_edit: &mut Option<(i64, String, String)>,
+                    ) {
+                        let is_visible = |uid: i64| visible.iter().any(|v| v.uid == uid);
+                        // 过滤态下：自身或后代命中才渲染
+                        let mut subtree_hit = is_visible(t.uid);
+                        if !subtree_hit {
+                            let mut stack: Vec<i64> =
+                                tags.iter().filter(|c| c.parent_uid == Some(t.uid)).map(|c| c.uid).collect();
+                            while let Some(c) = stack.pop() {
+                                if is_visible(c) {
+                                    subtree_hit = true;
+                                    break;
+                                }
+                                stack.extend(
+                                    tags.iter().filter(|g| g.parent_uid == Some(c)).map(|g| g.uid),
+                                );
+                            }
+                        }
+                        if !subtree_hit {
+                            return;
+                        }
+                        let children: Vec<&biji_store::Tag> =
+                            tags.iter().filter(|c| c.parent_uid == Some(t.uid)).collect();
+                        ui.horizontal(|ui| {
+                            ui.add_space(14.0 * depth as f32);
+                            let _w = ui.available_width();
+                            let selected = !app.st.trash_view
+                                && app.st.selection == Selection::Tag(t.uid);
+                            let label = if children.is_empty() {
+                                format!("{} ({})", t.name, t.note_count)
+                            } else {
+                                let open = app
+                                    .st
+                                    .tag_tree_open
+                                    .get(&t.uid)
+                                    .copied()
+                                    .unwrap_or(true);
+                                format!(
+                                    "{}{} ({})",
+                                    if open { "▾ " } else { "▸ " },
+                                    t.name,
+                                    t.note_count
+                                )
+                            };
+                            let row = theme::nav_row(ui, "🏷", &label, selected);
+                            if row.clicked() {
+                                if !children.is_empty() {
+                                    let open = app
+                                        .st
+                                        .tag_tree_open
+                                        .get(&t.uid)
+                                        .copied()
+                                        .unwrap_or(true);
+                                    app.st.tag_tree_open.insert(t.uid, !open);
+                                }
+                                *action = Some(Selection::Tag(t.uid));
+                                app.st.trash_view = false;
+                            }
+                            row.context_menu(|ui| {
+                                if ui.button("✏️ 重命名标签").clicked() {
+                                    app.st.rename_tag = Some((t.uid, t.name.clone()));
+                                    ui.close_menu();
+                                }
+                                if ui.button("🌳 设为子标签…").clicked() {
+                                    *parent_edit = Some((t.uid, t.name.clone(), String::new()));
+                                    ui.close_menu();
+                                }
+                                if t.parent_uid.is_some() && ui.button("↩ 移出父标签").clicked() {
+                                    app.st.status = format!(
+                                        "已把标签「{}」移出父级",
+                                        t.name
+                                    );
+                                    let _ = &app.st.status;
+                                    ui.close_menu();
+                                    // 直接落地（record 通过 action 标记）
+                                    *action = Some(Selection::Tag(-t.uid)); // 负 uid = 移出父级信号
+                                }
+                                if ui.button("🗑 删除标签").clicked() {
+                                    // 复用既有确认（DeleteTag）
+                                    app.st.confirm = Some(Confirm::DeleteTag(t.uid, t.name.clone()));
+                                    ui.close_menu();
+                                }
+                            });
+                        });
+                        let open = self_open(app, t.uid);
+                        if open {
+                            for c in &children {
+                                render_tag_node(
+                                    ui, c, depth + 1, tags, visible, app, action, parent_edit,
+                                );
+                            }
+                        }
+                    }
+                    fn self_open(app: &BijiApp, uid: i64) -> bool {
+                        app.st.tag_tree_open.get(&uid).copied().unwrap_or(true)
+                    }
+                    let mut parent_edit_local: Option<(i64, String, String)> = None;
+                    let roots: Vec<&biji_store::Tag> =
+                        tag_visible.iter().filter(|t| t.parent_uid.is_none()).copied().collect();
+                    for t in &roots {
+                        render_tag_node(
+                            ui,
+                            t,
+                            0,
+                            &tags,
+                            &tag_visible,
+                            self,
+                            &mut action,
+                            &mut parent_edit_local,
+                        );
+                    }
+                    // 有父级但父不在 visible（被过滤）——平铺兜底渲染
+                    let orphan_visible: Vec<&biji_store::Tag> = tag_visible
+                        .iter()
+                        .filter(|t| {
+                            t.parent_uid.is_some()
+                                && !tag_visible
+                                    .iter()
+                                    .any(|v| v.uid == t.parent_uid.unwrap())
+                        })
+                        .copied()
+                        .collect();
+                    for t in orphan_visible {
+                        ui.horizontal(|ui| {
+                            ui.add_space(14.0);
+                            let selected = !self.st.trash_view
+                                && self.st.selection == Selection::Tag(t.uid);
+                            let row = theme::nav_row(
+                                ui,
+                                "🏷",
+                                &format!("{} ({})", t.name, t.note_count),
+                                selected,
+                            );
+                            if row.clicked() {
+                                action = Some(Selection::Tag(t.uid));
+                                self.st.trash_view = false;
+                            }
+                        });
+                    }
+                    if let Some((uid, name, buf)) = parent_edit_local.take() {
+                        self.st.tag_parent_edit = Some((uid, name, buf));
+                    }
+                    // 负 uid 信号：移出父级落地
+                    if let Some(Selection::Tag(neg)) = action {
+                        if neg < 0 {
+                            let uid = -neg;
+                            match self.service.store().set_tag_parent(uid, None) {
+                                Ok(()) => {
+                                    self.st.status =
+                                        format!("已把标签 {} 移出父级", note_label(uid));
+                                }
+                                Err(e) => self.st.status = format!("移出失败: {e}"),
+                            }
+                            action = None;
+                        }
+                    }
+                    // 旧平铺循环移除——上面树形渲染替代
+                    if false {
+                        for t in &tag_visible {
                         let selected =
                             !self.st.trash_view && self.st.selection == Selection::Tag(t.uid);
                         let row = theme::nav_row(
@@ -1829,6 +2016,7 @@ impl BijiApp {
                                 ui.close_menu();
                             }
                         });
+                    }
                     }
                 }
                 ui.add_space(10.0);
@@ -4186,6 +4374,74 @@ impl BijiApp {
                 }
             } else if close {
                 self.st.stack_edit = None;
+            }
+        }
+        // 设标签父级弹窗：右键「🌳 设为子标签…」
+        if self.st.tag_parent_edit.is_some() {
+            let mut close = false;
+            let mut confirm = false;
+            egui::Window::new("设为子标签")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    let Some((uid, name, buf)) = self.st.tag_parent_edit.as_mut() else {
+                        return;
+                    };
+                    ui.label(format!("把「{name}」挂到父标签（按名称匹配，留空 = 移出）："));
+                    ui.add(
+                        egui::TextEdit::singleline(buf)
+                            .hint_text("父标签名")
+                            .desired_width(ui.available_width()),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                    let _ = uid;
+                });
+            if confirm {
+                if let Some((uid, name, buf)) = self.st.tag_parent_edit.take() {
+                    let needle = buf.trim();
+                    if needle.is_empty() {
+                        match self.service.store().set_tag_parent(uid, None) {
+                            Ok(()) => self.st.status = format!("已把「{name}」移出父级"),
+                            Err(e) => self.st.status = format!("移出失败: {e}"),
+                        }
+                    } else {
+                        // 按名称找父标签（首个匹配）
+                        let parent = self
+                            .service
+                            .store()
+                            .list_tags()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .find(|t| t.name == needle)
+                            .map(|t| t.uid);
+                        match parent {
+                            Some(pid) => {
+                                match self.service.store().set_tag_parent(uid, Some(pid)) {
+                                    Ok(()) => {
+                                        self.st.status =
+                                            format!("已把「{name}」设为「{needle}」的子标签")
+                                    }
+                                    Err(_) => {
+                                        self.st.status =
+                                            format!("设置失败（成环或不存在的标签）: {name} → {needle}")
+                                    }
+                                }
+                            }
+                            None => {
+                                self.st.status = format!("找不到标签「{needle}」");
+                            }
+                        }
+                    }
+                }
+            } else if close {
+                self.st.tag_parent_edit = None;
             }
         }
         // 新建笔记本
@@ -7867,6 +8123,103 @@ mod tests {
             .store()
             .set_notebook_stack(9999, Some("x"))
             .is_err());
+    }
+
+    /// 标签树 headless：设父 → 树形数据（parent_uid 落库 + journal）→
+    /// 折叠状态保持 → 移出父级 → 防环拒绝。
+    #[test]
+    fn tag_tree_parent_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let t_root = app.service.store().create_tag("项目", None).unwrap();
+        let t_sub = app.service.store().create_tag("进行中", None).unwrap();
+        let t_sub2 = app.service.store().create_tag("待办", None).unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        run(&ctx, &mut app, vec![]);
+
+        // ---- 1) 设父：进行中/待办 → 项目（与弹窗确定同一 set_tag_parent）
+        app.service
+            .store()
+            .set_tag_parent(t_sub, Some(t_root))
+            .unwrap();
+        app.service
+            .store()
+            .set_tag_parent(t_sub2, Some(t_root))
+            .unwrap();
+        let tags = app.service.store().list_tags().unwrap();
+        let parent_of = |uid: i64| tags.iter().find(|t| t.uid == uid).unwrap().parent_uid;
+        assert_eq!(parent_of(t_sub), Some(t_root));
+        assert_eq!(parent_of(t_sub2), Some(t_root));
+        assert_eq!(parent_of(t_root), None);
+        // journal 记 tag update
+        let last = app
+            .service
+            .store()
+            .sync_journal_since(0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("tag", t_sub2, "update")
+        );
+
+        // ---- 2) 树形渲染帧不炸 + 折叠状态保持
+        run(&ctx, &mut app, vec![]);
+        app.st.tag_tree_open.insert(t_root, false);
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(
+            app.st.tag_tree_open.get(&t_root),
+            Some(&false),
+            "父标签折叠状态应保持"
+        );
+        app.st.tag_tree_open.insert(t_root, true);
+        run(&ctx, &mut app, vec![]);
+
+        // ---- 3) 移出父级
+        app.service.store().set_tag_parent(t_sub, None).unwrap();
+        let tags = app.service.store().list_tags().unwrap();
+        assert_eq!(
+            tags.iter().find(|t| t.uid == t_sub).unwrap().parent_uid,
+            None
+        );
+        run(&ctx, &mut app, vec![]);
+
+        // ---- 4) 防环：项目 → 进行中（此时进行中无父）先重建链再测
+        app.service
+            .store()
+            .set_tag_parent(t_sub, Some(t_root))
+            .unwrap();
+        assert!(
+            app.service
+                .store()
+                .set_tag_parent(t_root, Some(t_sub))
+                .is_err(),
+            "项目→进行中 成环应被拒绝"
+        );
+        run(&ctx, &mut app, vec![]);
     }
 
     #[test]

@@ -756,6 +756,42 @@ impl Store {
         Ok(uid)
     }
 
+    /// 设置标签父级（树层级）：Some(pid) 挂为子标签、None 移出。
+    /// 防环：沿 parent 链上溯若遇自身则拒绝（Err）；journal 记 update。
+    pub fn set_tag_parent(&self, uid: i64, parent: Option<i64>) -> Result<()> {
+        if let Some(pid) = parent {
+            if pid == uid {
+                return Err(StoreError::NotFound(uid)); // 自引用即环
+            }
+            // 上溯 parent 链查环（上限 64 层防御脏数据）
+            let mut cur = Some(pid);
+            let mut hops = 0;
+            while let Some(c) = cur {
+                if c == uid {
+                    return Err(StoreError::NotFound(uid)); // 成环
+                }
+                cur = self.conn.query_row(
+                    "SELECT parent_uid FROM tag_attr WHERE uid = ?1",
+                    params![c],
+                    |r| r.get::<_, Option<i64>>(0),
+                ).optional()?.flatten();
+                hops += 1;
+                if hops > 64 {
+                    break;
+                }
+            }
+        }
+        let n = self.conn.execute(
+            "UPDATE tag_attr SET parent_uid = ?2, date_updated = ?3 WHERE uid = ?1",
+            params![uid, parent, now_epoch()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(uid));
+        }
+        self.journal("tag", uid, "update")?;
+        Ok(())
+    }
+
     /// 重命名标签（journal 记 update，同步轮次推 updateTag 新名；
     /// 关联笔记的 tags 派生文本同步刷新）。
     pub fn rename_tag(&self, uid: i64, new_name: &str) -> Result<()> {
@@ -1684,6 +1720,46 @@ mod tests {
         assert_eq!(s.shortcut_notes(), vec![(b, "乙".to_string())]);
         s.expunge_note(b).unwrap();
         assert!(s.shortcut_notes().is_empty(), "彻底删除后过滤");
+    }
+
+    #[test]
+    fn tag_parent_cycle_guard_and_journal() {
+        let s = store();
+        let root = s.create_tag("根", None).unwrap();
+        let mid = s.create_tag("中", None).unwrap();
+        let leaf = s.create_tag("叶", None).unwrap();
+        // 建链 叶→中→根
+        s.set_tag_parent(leaf, Some(mid)).unwrap();
+        s.set_tag_parent(mid, Some(root)).unwrap();
+        let get_parent = |uid: i64| {
+            s.conn
+                .query_row(
+                    "SELECT parent_uid FROM tag_attr WHERE uid = ?1",
+                    params![uid],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(get_parent(leaf), Some(mid));
+        assert_eq!(get_parent(mid), Some(root));
+        // journal 记 tag update（每次设置）
+        let last = s.sync_journal_since(0).unwrap().pop().unwrap();
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("tag", mid, "update")
+        );
+        // 防环：根→叶（会成环 根→叶→中→根）
+        assert!(
+            s.set_tag_parent(root, Some(leaf)).is_err(),
+            "成环应被拒绝"
+        );
+        // 自引用
+        assert!(s.set_tag_parent(root, Some(root)).is_err());
+        // 移出父级
+        s.set_tag_parent(leaf, None).unwrap();
+        assert_eq!(get_parent(leaf), None);
+        // 不存在 uid
+        assert!(s.set_tag_parent(9999, None).is_err());
     }
 
     #[test]
