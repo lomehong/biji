@@ -497,6 +497,7 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "sha2",
  "tempfile",
 ]
 

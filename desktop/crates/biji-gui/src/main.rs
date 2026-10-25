@@ -422,6 +422,30 @@ impl BijiApp {
         }
     }
 
+    /// 拖入文件的 MIME 推断（按扩展名；对位原客户端常见类型）。
+    fn mime_of(file_name: &str) -> String {
+        let ext = file_name
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            "svg" => "image/svg+xml",
+            "pdf" => "application/pdf",
+            "txt" | "md" => "text/plain",
+            "mp3" => "audio/mpeg",
+            "mp4" => "video/mp4",
+            "zip" => "application/zip",
+            _ => "application/octet-stream",
+        }
+        .to_string()
+    }
+
     /// 大小写不敏感全量命中（字节偏移；空查询无命中）。
     fn find_hits(content: &str, query: &str) -> Vec<usize> {
         if query.is_empty() {
@@ -1807,6 +1831,71 @@ impl BijiApp {
 
     fn draw_editor(&mut self, ui: &mut egui::Ui) {
         self.load_editor();
+        // 拖放导入（对位原客户端拖文件入笔记）：落资源 + en-media 占位入源
+        let dropped: Vec<(String, Vec<u8>)> = ui
+            .ctx()
+            .input(|i| i.raw.dropped_files.clone())
+            .into_iter()
+            .filter_map(|f| {
+                let name = f
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| {
+                        if f.name.is_empty() {
+                            "附件".into()
+                        } else {
+                            f.name.clone()
+                        }
+                    });
+                let bytes = f
+                    .bytes
+                    .map(|b| b.to_vec())
+                    .or_else(|| f.path.and_then(|p| std::fs::read(p).ok()))?;
+                Some((name, bytes))
+            })
+            .collect();
+        if !dropped.is_empty() {
+            if let Some(ed) = self.st.editor.as_mut() {
+                for (name, bytes) in dropped {
+                    let mime = Self::mime_of(&name);
+                    let hash = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&bytes));
+                    // 幂等：同字节附件已挂本笔记则跳过（拖放事件可跨帧重复上报）
+                    let dup = self
+                        .service
+                        .store()
+                        .list_resources(ed.uid)
+                        .map(|rs| rs.iter().any(|r| r.hash == hash))
+                        .unwrap_or(false);
+                    if dup {
+                        continue;
+                    }
+                    match self
+                        .service
+                        .store()
+                        .add_resource(ed.uid, &name, &mime, &bytes)
+                    {
+                        Ok(_) => {
+                            // en-media 占位插到正文末尾（</en-note> 前），置脏走保存链路
+                            let tag = format!("<en-media hash=\"{hash}\" type=\"{mime}\"/>");
+                            if let Some(pos) = ed.content.rfind("</en-note>") {
+                                ed.content.insert_str(pos, &tag);
+                            } else {
+                                ed.content.push_str(&tag);
+                            }
+                            ed.dirty = true;
+                            ed.last_edit = Some(Instant::now());
+                            self.st.status =
+                                format!("已导入附件 {name}（{}B）", bytes.len());
+                        }
+                        Err(e) => self.st.status = format!("导入附件失败: {e}"),
+                    }
+                }
+            } else {
+                self.st.status = "先打开一条笔记再拖入文件".into();
+            }
+        }
         #[derive(PartialEq)]
         enum Action {
             None,
@@ -5334,6 +5423,129 @@ mod tests {
         assert_eq!((out2.as_str(), n2), (doc, 0));
         // 相邻命中不丢（aaa 中找 aa → 1 处，避免重叠死循环）
         assert_eq!(BijiApp::find_hits("aaa", "aa").len(), 1);
+    }
+
+    /// headless egui 集成：注入 dropped_files → 资源落库（字节一致）+
+    /// en-media 占位入源置脏 → 重复拖放幂等 → Ctrl+S 落库 → 预览渲染不炸。
+    #[test]
+    fn drag_drop_imports_attachment_headless() {
+        theme::set_dark(false);
+        // 真实临时文件（桌面拖放形态：DroppedFile 带 path、无 bytes）
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("拖入图.png");
+        std::fs::write(&file, b"PNGDATA-bytes").unwrap();
+
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note("拖放测试", "<en-note><p>正文</p></en-note>", None)
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, drop_file: Option<&std::path::Path>| {
+            theme::apply(ctx);
+            let dropped = drop_file.map(|p| {
+                vec![egui::DroppedFile {
+                    path: Some(p.to_path_buf()),
+                    name: String::new(),
+                    mime: String::new(),
+                    last_modified: None,
+                    bytes: None,
+                }]
+            });
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                dropped_files: dropped.unwrap_or_default(),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+
+        // ---- 拖入：资源落库 + en-media 占位 + 置脏
+        run(&ctx, &mut app, Some(&file));
+        let resources = app.service.store().list_resources(uid).unwrap();
+        assert_eq!(resources.len(), 1, "应导入 1 条资源");
+        assert_eq!(resources[0].file_name, "拖入图.png");
+        assert_eq!(resources[0].mime, "image/png");
+        let (meta, bytes) = app.service.store().get_resource(resources[0].uid).unwrap();
+        assert_eq!(bytes, b"PNGDATA-bytes", "资源字节应逐字节一致");
+        assert_eq!(meta.size, 13, "PNGDATA-bytes = 13 字节");
+        let content = app.st.editor.as_ref().unwrap().content.clone();
+        assert!(
+            content.contains("<en-media hash=\"") && content.contains("type=\"image/png\""),
+            "源码应含 en-media 占位: {content}"
+        );
+        assert!(app.st.editor.as_ref().unwrap().dirty, "拖入应置脏");
+
+        // ---- 幂等：同文件再拖不重复
+        run(&ctx, &mut app, Some(&file));
+        assert_eq!(
+            app.service.store().list_resources(uid).unwrap().len(),
+            1,
+            "重复拖放应幂等"
+        );
+        assert_eq!(
+            app.st.editor.as_ref().unwrap().content.matches("en-media").count(),
+            1,
+            "占位不应重复"
+        );
+        assert!(app.st.status.contains("已导入附件"), "状态栏应反馈导入");
+
+        // ---- Ctrl+S 落库
+        {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                modifiers: ctrl,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::S,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: ctrl,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        }
+        let saved = app.service.store().get_note(uid).unwrap().enml;
+        assert!(saved.contains("en-media"), "en-media 应随保存落库");
+
+        // ---- 预览渲染一帧（en-media 附件占位分支）
+        app.st.editor.as_mut().unwrap().preview = true;
+        run(&ctx, &mut app, None);
+        assert!(app.st.editor.is_some());
+    }
+
+    #[test]
+    fn mime_of_common_extensions() {
+        assert_eq!(BijiApp::mime_of("照片.PNG"), "image/png");
+        assert_eq!(BijiApp::mime_of("a.JpG"), "image/jpeg");
+        assert_eq!(BijiApp::mime_of("文档.pdf"), "application/pdf");
+        assert_eq!(BijiApp::mime_of("笔记.txt"), "text/plain");
+        assert_eq!(BijiApp::mime_of("无扩展名"), "application/octet-stream");
+        assert_eq!(BijiApp::mime_of("压缩包.zip"), "application/zip");
     }
 
     #[test]
