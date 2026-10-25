@@ -1086,6 +1086,23 @@ impl BijiApp {
             .resizable(true)
             .default_width(300.0)
             .show(ctx, |ui| {
+                // 来源下拉与右键菜单共用（全部/笔记本/标签）
+                let notebooks: Vec<(i64, String)> = self
+                    .service
+                    .store()
+                    .list_notebooks()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|n| (n.uid, n.name))
+                    .collect();
+                let tags: Vec<(i64, String)> = self
+                    .service
+                    .store()
+                    .list_tags()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| (t.uid, t.name))
+                    .collect();
                 let header = if self.st.trash_view {
                     "回收站".to_string()
                 } else if !self.st.search.is_empty() {
@@ -1129,12 +1146,56 @@ impl BijiApp {
                     self.refresh_rows();
                 }
                 ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(format!("{header} ▼"))
-                        .size(17.0)
-                        .strong()
-                        .color(theme::pal().text),
+                // 标题行（对位原客户端：点击弹来源选择——全部笔记/各笔记本/各标签）
+                let src_btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(format!("{header} ▼"))
+                            .size(17.0)
+                            .strong()
+                            .color(theme::pal().text),
+                    )
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::NONE),
                 );
+                let mut pick: Option<Selection> = None;
+                let source_id = egui::Id::new("source-menu");
+                if src_btn.clicked() {
+                    ui.memory_mut(|m| {
+                        if m.is_popup_open(source_id) {
+                            m.close_popup();
+                        } else {
+                            m.open_popup(source_id);
+                        }
+                    });
+                }
+                egui::popup_below_widget(
+                    ui,
+                    source_id,
+                    &src_btn,
+                    egui::PopupCloseBehavior::CloseOnClick,
+                    |ui| {
+                        if ui.button("📄 全部笔记").clicked() {
+                            pick = Some(Selection::All);
+                        }
+                        for (uid, name) in &notebooks {
+                            if ui.button(format!("📓 {name}")).clicked() {
+                                pick = Some(Selection::Notebook(*uid));
+                            }
+                        }
+                        for (uid, name) in &tags {
+                            if ui.button(format!("🏷 {name}")).clicked() {
+                                pick = Some(Selection::Tag(*uid));
+                            }
+                        }
+                    },
+                );
+                if let Some(sel) = pick {
+                    self.st.selection = sel;
+                    self.st.trash_view = false;
+                    self.st.selected_note = None;
+                    self.st.search.clear();
+                    self.refresh_rows();
+                }
                 ui.add_space(2.0);
                 // 列表头控件行（对位原客户端：条数 + 排序下拉 + 方向 + 视图切换）
                 let mut resort = false;
@@ -1184,15 +1245,6 @@ impl BijiApp {
                     self.refresh_rows();
                 }
                 ui.add_space(2.0);
-                // 右键上下文菜单所需（对位原客户端笔记卡右键：删除/移动到笔记本）
-                let notebooks: Vec<(i64, String)> = self
-                    .service
-                    .store()
-                    .list_notebooks()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|n| (n.uid, n.name))
-                    .collect();
                 let mut trash_req: Option<i64> = None;
                 let mut move_req: Option<(i64, Option<i64>)> = None;
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -3738,6 +3790,163 @@ mod tests {
         assert_eq!(
             app2.service.store().meta_get("theme").as_deref(),
             Some("light")
+        );
+    }
+
+    /// headless egui 集成：列表头「{来源} ▼」点击弹来源选择——
+    /// 全部笔记 / 各笔记本 / 各标签；切换后 selection 与列表内容即时生效。
+    #[test]
+    fn list_header_source_dropdown_switches_view() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let nb_work = app.service.store().create_notebook("工作", None).unwrap();
+        let n1 = app
+            .service
+            .create_note("甲", "<en-note><p>a</p></en-note>", Some(nb_work))
+            .unwrap();
+        let n2 = app
+            .service
+            .create_note("乙", "<en-note><p>b</p></en-note>", None)
+            .unwrap();
+        let tag = app.service.store().create_tag("重要", None).unwrap();
+        app.service.store().attach_tag(n2, tag).unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.draw_main(ctx));
+        };
+        run(&ctx, &mut app, vec![]);
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            let mods = egui::Modifiers::default();
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: mods,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: mods,
+                }],
+            );
+        };
+        let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
+            ctx.memory(|m| {
+                let mut best: Option<egui::Rect> = None;
+                let mut bd = f32::MAX;
+                for layer in m.layer_ids() {
+                    if layer.order != egui::Order::Foreground {
+                        continue;
+                    }
+                    if let Some(r) = m.area_rect(layer.id) {
+                        if r.width() < 30.0 || r.width() > 460.0 || r.height() > 460.0 {
+                            continue;
+                        }
+                        let d = r.center().distance(near);
+                        if d < 140.0 && d < bd {
+                            bd = d;
+                            best = Some(r);
+                        }
+                    }
+                }
+                best
+            })
+        };
+
+        // 初始全部：2 条
+        assert_eq!(app.st.rows.len(), 2);
+
+        // 辅助：点开来源下拉并点第 idx 个候选（每轮重开，CloseOnClick 一点即关）
+        let open_and_pick = |ctx: &egui::Context,
+                             app: &mut BijiApp,
+                             header_pos: egui::Pos2,
+                             item_dy: f32|
+         -> bool {
+            click(ctx, app, header_pos);
+            // CloseOnClick：点头标本身也会关弹窗——先点开再点项
+            if popup_near(ctx, header_pos).is_none() {
+                click(ctx, app, header_pos); // 偶发 toggle，再点一次确保展开
+            }
+            let Some(m) = popup_near(ctx, header_pos) else {
+                return false;
+            };
+            click(ctx, app, egui::pos2(m.center().x, m.min.y + item_dy));
+            true
+        };
+
+        // 找头标位置：列表列顶部（搜索框下方），扫描 y 段
+        let mut header = None;
+        for yi in (60..480).step_by(8) {
+            let pos = egui::pos2(260.0, yi as f32);
+            click(&ctx, &mut app, pos);
+            if popup_near(&ctx, pos).is_some() {
+                header = Some(pos);
+                break;
+            }
+        }
+        let header = header.expect("点击列表头「全部笔记 ▼」应弹出来源菜单");
+        // 候选序（名称码点序）：📄 全部笔记 / 📓 工作 / 🏷 重要
+        // 逐项扫描 dy 直到 selection 变化并断言列表内容
+        let pick_until = |ctx: &egui::Context,
+                          app: &mut BijiApp,
+                          want: &dyn Fn(&BijiApp) -> bool|
+         -> bool {
+            for dy in (10..170).step_by(6) {
+                open_and_pick(ctx, app, header, dy as f32);
+                if want(app) {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // 选「📓 工作」→ 只剩甲
+        assert!(
+            pick_until(&ctx, &mut app, &|app: &BijiApp| {
+                app.st.selection == Selection::Notebook(nb_work) && app.st.rows.len() == 1
+                    && app.st.rows[0].uid == n1
+            }),
+            "来源下拉应能切到笔记本「工作」且列表只剩该本笔记"
+        );
+        // 选「🏷 重要」→ 只剩乙
+        assert!(
+            pick_until(&ctx, &mut app, &|app: &BijiApp| {
+                app.st.selection == Selection::Tag(tag) && app.st.rows.len() == 1
+                    && app.st.rows[0].uid == n2
+            }),
+            "来源下拉应能切到标签「重要」且列表只剩带标笔记"
+        );
+        // 选「📄 全部笔记」→ 回到 2 条
+        assert!(
+            pick_until(&ctx, &mut app, &|app: &BijiApp| {
+                app.st.selection == Selection::All && app.st.rows.len() == 2
+            }),
+            "来源下拉应能切回全部笔记"
         );
     }
 
