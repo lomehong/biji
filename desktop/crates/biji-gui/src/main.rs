@@ -130,6 +130,23 @@ enum Confirm {
     DeleteTag(i64, String),
 }
 
+/// 查找栏动作（编辑器块内收集、块外落地）。
+enum FindAction {
+    Next,
+    ReplaceOne,
+    ReplaceAll,
+    Close,
+}
+
+/// 编辑器查找替换栏状态（对位原客户端 Ctrl+F 查找）。
+#[derive(Default, Clone)]
+struct FindState {
+    query: String,
+    replace: String,
+    /// 当前命中索引（hits 中的位置，循环推进）。
+    hit: usize,
+}
+
 /// 笔记列表排序键（对位原客户端列表头排序：更新时间/创建时间/标题）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ListSort {
@@ -174,6 +191,8 @@ struct UiState {
     anchor: Option<i64>,
     /// 添加标签菜单的搜索过滤（前缀匹配候选 + 新建入口）。
     tag_filter: String,
+    /// 编辑器查找替换栏（None = 关闭）。
+    find: Option<FindState>,
     /// 重命名笔记本弹窗（uid + 编辑缓冲）。
     rename_nb: Option<(i64, String)>,
     /// 重命名标签弹窗（uid + 编辑缓冲）。
@@ -241,6 +260,7 @@ impl UiState {
             multi_select: Vec::new(),
             anchor: None,
             tag_filter: String::new(),
+            find: None,
             rename_nb: None,
             rename_tag: None,
             present: None,
@@ -311,7 +331,17 @@ impl BijiApp {
         if new_hotkey {
             self.create_note();
         } else if find_hotkey {
-            self.st.focus_search = true;
+            if self.st.editor.is_some() {
+                // 编辑器打开：Ctrl+F 唤起笔记内查找（并切源码保证光标定位）
+                if let Some(ed) = self.st.editor.as_mut() {
+                    ed.preview = false;
+                }
+                if self.st.find.is_none() {
+                    self.st.find = Some(FindState::default());
+                }
+            } else {
+                self.st.focus_search = true;
+            }
         }
         let del_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete) && !i.modifiers.any());
         if del_pressed && !ctx.wants_keyboard_input() && self.st.present.is_none() {
@@ -339,12 +369,13 @@ impl BijiApp {
                 }
             }
         }
-        // Esc 退出多选态（演示模式外的场景）
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape))
-            && self.st.present.is_none()
-            && !self.st.multi_select.is_empty()
-        {
-            self.st.multi_select.clear();
+        // Esc：先关查找栏，再退多选态（演示模式外的场景）
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.st.present.is_none() {
+            if self.st.find.is_some() {
+                self.st.find = None;
+            } else if !self.st.multi_select.is_empty() {
+                self.st.multi_select.clear();
+            }
         }
     }
 
@@ -389,6 +420,39 @@ impl BijiApp {
         if !asc {
             rows.reverse();
         }
+    }
+
+    /// 大小写不敏感全量命中（字节偏移；空查询无命中）。
+    fn find_hits(content: &str, query: &str) -> Vec<usize> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let hay = content.to_lowercase();
+        let needle = query.to_lowercase();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(pos) = hay[from..].find(&needle) {
+            out.push(from + pos);
+            from = from + pos + needle.len().max(1);
+        }
+        out
+    }
+
+    /// 全部替换：返回新串与替换数（大小写不敏感，按原串长度切除）。
+    fn replace_all(content: &str, query: &str, repl: &str) -> (String, usize) {
+        let hits = Self::find_hits(content, query);
+        if hits.is_empty() {
+            return (content.to_string(), 0);
+        }
+        let mut out = String::with_capacity(content.len());
+        let mut prev = 0usize;
+        for &off in &hits {
+            out.push_str(&content[prev..off]);
+            out.push_str(repl);
+            prev = off + query.len();
+        }
+        out.push_str(&content[prev..]);
+        (out, hits.len())
     }
 
     /// 卡片点击语义（对位原客户端列表多选）：
@@ -1755,7 +1819,7 @@ impl BijiApp {
             AttachTag(i64),
             DetachTag(i64),
         }
-        let (action, uid, info_req) = {
+        let (action, uid, info_req, find_action) = {
             let Some(ed) = self.st.editor.as_mut() else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.add_space(80.0);
@@ -1768,6 +1832,7 @@ impl BijiApp {
 
             let mut action = Action::None;
             let mut show_info = false;
+            let mut find_action: Option<FindAction> = None;
 
             // 元信息行（对位原客户端：笔记本 chip + 更新日期）
             {
@@ -1812,6 +1877,53 @@ impl BijiApp {
                         }
                     });
                 }
+            }
+
+            // 查找替换栏（对位原客户端 Ctrl+F；编辑器顶部）
+            if let Some(fs) = self.st.find.as_mut() {
+                let hits = Self::find_hits(&ed.content, &fs.query);
+                let total = hits.len();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🔍").small());
+                    let q = ui.add(
+                        egui::TextEdit::singleline(&mut fs.query)
+                            .desired_width(130.0)
+                            .hint_text("查找")
+                            .id(egui::Id::new("find-query")),
+                    );
+                    // Enter = 下一个（回车后保持焦点可连续跳）
+                    if q.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        find_action = Some(FindAction::Next);
+                        q.request_focus();
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}/{}",
+                            if total == 0 { 0 } else { fs.hit + 1 },
+                            total
+                        ))
+                        .small()
+                        .color(theme::pal().subtle),
+                    );
+                    if ui.button("下一个").clicked() {
+                        find_action = Some(FindAction::Next);
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut fs.replace)
+                            .desired_width(110.0)
+                            .hint_text("替换为")
+                            .id(egui::Id::new("find-replace")),
+                    );
+                    if ui.button("替换").clicked() {
+                        find_action = Some(FindAction::ReplaceOne);
+                    }
+                    if ui.button("全部替换").clicked() {
+                        find_action = Some(FindAction::ReplaceAll);
+                    }
+                    if ui.button("✕").clicked() {
+                        find_action = Some(FindAction::Close);
+                    }
+                });
             }
 
             // 标题（无边框大字，对位原客户端编辑器标题）
@@ -2188,10 +2300,70 @@ impl BijiApp {
                 }
             }
 
-            (action, uid, show_info.then_some(ed.uid))
+            (
+                action,
+                uid,
+                show_info.then_some(ed.uid),
+                find_action,
+            )
         };
         if let Some(u) = info_req {
             self.st.note_info = Some(u);
+        }
+        // 查找替换动作（编辑器块外落地，避免与 ed 借用交叉）
+        if let Some(fa) = find_action {
+            match fa {
+                FindAction::Next => {
+                    let Some(fs) = self.st.find.as_mut() else { return };
+                    let Some(ed) = self.st.editor.as_ref() else { return };
+                    let hits = Self::find_hits(&ed.content, &fs.query);
+                    if hits.is_empty() {
+                        fs.hit = 0;
+                    } else {
+                        fs.hit = (fs.hit + 1) % hits.len();
+                        // 源码模式：定位并选中当前命中（TextEdit 光标状态）
+                        if !ed.preview {
+                            let off = hits[fs.hit];
+                            let start = ed.content[..off].chars().count();
+                            let len = fs.query.chars().count();
+                            let id = egui::Id::new("enml-source");
+                            let mut ts = egui::TextEdit::load_state(ui.ctx(), id)
+                                .unwrap_or_default();
+                            ts.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(start),
+                                egui::text::CCursor::new(start + len),
+                            )));
+                            egui::TextEdit::store_state(ui.ctx(), id, ts);
+                        }
+                    }
+                }
+                FindAction::ReplaceOne => {
+                    let Some(fs) = self.st.find.clone() else { return };
+                    let Some(ed) = self.st.editor.as_mut() else { return };
+                    let hits = Self::find_hits(&ed.content, &fs.query);
+                    if let Some(&off) = hits.get(fs.hit) {
+                        let end = off + fs.query.len();
+                        ed.content.replace_range(off..end, &fs.replace);
+                        ed.dirty = true;
+                        ed.last_edit = Some(Instant::now());
+                        self.st.status = "已替换 1 处".into();
+                    } else {
+                        self.st.status = "无命中可替换".into();
+                    }
+                }
+                FindAction::ReplaceAll => {
+                    let Some(fs) = self.st.find.clone() else { return };
+                    let Some(ed) = self.st.editor.as_mut() else { return };
+                    let (newc, n) = Self::replace_all(&ed.content, &fs.query, &fs.replace);
+                    if n > 0 {
+                        ed.content = newc;
+                        ed.dirty = true;
+                        ed.last_edit = Some(Instant::now());
+                    }
+                    self.st.status = format!("已替换 {n} 处");
+                }
+                FindAction::Close => self.st.find = None,
+            }
         }
         match action {
             Action::None => {}
@@ -4943,6 +5115,225 @@ mod tests {
                 .any(|t| t.name == "新标签"),
             "新标签应入库"
         );
+    }
+
+    /// headless egui 集成：Ctrl+F 唤起查找栏（预览态自动切源码）→ 下一个
+    /// 循环定位（光标选中断言）→ 替换当前 → 全部替换 → Ctrl+S 落库 → Esc 关闭。
+    #[test]
+    fn find_replace_flow_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note(
+                "查找测试",
+                "<en-note><p>苹果 香蕉 苹果</p></en-note>",
+                None,
+            )
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context,
+                   app: &mut BijiApp,
+                   events: Vec<egui::Event>,
+                   mods: egui::Modifiers| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                modifiers: mods,
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)], none);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: none,
+                }],
+                none,
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: none,
+                }],
+                none,
+            );
+        };
+
+        run(&ctx, &mut app, vec![], none);
+        assert!(app.st.editor.as_ref().unwrap().preview, "默认预览态");
+
+        // ---- Ctrl+F：唤起查找栏 + 自动切源码
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::F,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }],
+            ctrl,
+        );
+        assert!(app.st.find.is_some(), "Ctrl+F 应唤起查找栏");
+        assert!(
+            !app.st.editor.as_ref().unwrap().preview,
+            "查找应自动切源码模式（光标定位能力）"
+        );
+        run(&ctx, &mut app, vec![], none);
+
+        // ---- 输入关键字（文本录入走标准 TextEdit；此处直设过滤态驱动查找逻辑）
+        app.st.find.as_mut().unwrap().query = "苹果".into();
+        run(&ctx, &mut app, vec![], none);
+        // 查找栏输入框显式 Id：按钮在其右侧
+        let qrect = ctx
+            .read_response(egui::Id::new("find-query"))
+            .expect("查找输入框应出现")
+            .rect;
+        let bar_y = qrect.center().y;
+
+        // ---- 下一个（两次：0→1→0 循环），第二次后断言光标选中「苹果」
+        let mut next_x = None;
+        for xi in (0..400).step_by(8) {
+            let pos = egui::pos2(qrect.max.x + 6.0 + xi as f32, bar_y);
+            click(&ctx, &mut app, pos);
+            if app.st.find.as_ref().map(|f| f.hit) == Some(1) {
+                next_x = Some(pos.x);
+                break;
+            }
+        }
+        let next_x = next_x.expect("应能点到「下一个」");
+        assert_eq!(app.st.find.as_ref().unwrap().hit, 1);
+        // 光标选中断言：TextEdit 状态的 char 范围覆盖一个「苹果」
+        let ed_content = app.st.editor.as_ref().unwrap().content.clone();
+        let sel = egui::TextEdit::load_state(&ctx, egui::Id::new("enml-source"))
+            .and_then(|ts| ts.cursor.char_range())
+            .map(|r| {
+                let (a, b) = (r.primary.index, r.secondary.index);
+                let (lo, hi) = (a.min(b), a.max(b));
+                let chars: Vec<char> = ed_content.chars().collect();
+                chars[lo..hi].iter().collect::<String>()
+            });
+        assert_eq!(sel.as_deref(), Some("苹果"), "下一个应把光标定位并选中命中");
+        click(&ctx, &mut app, egui::pos2(next_x, bar_y));
+        assert_eq!(app.st.find.as_ref().unwrap().hit, 0, "命中应循环推进");
+
+        // ---- 替换当前（hit=0 → 第一个 苹果→梨）
+        app.st.find.as_mut().unwrap().replace = "梨".into();
+        run(&ctx, &mut app, vec![], none);
+        let mut rep_x = None;
+        for xi in (0..480).step_by(8) {
+            let pos = egui::pos2(qrect.max.x + 6.0 + xi as f32, bar_y);
+            click(&ctx, &mut app, pos);
+            let c = app.st.editor.as_ref().unwrap().content.clone();
+            if c.matches("梨").count() == 1 {
+                rep_x = Some(pos.x);
+                break;
+            }
+            assert_eq!(
+                c.matches("苹果").count(),
+                2,
+                "扫描误触其它按钮（xi={xi}）"
+            );
+        }
+        assert!(rep_x.is_some(), "应能点到「替换」");
+        assert!(app.st.editor.as_ref().unwrap().dirty, "替换应置脏");
+
+        // ---- 全部替换（剩一个 苹果 → 梨；共 2 梨）
+        let mut all_x = None;
+        for xi in (0..560).step_by(8) {
+            let pos = egui::pos2(qrect.max.x + 6.0 + xi as f32, bar_y);
+            click(&ctx, &mut app, pos);
+            let c = app.st.editor.as_ref().unwrap().content.clone();
+            if c.matches("梨").count() == 2 && c.matches("苹果").count() == 0 {
+                all_x = Some(pos.x);
+                break;
+            }
+        }
+        assert!(all_x.is_some(), "应能点到「全部替换」");
+
+        // ---- Ctrl+S 落库
+        run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::S,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }],
+            ctrl,
+        );
+        run(&ctx, &mut app, vec![], none);
+        let saved = app.service.store().get_note(uid).unwrap().enml;
+        assert!(
+            saved.matches("梨").count() >= 2 && !saved.contains("苹果"),
+            "替换结果应落库: {saved}"
+        );
+
+        // ---- Esc 关闭查找栏
+        run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: none,
+            }],
+            none,
+        );
+        assert!(app.st.find.is_none(), "Esc 应关闭查找栏");
+    }
+
+    #[test]
+    fn find_hits_and_replace_all_semantics() {
+        let doc = "<en-note>Apple 香蕉 apple</en-note>";
+        // 大小写不敏感、空查询无命中
+        assert!(BijiApp::find_hits(doc, "").is_empty());
+        let hits = BijiApp::find_hits(doc, "APPLE");
+        assert_eq!(hits.len(), 2, "Apple/apple 均命中");
+        // 按原串字节长度切除替换（大小写不同的命中各自原样切）
+        let (out, n) = BijiApp::replace_all(doc, "apple", "梨");
+        assert_eq!(n, 2);
+        assert_eq!(out, "<en-note>梨 香蕉 梨</en-note>");
+        // 无命中原样返回
+        let (out2, n2) = BijiApp::replace_all(doc, "橙子", "x");
+        assert_eq!((out2.as_str(), n2), (doc, 0));
+        // 相邻命中不丢（aaa 中找 aa → 1 处，避免重叠死循环）
+        assert_eq!(BijiApp::find_hits("aaa", "aa").len(), 1);
     }
 
     #[test]
