@@ -172,6 +172,8 @@ struct UiState {
     multi_select: Vec<i64>,
     /// Shift 区间选择锚点（普通/Shift 点击更新，Ctrl 不动）。
     anchor: Option<i64>,
+    /// 添加标签菜单的搜索过滤（前缀匹配候选 + 新建入口）。
+    tag_filter: String,
     /// 重命名笔记本弹窗（uid + 编辑缓冲）。
     rename_nb: Option<(i64, String)>,
     /// 重命名标签弹窗（uid + 编辑缓冲）。
@@ -238,6 +240,7 @@ impl UiState {
             note_info: None,
             multi_select: Vec::new(),
             anchor: None,
+            tag_filter: String::new(),
             rename_nb: None,
             rename_tag: None,
             present: None,
@@ -1959,10 +1962,25 @@ impl BijiApp {
                             .small()
                             .color(theme::pal().green_dark),
                         |ui| {
+                            // 搜索框（自动聚焦）：前缀过滤候选 + 未命中可新建
+                            let mut filter = self.st.tag_filter.clone();
+                            ui.add(
+                                egui::TextEdit::singleline(&mut filter)
+                                    .hint_text("搜索或新建标签…")
+                                    .desired_width(180.0)
+                                    .id(egui::Id::new("tag-filter")),
+                            );
+                            if filter != self.st.tag_filter {
+                                self.st.tag_filter = filter;
+                            }
+                            let needle = self.st.tag_filter.to_lowercase();
                             let tags = self.service.store().list_tags().unwrap_or_default();
                             let mut any = false;
                             for t in &tags {
                                 if attached.iter().any(|(u, _)| *u == t.uid) {
+                                    continue;
+                                }
+                                if !needle.is_empty() && !t.name.to_lowercase().starts_with(&needle) {
                                     continue;
                                 }
                                 any = true;
@@ -1971,7 +1989,20 @@ impl BijiApp {
                                     ui.close_menu();
                                 }
                             }
-                            if !any {
+                            // 未命中的输入 = 新建同名标签并挂上（对位原客户端行为）
+                            let exact = tags.iter().any(|t| t.name == self.st.tag_filter);
+                            if !self.st.tag_filter.trim().is_empty() && !exact {
+                                if ui
+                                    .button(format!("＋ 新建「{}」", self.st.tag_filter))
+                                    .clicked()
+                                {
+                                    match self.service.store().create_tag(&self.st.tag_filter, None) {
+                                        Ok(new_uid) => action = Action::AttachTag(new_uid),
+                                        Err(e) => self.st.status = format!("新建标签失败: {e}"),
+                                    }
+                                    ui.close_menu();
+                                }
+                            } else if !any {
                                 ui.label(
                                     egui::RichText::new("（没有可添加的标签）")
                                         .small()
@@ -2196,6 +2227,7 @@ impl BijiApp {
                     self.st.status = format!("打标签失败: {e}");
                 } else {
                     self.st.status = "已添加标签".into();
+                    self.st.tag_filter.clear();
                     self.refresh_rows();
                 }
             }
@@ -4772,6 +4804,145 @@ mod tests {
         assert_eq!(m, vec![5, 7]);
         BijiApp::ctrl_toggle(&mut m, 5);
         assert_eq!(m, vec![7]);
+    }
+
+    /// headless egui 集成：标签菜单搜索前缀过滤 → 点击候选补全挂载 →
+    /// 未命中输入「＋ 新建」创建并挂载。
+    #[test]
+    fn tag_autocomplete_filter_create_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let t_zhongyao = app.service.store().create_tag("重要", None).unwrap();
+        let t_zhongliang = app.service.store().create_tag("重量", None).unwrap();
+        let _t_lvyou = app.service.store().create_tag("旅游", None).unwrap();
+        let uid = app
+            .service
+            .create_note("甲", "<en-note><p>1</p></en-note>", None)
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: none,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: none,
+                }],
+            );
+        };
+        let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
+            ctx.memory(|m| {
+                let mut best: Option<egui::Rect> = None;
+                let mut bd = f32::MAX;
+                for layer in m.layer_ids() {
+                    if layer.order != egui::Order::Foreground {
+                        continue;
+                    }
+                    if let Some(r) = m.area_rect(layer.id) {
+                        if r.width() < 30.0 || r.width() > 460.0 || r.height() > 460.0 {
+                            continue;
+                        }
+                        let d = r.center().distance(near);
+                        if d < 200.0 && d < bd {
+                            bd = d;
+                            best = Some(r);
+                        }
+                    }
+                }
+                best
+            })
+        };
+        run(&ctx, &mut app, vec![]);
+
+        // 输入「重」（文本录入走标准 TextEdit；此处直设过滤态驱动候选逻辑）
+        app.st.tag_filter = "重".into();
+        // 打开「🏷 添加标签…」菜单：标签行在编辑器面板（正文下方）
+        let mut menu = None;
+        'scan: for yi in (150..870).step_by(10) {
+            for xi in (505..1560).step_by(40) {
+                let pos = egui::pos2(xi as f32, yi as f32);
+                click(&ctx, &mut app, pos);
+                if popup_near(&ctx, pos).is_some() {
+                    menu = Some((pos, popup_near(&ctx, pos).unwrap()));
+                    break 'scan;
+                }
+            }
+        }
+        let (btn_pos, mrect) = menu.expect("点击「添加标签…」应弹出菜单（含搜索框）");
+        // 前缀过滤后的首候选 = 重要（名称序：重要 < 重量；旅游被过滤）
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(mrect.center().x, mrect.min.y + 52.0),
+        );
+        let tags = app.service.store().note_tags(uid).unwrap();
+        assert_eq!(
+            tags,
+            vec![(t_zhongyao, "重要".to_string())],
+            "点击首候选应挂载「重要」（过滤生效且未挂错）"
+        );
+        assert!(
+            !tags.iter().any(|(u, _)| *u == t_zhongliang),
+            "「重量」不应被误挂"
+        );
+        assert!(app.st.tag_filter.is_empty(), "挂载后应清过滤");
+
+        // ---- 未命中输入 → 「＋ 新建」创建并挂载
+        app.st.tag_filter = "新标签".into();
+        click(&ctx, &mut app, btn_pos);
+        let m2 = popup_near(&ctx, btn_pos).expect("应再次弹出菜单");
+        // 末项 = 新建按钮（无候选命中时仅此一项）
+        click(&ctx, &mut app, egui::pos2(m2.center().x, m2.max.y - 16.0));
+        let tags = app.service.store().note_tags(uid).unwrap();
+        assert!(
+            tags.iter().any(|(_, n)| n == "新标签"),
+            "未命中输入应经「＋ 新建」创建并挂载: {tags:?}"
+        );
+        assert!(
+            app.service
+                .store()
+                .list_tags()
+                .unwrap()
+                .iter()
+                .any(|t| t.name == "新标签"),
+            "新标签应入库"
+        );
     }
 
     #[test]
