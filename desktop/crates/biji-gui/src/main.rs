@@ -168,6 +168,10 @@ struct UiState {
     focus_search: bool,
     /// 笔记信息弹窗（ℹ）。
     note_info: Option<i64>,
+    /// 清单多选集（对位原客户端列表多选；空 = 未进入多选态）。
+    multi_select: Vec<i64>,
+    /// Shift 区间选择锚点（普通/Shift 点击更新，Ctrl 不动）。
+    anchor: Option<i64>,
     /// 重命名笔记本弹窗（uid + 编辑缓冲）。
     rename_nb: Option<(i64, String)>,
     /// 重命名标签弹窗（uid + 编辑缓冲）。
@@ -232,6 +236,8 @@ impl UiState {
             list_compact: false,
             focus_search: false,
             note_info: None,
+            multi_select: Vec::new(),
+            anchor: None,
             rename_nb: None,
             rename_tag: None,
             present: None,
@@ -305,8 +311,21 @@ impl BijiApp {
             self.st.focus_search = true;
         }
         let del_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete) && !i.modifiers.any());
-        if del_pressed && !ctx.wants_keyboard_input() {
-            if let Some(uid) = self.st.selected_note {
+        if del_pressed && !ctx.wants_keyboard_input() && self.st.present.is_none() {
+            // 多选态：Delete 批量移入回收站；否则删单选笔记
+            if !self.st.multi_select.is_empty() {
+                let uids = self.st.multi_select.clone();
+                let mut ok = 0usize;
+                for u in &uids {
+                    if self.service.trash_note(*u).is_ok() {
+                        ok += 1;
+                    }
+                }
+                self.st.status = format!("已把 {ok} 条笔记移入回收站");
+                self.st.multi_select.clear();
+                self.st.selected_note = None;
+                self.refresh_rows();
+            } else if let Some(uid) = self.st.selected_note {
                 match self.service.trash_note(uid) {
                     Ok(()) => {
                         self.st.status = format!("已移入回收站 {}", note_label(uid));
@@ -316,6 +335,13 @@ impl BijiApp {
                     Err(e) => self.st.status = format!("删除失败: {e}"),
                 }
             }
+        }
+        // Esc 退出多选态（演示模式外的场景）
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            && self.st.present.is_none()
+            && !self.st.multi_select.is_empty()
+        {
+            self.st.multi_select.clear();
         }
     }
 
@@ -359,6 +385,43 @@ impl BijiApp {
         }
         if !asc {
             rows.reverse();
+        }
+    }
+
+    /// 卡片点击语义（对位原客户端列表多选）：
+    /// 普通 = 清多选 + 单选；Ctrl = 切换多选成员；Shift = 锚点区间全选。
+    fn click_select(st: &mut UiState, uid: i64, mods: egui::Modifiers) {
+        if mods.ctrl {
+            Self::ctrl_toggle(&mut st.multi_select, uid);
+        } else if mods.shift {
+            let anchor = st.anchor.unwrap_or(uid);
+            let rows = st.rows.clone();
+            Self::select_range(&rows, anchor, uid, &mut st.multi_select);
+            st.anchor = Some(uid);
+        } else {
+            st.multi_select.clear();
+            st.selected_note = Some(uid);
+            st.anchor = Some(uid);
+        }
+    }
+
+    /// Shift 区间选择（供单测）：rows 顺序中 anchor..to 的 uid 全选（保序去重）。
+    fn select_range(rows: &[ListRow], anchor: i64, to: i64, multi: &mut Vec<i64>) {
+        let pos = |uid: i64| rows.iter().position(|r| r.uid == uid);
+        let (Some(a), Some(b)) = (pos(anchor), pos(to)) else {
+            return;
+        };
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        *multi = rows[lo..=hi].iter().map(|r| r.uid).collect();
+    }
+
+    /// Ctrl 点击切换（供单测）：保序加入/移出多选集。
+    fn ctrl_toggle(multi: &mut Vec<i64>, uid: i64) {
+        match multi.iter().position(|&u| u == uid) {
+            Some(i) => {
+                multi.remove(i);
+            }
+            None => multi.push(uid),
         }
     }
 
@@ -407,8 +470,11 @@ impl BijiApp {
     fn refresh_rows(&mut self) {
         let sig = self.rows_signature();
         if sig != self.st.rows_sig {
-            // 新列表（切换笔记本/标签/搜索/回收站）：无限滚动窗口回到首页
+            // 新列表（切换笔记本/标签/搜索/回收站）：无限滚动窗口回到首页，
+            // 多选态与锚点随旧列表失效
             self.st.list_limit = UiState::LIST_PAGE;
+            self.st.multi_select.clear();
+            self.st.anchor = None;
         }
         if sig == self.st.rows_sig {
             return;
@@ -1338,6 +1404,62 @@ impl BijiApp {
                     .shortcuts()
                     .into_iter()
                     .collect();
+                // 多选态批量操作条（面板底部固定，对位原客户端批量操作栏）
+                let mut batch_trash = false;
+                let mut batch_move: Option<Option<i64>> = None;
+                if !self.st.trash_view && !self.st.multi_select.is_empty() {
+                    let n = self.st.multi_select.len();
+                    egui::TopBottomPanel::top("batch-bar")
+                        .frame(
+                            egui::Frame::default()
+                                .fill(theme::pal().white)
+                                .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
+                                .inner_margin(egui::Margin::symmetric(8.0, 5.0)),
+                        )
+                        .show_inside(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("已选 {n} 条"))
+                                        .small()
+                                        .color(theme::pal().subtle),
+                                );
+                                // 移动到…：弹层选目标（复用来源下拉的开关模式）
+                                let mv_id = egui::Id::new("batch-move-menu");
+                                let mv_btn = ui.button("📦 移动到…");
+                                if mv_btn.clicked() {
+                                    ui.memory_mut(|m| {
+                                        if m.is_popup_open(mv_id) {
+                                            m.close_popup();
+                                        } else {
+                                            m.open_popup(mv_id);
+                                        }
+                                    });
+                                }
+                                egui::popup_below_widget(
+                                    ui,
+                                    mv_id,
+                                    &mv_btn,
+                                    egui::PopupCloseBehavior::CloseOnClick,
+                                    |ui| {
+                                        for (nb_uid, nb_name) in &notebooks {
+                                            if ui.button(format!("📓 {nb_name}")).clicked() {
+                                                batch_move = Some(Some(*nb_uid));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                        if ui.button("（未分类）").clicked() {
+                                            batch_move = Some(None);
+                                            ui.close_menu();
+                                        }
+                                    },
+                                );
+                                if ui.button("🗑 移入回收站").clicked() {
+                                    batch_trash = true;
+                                }
+                            });
+                        });
+                }
+                let mods = ui.input(|i| i.modifiers);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // 无限滚动：只渲染可见窗口内的卡片，滚动到底自动扩展
                     let total = self.st.rows.len();
@@ -1352,7 +1474,8 @@ impl BijiApp {
                         ui.label(egui::RichText::new("（空）").color(theme::pal().subtle));
                     }
                     for row in rows {
-                        let selected = self.st.selected_note == Some(row.uid);
+                        let selected = self.st.selected_note == Some(row.uid)
+                            || self.st.multi_select.contains(&row.uid);
                         // 紧凑视图：单行「● 标题 …… 日期」（对位原客户端列表视图）
                         if self.st.list_compact {
                             let row_resp = ui
@@ -1416,7 +1539,7 @@ impl BijiApp {
                                     egui::Sense::click(),
                                 );
                                 if hit.clicked() {
-                                    self.st.selected_note = Some(row.uid);
+                                    Self::click_select(&mut self.st, row.uid, mods);
                                 }
                                 Self::note_context_menu(
                                     &hit,
@@ -1510,7 +1633,7 @@ impl BijiApp {
                             egui::Sense::click(),
                         );
                         if card_resp.clicked() && !self.st.trash_view {
-                            self.st.selected_note = Some(row.uid);
+                            Self::click_select(&mut self.st, row.uid, mods);
                         }
                         if !self.st.trash_view {
                             Self::note_context_menu(
@@ -1561,6 +1684,39 @@ impl BijiApp {
                         }
                         Err(e) => self.st.status = format!("快捷方式切换失败: {e}"),
                     }
+                }
+                if batch_trash {
+                    let uids = self.st.multi_select.clone();
+                    let mut ok = 0usize;
+                    for u in &uids {
+                        if self.service.trash_note(*u).is_ok() {
+                            ok += 1;
+                        }
+                    }
+                    self.st.status = format!("已把 {ok} 条笔记移入回收站");
+                    self.st.multi_select.clear();
+                    self.st.selected_note = None;
+                    self.refresh_rows();
+                }
+                if let Some(nb) = batch_move {
+                    let uids = self.st.multi_select.clone();
+                    let target = nb
+                        .and_then(|n| {
+                            notebooks
+                                .iter()
+                                .find(|(u, _)| *u == n)
+                                .map(|(_, name)| name.clone())
+                        })
+                        .unwrap_or_else(|| "未分类".into());
+                    let mut ok = 0usize;
+                    for u in &uids {
+                        if self.service.store().move_note(*u, nb).is_ok() {
+                            ok += 1;
+                        }
+                    }
+                    self.st.status = format!("已把 {ok} 条笔记移动到「{target}」");
+                    self.st.multi_select.clear();
+                    self.refresh_rows();
                 }
                 if let Some((uid, nb)) = move_req {
                     match self.service.store().move_note(uid, nb) {
@@ -4386,6 +4542,236 @@ mod tests {
             app.service.store().shortcut_notes().is_empty(),
             "取消后侧栏分区应无置顶笔记"
         );
+    }
+
+    /// headless egui 集成：Ctrl/Shift 多选 → 底部批量条「移动到…」弹层批量移动
+    /// → 批量「移入回收站」；断言全部落在 store 真实状态。
+    #[test]
+    fn multi_select_batch_ops_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let nb = app.service.store().create_notebook("生活", None).unwrap();
+        let n1 = app
+            .service
+            .create_note("甲", "<en-note><p>1</p></en-note>", None)
+            .unwrap();
+        let n2 = app
+            .service
+            .create_note("乙", "<en-note><p>2</p></en-note>", None)
+            .unwrap();
+        let n3 = app
+            .service
+            .create_note("丙", "<en-note><p>3</p></en-note>", None)
+            .unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>, mods: egui::Modifiers| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                modifiers: mods,
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let click_at = |ctx: &egui::Context,
+                        app: &mut BijiApp,
+                        pos: egui::Pos2,
+                        mods: egui::Modifiers| {
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerMoved(pos)],
+                none,
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: mods,
+                }],
+                mods,
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: mods,
+                }],
+                mods, // 真实使用中修饰键在释放帧仍按住（clicked() 在释放帧求值）
+            );
+        };
+        let card_center = |ctx: &egui::Context, uid: i64| -> egui::Pos2 {
+            ctx.read_response(egui::Id::new(("note-card", uid)))
+                .expect("卡片应已渲染")
+                .rect
+                .center()
+        };
+        let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
+            ctx.memory(|m| {
+                let mut best: Option<egui::Rect> = None;
+                let mut bd = f32::MAX;
+                for layer in m.layer_ids() {
+                    if layer.order != egui::Order::Foreground {
+                        continue;
+                    }
+                    if let Some(r) = m.area_rect(layer.id) {
+                        if r.width() < 30.0 || r.width() > 460.0 || r.height() > 460.0 {
+                            continue;
+                        }
+                        let d = r.center().distance(near);
+                        if d < 200.0 && d < bd {
+                            bd = d;
+                            best = Some(r);
+                        }
+                    }
+                }
+                best
+            })
+        };
+        run(&ctx, &mut app, vec![], none);
+
+        // ---- 多选三态：普通点甲（锚点）→ Ctrl 乙 → Shift 丙 = [甲,乙,丙]
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let shift = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        click_at(&ctx, &mut app, card_center(&ctx, n1), none);
+        assert_eq!(app.st.multi_select, Vec::<i64>::new(), "普通点击应清多选");
+        click_at(&ctx, &mut app, card_center(&ctx, n2), ctrl);
+        assert_eq!(app.st.multi_select, vec![n2], "Ctrl 点击应切换成员");
+        click_at(&ctx, &mut app, card_center(&ctx, n3), shift);
+        assert_eq!(
+            app.st.multi_select,
+            vec![n3, n2, n1],
+            "Shift 应选锚点(甲)到丙的区间（顺序随列表序=更新时间降序）"
+        );
+
+        // ---- 批量条「📦 移动到…」→ 弹层选「📓 生活」→ 三条全移动
+        // 批量条在列表面板顶部：第一张卡片上方 ~18px 即条内（条出现会把卡片下推，
+        // 逐次以实时卡片位置反推条 y，避免盲扫点中卡片清掉多选）
+        // 条在「当前列表首行卡片」上方；刷新会重排序，逐次取实时首行 uid
+        let bar_y = |ctx: &egui::Context, app: &BijiApp| -> f32 {
+            let first = app.st.rows[0].uid;
+            ctx.read_response(egui::Id::new(("note-card", first)))
+                .expect("卡片应已渲染")
+                .rect
+                .min
+                .y
+                - 18.0
+        };
+        let mut moved = false;
+        for xi in (215..620).step_by(10) {
+            let y = bar_y(&ctx, &app);
+            click_at(&ctx, &mut app, egui::pos2(xi as f32, y), none);
+            if popup_near(&ctx, egui::pos2(xi as f32, y)).is_some() {
+                moved = true;
+                break;
+            }
+            assert!(
+                !app.st.multi_select.is_empty(),
+                "扫描误清多选（xi={xi}）"
+            );
+        }
+        assert!(moved, "点「移动到…」应弹目标层");
+        // 弹层里只有一本（生活）+ 未分类：点第一项
+        if let Some(m) = popup_near(&ctx, egui::pos2(300.0, bar_y(&ctx, &app))) {
+            click_at(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + 18.0), none);
+        }
+        let got: Vec<Option<i64>> = [n1, n2, n3]
+            .iter()
+            .map(|&u| app.service.store().get_note(u).unwrap().note.notebook_uid)
+            .collect();
+        assert_eq!(
+            got,
+            vec![Some(nb), Some(nb), Some(nb)],
+            "三条应全部移到「生活」"
+        );
+        assert!(app.st.multi_select.is_empty(), "批量操作后应清多选");
+
+        // ---- 批量回收站：重选甲乙 → 点「🗑 移入回收站」
+        click_at(&ctx, &mut app, card_center(&ctx, n1), none);
+        click_at(&ctx, &mut app, card_center(&ctx, n2), ctrl);
+        assert_eq!(app.st.multi_select, vec![n2]);
+        click_at(&ctx, &mut app, card_center(&ctx, n1), ctrl);
+        assert_eq!(app.st.multi_select, vec![n2, n1]);
+        let mut trashed = false;
+        for xi in (215..620).step_by(10) {
+            let y = bar_y(&ctx, &app);
+            click_at(&ctx, &mut app, egui::pos2(xi as f32, y), none);
+            let d1 = app.service.store().get_note(n1).unwrap().note.is_deleted;
+            let d2 = app.service.store().get_note(n2).unwrap().note.is_deleted;
+            if d1 && d2 {
+                trashed = true;
+                break;
+            }
+            assert!(
+                !(d1 || d2),
+                "扫描误触批量条按钮（xi={xi}）提前删除"
+            );
+        }
+        assert!(trashed, "批量条「移入回收站」应删除所选两条");
+        assert!(
+            !app.service.store().get_note(n3).unwrap().note.is_deleted,
+            "未选中的丙不应受影响"
+        );
+    }
+
+    #[test]
+    fn select_range_and_ctrl_toggle_semantics() {
+        let mk = |uid: i64, date: f64| ListRow {
+            uid,
+            title: String::new(),
+            snippet: String::new(),
+            date,
+            created: date,
+            tags: None,
+        };
+        let rows = vec![mk(3, 30.0), mk(2, 20.0), mk(1, 10.0)]; // 列表序（更新时间降序）
+        let mut multi = Vec::new();
+        // 顺向区间与逆向区间等价（都取闭区间全成员，按列表序）
+        BijiApp::select_range(&rows, 1, 3, &mut multi);
+        assert_eq!(multi, vec![3, 2, 1]);
+        BijiApp::select_range(&rows, 3, 1, &mut multi);
+        assert_eq!(multi, vec![3, 2, 1]);
+        // 单成员区间
+        BijiApp::select_range(&rows, 2, 2, &mut multi);
+        assert_eq!(multi, vec![2]);
+        // 锚点不在列表中：不动
+        let mut keep = vec![9];
+        BijiApp::select_range(&rows, 99, 1, &mut keep);
+        assert_eq!(keep, vec![9]);
+        // Ctrl toggle：保序加入/移出
+        let mut m = Vec::new();
+        BijiApp::ctrl_toggle(&mut m, 5);
+        BijiApp::ctrl_toggle(&mut m, 7);
+        assert_eq!(m, vec![5, 7]);
+        BijiApp::ctrl_toggle(&mut m, 5);
+        assert_eq!(m, vec![7]);
     }
 
     #[test]
