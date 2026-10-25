@@ -1346,13 +1346,22 @@ impl BijiApp {
                                 .small()
                                 .color(theme::pal().subtle),
                         );
+                        // 同步：绿色圆形图标钮（对位原客户端右上圆形同步钮），
+                        // 待同步数走悬停提示（状态栏亦常显）
                         let pending = self.pending_sync_count();
-                        if ui
-                            .add(theme::green_button(&format!("同步({pending})")))
-                            .clicked()
-                        {
+                        let (sr, sresp) =
+                            ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+                        ui.painter()
+                            .circle_filled(sr.center(), 15.0, theme::pal().green);
+                        crate::icons::sync_arrows(
+                            ui.painter(),
+                            sr.shrink(7.0),
+                            theme::pal().white,
+                        );
+                        if sresp.clicked() {
                             self.do_sync();
                         }
+                        let _ = sresp.on_hover_text(format!("同步（待同步 {pending} 条）"));
                         // 主题快捷切换（对位原客户端工具栏的明暗切换钮）
                         if ui
                             .button(if theme::is_dark() { "☀️" } else { "🌙" })
@@ -3020,7 +3029,9 @@ impl BijiApp {
                 let hits = Self::find_hits(&ed.content, &fs.query);
                 let total = hits.len();
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("🔍").small());
+                    let (fr, _fr2) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    crate::icons::search(ui.painter(), fr, theme::pal().subtle);
                     let q = ui.add(
                         egui::TextEdit::singleline(&mut fs.query)
                             .desired_width(130.0)
@@ -3195,7 +3206,9 @@ impl BijiApp {
             let resources = self.service.store().list_resources(uid).unwrap_or_default();
             if !resources.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("📎").weak());
+                    let (ar, _ar2) =
+                        ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
+                    crate::icons::clip(ui.painter(), ar, theme::pal().subtle);
                     for r in &resources {
                         let is_image = r.mime.starts_with("image/");
                         let is_pdf = r.mime == "application/pdf";
@@ -3267,8 +3280,11 @@ impl BijiApp {
             {
                 let attached = self.service.store().note_tags(uid).unwrap_or_default();
                 ui.horizontal(|ui| {
+                    let (tr, _tr2) =
+                        ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                    crate::icons::tag(ui.painter(), tr, theme::pal().green_dark);
                     ui.menu_button(
-                        egui::RichText::new("🏷 添加标签…")
+                        egui::RichText::new("添加标签…")
                             .small()
                             .color(theme::pal().green_dark),
                         |ui| {
@@ -3485,79 +3501,97 @@ impl BijiApp {
                 ed.table_edit = sess.table_edit.take();
                 open_link = sess.open_note;
             } else {
-                // 格式工具行（对位原客户端格式栏；作用于 ENML 源码选区）
-                // 格式工具栏（图标化，对位原客户端格式栏外观）：
-                // (图标, hover 提示, open, close)——图标用 Unicode/emoji，
-                // hover 保留文字说明（无障碍 + 可发现性）
-                const FORMATS: &[(&str, &str, &str, &str)] = &[
-                    ("B", "粗体", "<b>", "</b>"),
-                    ("I", "斜体", "<i>", "</i>"),
-                    ("U", "下划线", "<u>", "</u>"),
-                    ("S̶", "删除线", "<s>", "</s>"),
-                    (
-                        "🖍",
-                        "高亮",
-                        "<span style=\"background-color:#ffd54f\">",
-                        "</span>",
-                    ),
-                    ("H₁", "一级标题", "<h1>", "</h1>"),
-                    ("H₂", "二级标题", "<h2>", "</h2>"),
-                    ("⟨⟩", "行内代码", "<code>", "</code>"),
-                    ("▦", "插入表格", "<table><tr><td>", "</td></tr></table>"),
-                    ("―", "水平分割线", "<hr/>", ""),
-                ];
+                // 格式工具行（对位原客户端格式栏：扁平白底钮 + 分组分隔；
+                // B/I/U/S 用字重排版字形，插入类用自绘图标；作用于 ENML 源码选区）
                 let editor_id = egui::Id::new("enml-source");
                 let selection = egui::TextEdit::load_state(ui.ctx(), editor_id)
                     .as_ref()
                     .and_then(|st| st.cursor.char_range());
                 ui.horizontal(|ui| {
-                    for (icon, tip, open, close) in FORMATS {
-                        if ui.small_button(*icon).on_hover_text(*tip).clicked() {
-                            let (newc, newr) = util::wrap_enml_around_selection(
-                                &ed.content,
-                                selection,
-                                open,
-                                close,
-                            );
-                            ed.content = newc;
-                            ed.dirty = true;
-                            ed.last_edit = Some(Instant::now());
-                            if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
-                                st.cursor.set_char_range(Some(newr));
-                                egui::TextEdit::store_state(ui.ctx(), editor_id, st);
-                            }
+                    // 扁平化：白底无描边，hover 浅灰（同菜单栏钮处理）
+                    {
+                        let w = &mut ui.style_mut().visuals.widgets;
+                        w.inactive.bg_fill = theme::pal().white;
+                        w.inactive.weak_bg_fill = theme::pal().white;
+                        w.inactive.bg_stroke = egui::Stroke::NONE;
+                        w.hovered.bg_fill = theme::pal().hovered;
+                        w.hovered.weak_bg_fill = theme::pal().hovered;
+                        w.hovered.bg_stroke = egui::Stroke::NONE;
+                    }
+                    let mut wrap = |ui: &mut egui::Ui, open: &str, close: &str| {
+                        let (newc, newr) =
+                            util::wrap_enml_around_selection(&ed.content, selection, open, close);
+                        ed.content = newc;
+                        ed.dirty = true;
+                        ed.last_edit = Some(Instant::now());
+                        if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
+                            st.cursor.set_char_range(Some(newr));
+                            egui::TextEdit::store_state(ui.ctx(), editor_id, st);
                         }
+                    };
+                    // 字体样式组（排版字形对位原客户端 B/I/U/S）
+                    if ui
+                        .button(egui::RichText::new("B").strong().size(15.0))
+                        .on_hover_text("粗体")
+                        .clicked()
+                    {
+                        wrap(ui, "<b>", "</b>");
+                    }
+                    if ui
+                        .button(egui::RichText::new("I").italics().size(15.0))
+                        .on_hover_text("斜体")
+                        .clicked()
+                    {
+                        wrap(ui, "<i>", "</i>");
+                    }
+                    if ui
+                        .button(egui::RichText::new("U").underline().size(15.0))
+                        .on_hover_text("下划线")
+                        .clicked()
+                    {
+                        wrap(ui, "<u>", "</u>");
+                    }
+                    if ui
+                        .button(egui::RichText::new("S").strikethrough().size(15.0))
+                        .on_hover_text("删除线")
+                        .clicked()
+                    {
+                        wrap(ui, "<s>", "</s>");
                     }
                     ui.separator();
-                    if ui.small_button("☑").on_hover_text("待办清单").clicked() {
-                        let (newc, newr) = util::wrap_enml_around_selection(
-                            &ed.content,
-                            selection,
-                            "<en-todo/>",
-                            "",
-                        );
-                        ed.content = newc;
-                        ed.dirty = true;
-                        ed.last_edit = Some(Instant::now());
-                        if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
-                            st.cursor.set_char_range(Some(newr));
-                            egui::TextEdit::store_state(ui.ctx(), editor_id, st);
-                        }
+                    if ui.button("H₁").on_hover_text("一级标题").clicked() {
+                        wrap(ui, "<h1>", "</h1>");
                     }
-                    if ui.small_button("🔗").on_hover_text("插入链接").clicked() {
-                        let (newc, newr) = util::wrap_enml_around_selection(
-                            &ed.content,
-                            selection,
-                            "<a href=\"\">",
-                            "</a>",
-                        );
-                        ed.content = newc;
-                        ed.dirty = true;
-                        ed.last_edit = Some(Instant::now());
-                        if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), editor_id) {
-                            st.cursor.set_char_range(Some(newr));
-                            egui::TextEdit::store_state(ui.ctx(), editor_id, st);
-                        }
+                    if ui.button("H₂").on_hover_text("二级标题").clicked() {
+                        wrap(ui, "<h2>", "</h2>");
+                    }
+                    ui.separator();
+                    if crate::icons::icon_btn(ui, 24.0, "高亮", &crate::icons::highlight).clicked()
+                    {
+                        wrap(ui, "<span style=\"background-color:#ffd54f\">", "</span>");
+                    }
+                    if crate::icons::icon_btn(ui, 24.0, "行内代码", &crate::icons::code).clicked()
+                    {
+                        wrap(ui, "<code>", "</code>");
+                    }
+                    ui.separator();
+                    if crate::icons::icon_btn(ui, 24.0, "插入表格", &crate::icons::table).clicked()
+                    {
+                        wrap(ui, "<table><tr><td>", "</td></tr></table>");
+                    }
+                    if crate::icons::icon_btn(ui, 24.0, "水平分割线", &crate::icons::hr_line)
+                        .clicked()
+                    {
+                        wrap(ui, "<hr/>", "");
+                    }
+                    ui.separator();
+                    if crate::icons::icon_btn(ui, 24.0, "待办清单", &crate::icons::todo).clicked()
+                    {
+                        wrap(ui, "<en-todo/>", "");
+                    }
+                    if crate::icons::icon_btn(ui, 24.0, "插入链接", &crate::icons::link).clicked()
+                    {
+                        wrap(ui, "<a href=\"\">", "</a>");
                     }
                 });
                 let output = egui::TextEdit::multiline(&mut ed.content)

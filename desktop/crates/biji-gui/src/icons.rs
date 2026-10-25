@@ -464,6 +464,179 @@ pub fn chevron(p: &Painter, r: Rect, c: Color32, down: bool) {
     p.add(egui::Shape::line(vec![a, b, d], s));
 }
 
+// ---------- 格式栏 / 同步 ----------
+
+/// 荧光笔（高亮）。
+pub fn highlight(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.1, c);
+    // 斜置笔杆 + 笔头粗线
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.2, r.max.x), lerp(r.min.y, 0.86, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.62, r.max.x), lerp(r.min.y, 0.14, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.86, r.max.x), lerp(r.min.y, 0.38, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.44, r.max.x), lerp(r.min.y, 0.9, r.max.y)),
+        ],
+        s,
+    ));
+    p.line_segment(
+        [
+            egui::pos2(lerp(r.min.x, 0.14, r.max.x), lerp(r.min.y, 0.62, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.5, r.max.x), lerp(r.min.y, 0.98, r.max.y)),
+        ],
+        Stroke::new(sw(r) * 2.0, c),
+    );
+}
+
+/// 行内代码（尖括号斜杠）。
+pub fn code(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    let lt = |dir: f32| {
+        let x0 = if dir > 0.0 {
+            lerp(r.min.x, 0.1, r.max.x)
+        } else {
+            lerp(r.min.x, 0.9, r.max.x)
+        };
+        let x1 = if dir > 0.0 {
+            lerp(r.min.x, 0.4, r.max.x)
+        } else {
+            lerp(r.min.x, 0.6, r.max.x)
+        };
+        p.add(egui::Shape::line(
+            vec![
+                egui::pos2(x0, lerp(r.min.y, 0.25, r.max.y)),
+                egui::pos2(x1, r.center().y),
+                egui::pos2(x0, lerp(r.min.y, 0.75, r.max.y)),
+            ],
+            s,
+        ));
+    };
+    lt(1.0);
+    lt(-1.0);
+    p.line_segment(
+        [
+            egui::pos2(lerp(r.min.x, 0.56, r.max.x), lerp(r.min.y, 0.18, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.44, r.max.x), lerp(r.min.y, 0.82, r.max.y)),
+        ],
+        s,
+    );
+}
+
+/// 表格（田字网格）。
+pub fn table(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.rect_stroke(r, egui::Rounding::same(2.0), s);
+    let mid_x = r.center().x;
+    let mid_y = r.center().y;
+    p.line_segment([egui::pos2(mid_x, r.min.y), egui::pos2(mid_x, r.max.y)], s);
+    p.line_segment([egui::pos2(r.min.x, mid_y), egui::pos2(r.max.x, mid_y)], s);
+}
+
+/// 水平分割线（上下短线夹一条中线）。
+pub fn hr_line(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    let faint = Stroke::new(sw(r), c.gamma_multiply(0.45));
+    p.line_segment(
+        [
+            egui::pos2(r.min.x, lerp(r.min.y, 0.22, r.max.y)),
+            egui::pos2(r.max.x, lerp(r.min.y, 0.22, r.max.y)),
+        ],
+        faint,
+    );
+    p.line_segment(
+        [
+            egui::pos2(r.min.x, r.center().y),
+            egui::pos2(r.max.x, r.center().y),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            egui::pos2(r.min.x, lerp(r.min.y, 0.78, r.max.y)),
+            egui::pos2(r.max.x, lerp(r.min.y, 0.78, r.max.y)),
+        ],
+        faint,
+    );
+}
+
+/// 待办勾选框。
+pub fn todo(p: &Painter, r: Rect, c: Color32) {
+    p.rect_stroke(r, egui::Rounding::same(2.0), Stroke::new(sw(r), c));
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.22, r.max.x), r.center().y),
+            egui::pos2(lerp(r.min.x, 0.42, r.max.x), lerp(r.min.y, 0.78, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.8, r.max.x), lerp(r.min.y, 0.22, r.max.y)),
+        ],
+        Stroke::new(sw(r) * 1.2, c),
+    ));
+}
+
+/// 链条（两节环扣）。
+pub fn link(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    let w = r.width();
+    let h = r.height();
+    // 左右两个斜置圆角矩形环，中间相扣
+    let link_rect = |cx: f32, cy: f32| {
+        let hw = w * 0.3;
+        let hh = h * 0.16;
+        let pts_off = [
+            (-hw * 0.5, -hh),
+            (hw * 0.5, -hh),
+            (hw * 0.5, hh),
+            (-hw * 0.5, hh),
+        ];
+        let rot = std::f32::consts::FRAC_PI_4;
+        let pts: Vec<egui::Pos2> = pts_off
+            .iter()
+            .map(|(dx, dy)| {
+                egui::pos2(
+                    cx + dx * rot.cos() - dy * rot.sin(),
+                    cy + dx * rot.sin() + dy * rot.cos(),
+                )
+            })
+            .collect();
+        p.add(egui::Shape::line(pts, s));
+    };
+    link_rect(lerp(r.min.x, 0.3, r.max.x), lerp(r.min.y, 0.62, r.max.y));
+    link_rect(lerp(r.min.x, 0.7, r.max.x), lerp(r.min.y, 0.38, r.max.y));
+}
+
+/// 同步箭头（双弧循环）。
+pub fn sync_arrows(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new((r.width() / 9.0).clamp(1.4, 2.6), c);
+    let cc = r.center();
+    let rad = r.height() * 0.36;
+    for (a0, a1) in [
+        (-0.3, 2.4),
+        (std::f32::consts::PI - 0.3, std::f32::consts::PI + 2.4),
+    ] {
+        let pts: Vec<egui::Pos2> = (0..=10)
+            .map(|i| {
+                let a = a0 + (a1 - a0) * i as f32 / 10.0;
+                egui::pos2(cc.x + rad * a.cos(), cc.y + rad * a.sin())
+            })
+            .collect();
+        p.add(egui::Shape::line(pts.clone(), s));
+        // 箭头（弧末端）
+        let end = *pts.last().unwrap();
+        let prev = pts[pts.len() - 2];
+        let dir = end - prev;
+        let n = egui::vec2(-dir.y, dir.x).normalized();
+        let ah = rad * 0.34;
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                end + dir.normalized() * ah,
+                end - dir.normalized() * ah * 0.4 + n * ah * 0.7,
+                end - dir.normalized() * ah * 0.4 - n * ah * 0.7,
+            ],
+            c,
+            egui::Stroke::NONE,
+        ));
+    }
+}
+
 // ---------- 图标按钮 ----------
 
 /// 朴素图标钮（列表头/元信息行）：悬停显灰底，图标居中。
