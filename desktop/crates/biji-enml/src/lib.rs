@@ -51,7 +51,7 @@ pub enum EnmlError {
     NoEnNoteRoot,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Element {
     pub name: String,
     pub attrs: Vec<(String, String)>,

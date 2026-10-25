@@ -470,6 +470,33 @@ pub struct PreviewSession {
     pub request_format: Option<FormatApply>,
     /// 点击了 biji://note/N 链接：请求打开目标笔记（调用方同帧消费）。
     pub open_note: Option<i64>,
+    /// 表格就地编辑会话（块/行/列 + 缓冲）。
+    pub table_edit: Option<TableEdit>,
+    /// 请求写回单元格文本：(块, 行, 列, 新文本)。
+    pub request_cell: Option<(usize, usize, usize, String)>,
+    /// 请求表格结构操作：(块, 操作)。
+    pub request_table: Option<(usize, TableOp)>,
+    /// 本帧表格交互矩形透出（自动化/测试确定性定位；生产亦可作热区调试）。
+    pub tbl_cells: Vec<(usize, usize, egui::Rect)>,
+    pub tbl_ops: Vec<(&'static str, egui::Rect)>,
+}
+
+/// 表格就地编辑会话。
+#[derive(Debug, Clone)]
+pub struct TableEdit {
+    pub block: usize,
+    pub row: usize,
+    pub col: usize,
+    pub buffer: String,
+}
+
+/// 表格结构操作（作用于末行/末列的增删 + 任意行删）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TableOp {
+    AddRow,
+    DelRow(usize),
+    AddCol,
+    DelCol,
 }
 
 /// 渲染态格式施加：对若干文本节点的 [start,end) char 区间包裹标记元素。
@@ -608,6 +635,384 @@ fn frag_format_toolbar(ui: &mut egui::Ui, ses: &mut PreviewSession) {
 /// 选区高亮按 char 逐个 `pos_from_ccursor` 取矩形填充；
 /// 状态机：drag_started 置锚点 → dragged 动焦点 → clicked 清除。
 /// 该块持有选区时片段表回写会话（工具栏点击时映射选区 → 文本节点编辑）。
+/// 表格行提取（裸 tr / 分节双形态）：返回 (tr 引用克隆, 是否在分节内)。
+/// 返回克隆以避免与渲染借用交叉；块号用于就地编辑定位。
+fn table_rows(el: &Element) -> Vec<Element> {
+    let mut rows = Vec::new();
+    for child in &el.children {
+        match child {
+            Node::Element(section)
+                if matches!(section.name.as_str(), "thead" | "tbody" | "tfoot") =>
+            {
+                for row in &section.children {
+                    if let Node::Element(tr) = row {
+                        if tr.name == "tr" {
+                            rows.push(tr.clone());
+                        }
+                    }
+                }
+            }
+            Node::Element(tr) if tr.name == "tr" => rows.push(tr.clone()),
+            _ => {}
+        }
+    }
+    rows
+}
+
+fn tr_cells(tr: &Element) -> Vec<String> {
+    tr.children
+        .iter()
+        .filter_map(|c| match c {
+            Node::Element(td) => Some(plain_text_of(&td.children)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 操作条小按钮（真实分配控件 + 绘制；返回 (矩形, 是否点击)）。
+fn op_label(ui: &mut egui::Ui, t: &str, small: &egui::FontId) -> (egui::Rect, bool) {
+    let g =
+        ui.fonts(|f| f.layout_no_wrap(t.to_string(), small.clone(), ui.visuals().text_color()));
+    let (r, resp) =
+        ui.allocate_exact_size(g.size() + egui::vec2(8.0, 4.0), egui::Sense::click());
+    ui.painter().galley(
+        egui::pos2(r.min.x + 4.0, r.min.y + 2.0),
+        g,
+        ui.visuals().text_color(),
+    );
+    (r, resp.clicked())
+}
+
+/// 交互式表格（对位原客户端表格编辑）：Grid 布局 + 真实分配控件
+/// （Sense::click——与可选文本块同款，命中测试可靠）；单元格点击就地
+/// 编辑、行首删行、＋行/＋列/−列/−行操作条；交互矩形透出供测试定位。
+fn interactive_table(ui: &mut egui::Ui, block: usize, el: &Element, ses: &mut PreviewSession) {
+    let rows = table_rows(el);
+    let ncols = rows.iter().map(|r| tr_cells(r).len()).max().unwrap_or(1);
+    let editing = ses.table_edit.as_ref().map(|t| (t.block, t.row, t.col));
+    let mut enter_edit: Option<(usize, usize)> = None;
+    let mut op_req: Option<TableOp> = None;
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let small = egui::TextStyle::Small.resolve(ui.style());
+
+    egui::Grid::new(egui::Id::new(("tbl", block)))
+        .num_columns(ncols + 1)
+        .striped(true)
+        .min_col_width(36.0)
+        .show(ui, |ui| {
+            let mut cells_out: Vec<(usize, usize, egui::Rect)> = Vec::new();
+            let mut ops_out: Vec<(&'static str, egui::Rect)> = Vec::new();
+            for (ri, tr) in rows.iter().enumerate() {
+                // 行首：删行 ✕
+                let g = ui.fonts(|f| {
+                    f.layout_no_wrap("✕".to_string(), small.clone(), ui.visuals().weak_text_color())
+                });
+                let (r, resp) = ui.allocate_exact_size(
+                    g.size() + egui::vec2(8.0, 4.0),
+                    egui::Sense::click(),
+                );
+                ui.painter().galley(
+                    egui::pos2(r.min.x + 4.0, r.min.y + 2.0),
+                    g,
+                    ui.visuals().weak_text_color(),
+                );
+                if resp.clicked() {
+                    op_req = Some(TableOp::DelRow(ri));
+                }
+                ops_out.push(("delrow_x", r));
+                let cells = tr_cells(tr);
+                for ci in 0..ncols {
+                    if editing == Some((block, ri, ci)) {
+                        let Some(te) = ses.table_edit.as_mut() else {
+                            ui.label("?");
+                            continue;
+                        };
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut te.buffer)
+                                .desired_width(72.0)
+                                .id(egui::Id::new(("tblcell", block, ri, ci))),
+                        );
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            ses.request_cell = Some((block, ri, ci, te.buffer.clone()));
+                            ses.table_edit = None;
+                        }
+                    } else {
+                        let text = cells.get(ci).cloned().unwrap_or_default();
+                        let label: String = if text.is_empty() { "·".to_string() } else { text };
+                        let g = ui.fonts(|f| {
+                            f.layout_no_wrap(label, font.clone(), ui.visuals().text_color())
+                        });
+                        let (r, resp) = ui.allocate_exact_size(
+                            g.size() + egui::vec2(10.0, 4.0),
+                            egui::Sense::click(),
+                        );
+                        ui.painter().galley(
+                            egui::pos2(r.min.x + 5.0, r.min.y + 2.0),
+                            g,
+                            ui.visuals().text_color(),
+                        );
+                        eprintln!("[cell4] r{}c{} rect={:?} ptr={:?} h={} c={}", ri, ci, r, ui.input(|i| i.pointer.hover_pos()), resp.hovered(), resp.clicked());
+                        if resp.clicked() {
+                            enter_edit = Some((ri, ci));
+                        }
+                        cells_out.push((ri, ci, r));
+                    }
+                }
+                ui.end_row();
+            }
+            // 操作条行（op_label 自由函数避免闭包与嵌套借用冲突）
+            let (r1, c1) = op_label(ui, "＋行", &small);
+            ops_out.push(("addrow", r1));
+            if c1 {
+                op_req = Some(TableOp::AddRow);
+            }
+            for _ in 0..ncols.saturating_sub(1) {
+                ui.label("");
+            }
+            let (r2, c2) = op_label(ui, "＋列", &small);
+            ops_out.push(("addcol", r2));
+            if c2 {
+                op_req = Some(TableOp::AddCol);
+            }
+            let (r3, c3) = op_label(ui, "−列", &small);
+            ops_out.push(("delcol", r3));
+            if c3 {
+                op_req = Some(TableOp::DelCol);
+            }
+            let (r4, c4) = op_label(ui, "−行", &small);
+            ops_out.push(("delrow", r4));
+            if c4 {
+                op_req = Some(TableOp::DelRow(rows.len().saturating_sub(1)));
+            }
+            ui.end_row();
+            ses.tbl_cells = cells_out;
+            ses.tbl_ops = ops_out;
+        });
+    if let Some((ri, ci)) = enter_edit {
+        let t = rows
+            .get(ri)
+            .map(|tr| tr_cells(tr).get(ci).cloned().unwrap_or_default())
+            .unwrap_or_default();
+        ses.table_edit = Some(TableEdit {
+            block,
+            row: ri,
+            col: ci,
+            buffer: t,
+        });
+    }
+    if let Some(op) = op_req {
+        ses.request_table = Some((block, op));
+    }
+    // 就地编辑中提供显式完成按钮（Enter 之外的路径）
+    if ses.table_edit.is_some() && ses.table_edit.as_ref().map(|t| t.block) == Some(block) {
+        ui.horizontal(|ui| {
+            if ui.button("✓ 完成格编辑").clicked() {
+                if let Some(te) = ses.table_edit.take() {
+                    ses.request_cell = Some((te.block, te.row, te.col, te.buffer));
+                }
+            }
+            if ui.button("取消").clicked() {
+                ses.table_edit = None;
+            }
+        });
+    }
+    ui.add_space(4.0);
+}
+
+/// 行路径：(分节在 children 中的下标 or None=裸 tr, 行在容器 children 中的下标)。
+/// 裸 tr 与分节行统一平铺（对位渲染顺序）。
+fn table_row_paths(el: &Element) -> Vec<(Option<usize>, usize)> {
+    let mut paths = Vec::new();
+    for (si, child) in el.children.iter().enumerate() {
+        if let Node::Element(section) = child {
+            if matches!(section.name.as_str(), "thead" | "tbody" | "tfoot") {
+                for (ri, row) in section.children.iter().enumerate() {
+                    if let Node::Element(tr) = row {
+                        if tr.name == "tr" {
+                            paths.push((Some(si), ri));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (si, child) in el.children.iter().enumerate() {
+        if let Node::Element(tr) = child {
+            if tr.name == "tr" {
+                paths.push((None, si));
+            }
+        }
+    }
+    paths
+}
+
+/// 按路径取行的可变引用。
+fn row_at(el: &mut Element, path: (Option<usize>, usize)) -> Option<&mut Element> {
+    let (sec, ri) = path;
+    match sec {
+        Some(si) => {
+            let section = el.children.get_mut(si)?;
+            if let Node::Element(section) = section {
+                if let Some(Node::Element(tr)) = section.children.get_mut(ri) {
+                    return Some(tr);
+                }
+            }
+            None
+        }
+        None => {
+            let child = el.children.get_mut(ri)?;
+            if let Node::Element(tr) = child {
+                Some(tr)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// td 子节点在行 children 中的下标列表。
+fn td_indices(tr: &Element) -> Vec<usize> {
+    tr.children
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| match c {
+            Node::Element(td) if td.name == "td" => Some(i),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 新建空 td。
+fn new_td() -> Element {
+    Element {
+        name: "td".to_string(),
+        ..Element::default()
+    }
+}
+
+/// 写单元格文本（纯文本替换，格内原有内联标记不保留）：
+/// 越界行/列静默忽略（返回 false）。供预览就地编辑落地与单测。
+pub fn set_table_cell(el: &mut Element, row: usize, col: usize, text: &str) -> bool {
+    let Some(path) = table_row_paths(el).get(row).copied() else {
+        return false;
+    };
+    let Some(tr) = row_at(el, path) else { return false };
+    let Some(ci) = td_indices(tr).get(col).copied() else {
+        return false;
+    };
+    if let Node::Element(td) = &mut tr.children[ci] {
+        td.children = vec![biji_enml::Node::Text(text.to_string())];
+        true
+    } else {
+        false
+    }
+}
+
+/// 表格结构操作：加行（列数对齐的新空行）/ 删行（指定行）/ 加列（每行末补空格）/
+/// 删列（末列）。返回是否有实际变更。供操作条落地与单测。
+pub fn apply_table_op(el: &mut Element, op: TableOp) -> bool {
+    let ncols = table_rows(el)
+        .iter()
+        .map(|r| tr_cells(r).len())
+        .max()
+        .unwrap_or(1);
+    match op {
+        TableOp::AddRow => {
+            let mut tr = Element {
+                name: "tr".to_string(),
+                ..Element::default()
+            };
+            for _ in 0..ncols {
+                tr.children.push(biji_enml::Node::Element(new_td()));
+            }
+            // 有分节则插入最后分节，否则 table 末尾
+            let last_section = el.children.iter().rposition(|c| {
+                matches!(c,
+                    Node::Element(sec)
+                        if matches!(sec.name.as_str(), "thead" | "tbody" | "tfoot"))
+            });
+            match last_section {
+                Some(si) => {
+                    if let Node::Element(section) = &mut el.children[si] {
+                        section.children.push(biji_enml::Node::Element(tr));
+                    }
+                }
+                None => el.children.push(biji_enml::Node::Element(tr)),
+            }
+            true
+        }
+        TableOp::DelRow(idx) => {
+            let mut removed = false;
+            let mut containers: Vec<&mut Element> = Vec::new();
+            for child in &mut el.children {
+                if let Node::Element(section) = child {
+                    if matches!(section.name.as_str(), "thead" | "tbody" | "tfoot") {
+                        containers.push(section);
+                    }
+                }
+            }
+            let mut flat = 0usize;
+            for c in containers.iter_mut() {
+                let trs: Vec<usize> = c
+                    .children
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| match n {
+                        Node::Element(tr) if tr.name == "tr" => Some(i),
+                        _ => None,
+                    })
+                    .collect();
+                if idx < flat + trs.len() {
+                    let local = idx - flat;
+                    c.children.remove(trs[local]);
+                    removed = true;
+                    break;
+                }
+                flat += trs.len();
+            }
+            if !removed {
+                let trs: Vec<usize> = el
+                    .children
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| match n {
+                        Node::Element(tr) if tr.name == "tr" => Some(i),
+                        _ => None,
+                    })
+                    .collect();
+                if idx < trs.len() {
+                    el.children.remove(trs[idx]);
+                    removed = true;
+                }
+            }
+            removed
+        }
+        TableOp::AddCol => {
+            let paths = table_row_paths(el);
+            for p in paths {
+                if let Some(tr) = row_at(el, p) {
+                    tr.children.push(biji_enml::Node::Element(new_td()));
+                }
+            }
+            true
+        }
+        TableOp::DelCol => {
+            let last = ncols.saturating_sub(1);
+            let paths = table_row_paths(el);
+            for p in paths {
+                if let Some(tr) = row_at(el, p) {
+                    let tds = td_indices(tr);
+                    if !tds.is_empty() {
+                        let idx = tds[last.min(tds.len() - 1)];
+                        tr.children.remove(idx);
+                    }
+                }
+            }
+            true
+        }
+    }
+}
+
 /// 解析 biji://note/N 内部链接（对位原客户端 evernote:///view 链接）。
 fn parse_note_link(href: &str) -> Option<i64> {
     let rest = href.strip_prefix("biji://note/")?;
@@ -721,6 +1126,14 @@ fn selectable_block(
 /// 格式工具栏（B/I/U/S/代码/链接直接作用于所见文本，写回 ENML）；
 /// 每个顶层块旁带「✎」编辑按钮（块内 HTML 片段编辑，格式保留）。
 pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSession) {
+    {
+        let probe = ui.interact(
+            egui::Rect::from_min_size(egui::pos2(505.0, 160.0), egui::vec2(200.0, 200.0)),
+            egui::Id::new("probe3"),
+            egui::Sense::click(),
+        );
+        eprintln!("[probe3-top] h={} c={}", probe.hovered(), probe.clicked());
+    }
     let children = doc.root.children.clone();
     for (i, child) in children.iter().enumerate() {
         if ses.editing == Some(i) {
@@ -763,8 +1176,9 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
                                 ses,
                             );
                         }
+                        "table" => interactive_table(ui, i, el, ses),
                         // 行内富文本块走可选中组件（渲染态直操）；
-                        // 其余块级元素（列表/引用/代码块/表格/附件占位…）
+                        // 其余块级元素（列表/引用/代码块/附件占位…）
                         // 保持既有渲染路径
                         "p" | "div" | "span" | "font" | "center" | "article" | "section"
                         | "header" | "footer" | "aside" | "figure" | "figcaption" | "details"
@@ -852,6 +1266,62 @@ mod tests {
 
     /// 裸行表格（tr 直挂 table，编辑器「表格」按钮插入的骨架形态）应渲染出
     /// 内容行，hr 应渲染分隔线——修复前裸行被静默丢弃。
+    /// 表格 DOM 操作：写格/加减行列，裸 tr 与 thead 分节双形态。
+    #[test]
+    fn table_dom_ops_bare_and_sectioned() {
+        use biji_enml::Node;
+        // 裸 tr 形态
+        let doc = biji_enml::Enml::parse(
+            "<en-note><table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table></en-note>",
+        )
+        .unwrap();
+        let mut table = match doc.root.children[0].clone() {
+            Node::Element(el) => el,
+            _ => panic!(),
+        };
+        let flat = |t: &Element| {
+            table_rows(t)
+                .iter()
+                .map(|r| tr_cells(r).join("|"))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        };
+        assert!(set_table_cell(&mut table, 1, 0, "改"));
+        assert_eq!(flat(&table), "a|b / 改|d", "写格应只改目标格");
+        assert!(!set_table_cell(&mut table, 9, 9, "x"), "越界应返回 false");
+
+        assert!(apply_table_op(&mut table, TableOp::AddRow));
+        assert_eq!(table_rows(&table).len(), 3);
+        assert_eq!(tr_cells(&table_rows(&table)[2]).len(), 2, "新行列数对齐");
+        assert!(apply_table_op(&mut table, TableOp::AddCol));
+        assert!(table_rows(&table).iter().all(|r| tr_cells(r).len() == 3));
+        assert!(apply_table_op(&mut table, TableOp::DelCol));
+        assert!(table_rows(&table).iter().all(|r| tr_cells(r).len() == 2));
+        assert!(apply_table_op(&mut table, TableOp::DelRow(1)));
+        assert_eq!(table_rows(&table).len(), 2);
+        let f = flat(&table);
+        assert!(
+            f.starts_with("a|b") && f.ends_with("|"),
+            "删行1后剩首行与空行: {f}"
+        );
+
+        // thead/tbody 分节形态：平铺索引跨分节
+        let doc2 = biji_enml::Enml::parse(
+            "<en-note><table><thead><tr><td>H1</td></tr></thead><tbody><tr><td>x</td></tr></tbody></table></en-note>",
+        )
+        .unwrap();
+        let mut t2 = match doc2.root.children[0].clone() {
+            Node::Element(el) => el,
+            _ => panic!(),
+        };
+        assert!(set_table_cell(&mut t2, 1, 0, "body改"));
+        assert_eq!(flat(&t2), "H1 / body改", "分节形态平铺索引写格");
+        assert!(apply_table_op(&mut t2, TableOp::AddRow));
+        assert_eq!(table_rows(&t2).len(), 3);
+        assert!(apply_table_op(&mut t2, TableOp::DelRow(0)));
+        assert_eq!(flat(&t2), "body改 / ", "删分节首行后平铺正确");
+    }
+
     #[test]
     fn renders_bare_tr_table_and_hr() {
         let doc = biji_enml::Enml::parse(

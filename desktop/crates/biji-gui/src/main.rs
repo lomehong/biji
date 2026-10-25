@@ -112,6 +112,11 @@ struct EditorState {
     preview_buffer: String,
     /// 渲染态选区（跨帧保持：拖选后移向工具栏期间不丢失）。
     preview_sel: Option<(usize, usize, usize)>,
+    /// 表格交互矩形透出（预览帧回写，测试确定性定位）。
+    tbl_cells: Vec<(usize, usize, egui::Rect)>,
+    tbl_ops: Vec<(&'static str, egui::Rect)>,
+    /// 表格就地编辑会话（跨帧保持，同 preview_editing 语义）。
+    table_edit: Option<preview::TableEdit>,
 }
 
 #[derive(Debug, Clone)]
@@ -649,6 +654,9 @@ impl BijiApp {
                         preview_editing: None,
                         preview_buffer: String::new(),
                         preview_sel: None,
+                        tbl_cells: Vec::new(),
+                        tbl_ops: Vec::new(),
+                        table_edit: None,
                     });
                 }
                 Err(e) => {
@@ -2339,6 +2347,11 @@ impl BijiApp {
                     sel_pieces: Vec::new(),
                     request_format: None,
                     open_note: None,
+                    table_edit: ed.table_edit.clone(),
+                    request_cell: None,
+                    request_table: None,
+                    tbl_cells: Vec::new(),
+                    tbl_ops: Vec::new(),
                 };
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_space(4.0);
@@ -2372,6 +2385,45 @@ impl BijiApp {
                         }
                     }
                 }
+                // 表格就地编辑写格：定位块 → set_table_cell → 回写
+                if let Some((blk, r, c, text)) = sess.request_cell.take() {
+                    if let Some(doc) = parsed.as_ref() {
+                        let mut doc_mut = doc.clone();
+                        if blk < doc_mut.root.children.len() {
+                            if let biji_enml::Node::Element(el) =
+                                &mut doc_mut.root.children[blk]
+                            {
+                                if preview::set_table_cell(el, r, c, &text) {
+                                    doc_mut.sanitize();
+                                    ed.content = doc_mut.to_xml();
+                                    ed.dirty = true;
+                                    ed.last_edit = Some(Instant::now());
+                                    self.st.status =
+                                        format!("表格[{r}][{c}] 已就地编辑");
+                                }
+                            }
+                        }
+                    }
+                }
+                // 表格结构操作：＋行/＋列/−行/−列 → 回写
+                if let Some((blk, op)) = sess.request_table.take() {
+                    if let Some(doc) = parsed.as_ref() {
+                        let mut doc_mut = doc.clone();
+                        if blk < doc_mut.root.children.len() {
+                            if let biji_enml::Node::Element(el) =
+                                &mut doc_mut.root.children[blk]
+                            {
+                                if preview::apply_table_op(el, op) {
+                                    doc_mut.sanitize();
+                                    ed.content = doc_mut.to_xml();
+                                    ed.dirty = true;
+                                    ed.last_edit = Some(Instant::now());
+                                    self.st.status = "表格结构已更新".to_string();
+                                }
+                            }
+                        }
+                    }
+                }
                 // 渲染态选区格式施加：拆分文本节点插入标记元素后整体回写
                 if let Some(fmt) = sess.request_format.take() {
                     if let Some(doc) = parsed.as_ref() {
@@ -2391,6 +2443,9 @@ impl BijiApp {
                 ed.preview_editing = sess.editing;
                 ed.preview_buffer = sess.buffer;
                 ed.preview_sel = sess.sel;
+                ed.tbl_cells = sess.tbl_cells.clone();
+                ed.tbl_ops = sess.tbl_ops.clone();
+                ed.table_edit = sess.table_edit.take();
                 open_link = sess.open_note;
             } else {
                 // 格式工具行（对位原客户端格式栏；作用于 ENML 源码选区）
@@ -6025,6 +6080,173 @@ mod tests {
         }
         assert!(hit_bad, "坏链接应给出诚实提示");
         assert_eq!(app.st.selected_note, Some(bad), "坏链接不应跳转");
+    }
+
+    /// headless egui 集成：预览态表格可视化编辑——单元格点击就地改文本、
+    /// ＋行/＋列操作，全部经真实分配控件点击（矩形由 EditorState 透出）→
+    /// ENML 源回写 → Ctrl+S 落库。
+    #[test]
+    fn table_visual_edit_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note(
+                "表格编辑",
+                "<en-note><table><tr><td>甲</td><td>乙</td></tr><tr><td>丙</td><td>丁</td></tr></table></en-note>",
+                None,
+            )
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: none,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: none,
+                }],
+            );
+        };
+        let cell_center = |app: &BijiApp, row: usize, col: usize| -> egui::Pos2 {
+            app.st
+                .editor
+                .as_ref()
+                .unwrap()
+                .tbl_cells
+                .iter()
+                .find(|(r, c, _)| *r == row && *c == col)
+                .map(|(_, _, rect)| rect.center())
+                .expect("单元格矩形应已透出")
+        };
+        let op_center = |app: &BijiApp, kind: &str| -> egui::Pos2 {
+            app.st
+                .editor
+                .as_ref()
+                .unwrap()
+                .tbl_ops
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .map(|(_, rect)| rect.center())
+                .expect("操作矩形应已透出")
+        };
+        let content = |app: &BijiApp| {
+            app.st
+                .editor
+                .as_ref()
+                .map(|e| e.content.clone())
+                .unwrap_or_default()
+        };
+        let tr_count = |app: &BijiApp| content(app).matches("<tr>").count();
+        let td_count = |app: &BijiApp| content(app).matches("<td>").count();
+        run(&ctx, &mut app, vec![]);
+        assert!(app.st.editor.as_ref().unwrap().preview);
+        let base_tr = tr_count(&app);
+        let base_td = td_count(&app);
+
+        // ---- 1) 点「丙」格（行1 列0）→ 就地编辑框出现 → 注入文本 → 点「✓ 完成格编辑」
+        let p = cell_center(&app, 1, 0);
+        click(&ctx, &mut app, p);
+        run(&ctx, &mut app, vec![]);
+        let cell = ctx
+            .read_response(egui::Id::new(("tblcell", 0usize, 1usize, 0usize)))
+            .expect("应进入单元格就地编辑")
+            .rect;
+        // 聚焦编辑框（点击）→ 注入文本（Event::Text 进入聚焦 TextEdit → 追加）
+        click(&ctx, &mut app, cell.center());
+        run(&ctx, &mut app, vec![egui::Event::Text("改丙".into())]);
+        let mut done = false;
+        for dy in (4..140).step_by(8) {
+            let pos = egui::pos2(cell.min.x + 8.0, cell.max.y + dy as f32);
+            click(&ctx, &mut app, pos);
+            if content(&app).contains("改丙") {
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "完成格编辑应把「改丙」回写源码");
+        assert!(app.st.editor.as_ref().unwrap().dirty);
+        assert_eq!(tr_count(&app), base_tr, "格编辑不动结构");
+
+        // ---- 2) ＋行 → tr+1（新行 2 格）
+        let p = op_center(&app, "addrow");
+        click(&ctx, &mut app, p);
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(tr_count(&app), base_tr + 1, "＋行应加一行");
+        assert_eq!(td_count(&app), base_td + 2, "新行应含两格");
+
+        // ---- 3) ＋列 → 每行 td+1
+        let p = op_center(&app, "addcol");
+        click(&ctx, &mut app, p);
+        run(&ctx, &mut app, vec![]);
+        assert_eq!(tr_count(&app), base_tr + 1);
+        assert_eq!(td_count(&app), base_td + 2 + (base_tr + 1), "＋列每行加一格");
+
+        // ---- 4) Ctrl+S 落库
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 900.0),
+            )),
+            modifiers: ctrl,
+            events: vec![egui::Event::Key {
+                key: egui::Key::S,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            app.handle_global_shortcuts(ctx);
+            app.draw_main(ctx);
+        });
+        let saved = app.service.store().get_note(uid).unwrap().enml;
+        assert!(
+            saved.contains("改丙") && saved.matches("<tr>").count() == base_tr + 1,
+            "表格编辑结果应落库"
+        );
     }
 
     #[test]
