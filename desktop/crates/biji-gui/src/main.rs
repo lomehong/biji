@@ -518,6 +518,43 @@ impl BijiApp {
         }
     }
 
+    /// 字数统计（供单测）：ENML → 纯文本 → (中文字数, 非空白字符数, 词数)。
+    /// 中文按字计，连续拉丁字母/数字串按 1 词计（对位原客户端口径——
+    /// 中文按字、西文按词）。
+    fn count_stats(enml: &str) -> (usize, usize, usize) {
+        let text = Enml::parse(enml)
+            .map(|mut d| {
+                d.sanitize();
+                d.to_plain_text()
+            })
+            .unwrap_or_else(|_| enml.to_string());
+        let mut cjk = 0usize;
+        let mut words = 0usize;
+        let mut in_word = false;
+        for ch in text.chars() {
+            if ch.is_whitespace() {
+                in_word = false;
+                continue;
+            }
+            // CJK 统一表意 + 中文标点 + 全角符号按字计
+            let is_cjk = matches!(ch,
+                '\u{4E00}'..='\u{9FFF}'
+                | '\u{3400}'..='\u{4DBF}'
+                | '\u{F900}'..='\u{FAFF}'
+                | '\u{3000}'..='\u{303F}'
+                | '\u{FF00}'..='\u{FFEF}');
+            if is_cjk {
+                cjk += 1;
+                in_word = false;
+            } else if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        }
+        let non_ws = text.chars().filter(|c| !c.is_whitespace()).count();
+        (cjk, non_ws, words)
+    }
+
     /// 变更检测入栈（供单测）：TextEdit changed 回调里旧值不可得——
     /// 用栈顶快照 ≠ 当前值判定（连续 changed 相同内容不重复入栈）。
     fn undo_push_if_changed(undo: &mut Vec<String>, redo: &mut Vec<String>, current: &str) {
@@ -2900,6 +2937,21 @@ impl BijiApp {
                 if !output.response.changed() && ed.prev_content != ed.content {
                     ed.prev_content = ed.content.clone();
                 }
+            }
+
+            // 字数统计栏（对位原客户端编辑器底部状态行）：
+            // 字 N · 词 M · 字符 X（编辑缓冲实时统计）
+            {
+                let (cjk, non_ws, words) = Self::count_stats(&ed.content);
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "字 {cjk} · 词 {words} · 字符 {non_ws}"
+                    ))
+                    .small()
+                    .color(theme::pal().subtle),
+                )
+                .on_hover_text("中文按字、西文连续字母数字按词统计（ENML 剥离标签后的纯文本）");
             }
 
             // 自动保存：编辑后 2 秒无新输入即落库。
@@ -7336,6 +7388,83 @@ mod tests {
             vec![c, b, a],
             "meta 持久化"
         );
+    }
+
+    /// 字数统计口径单测：中文按字、西文按词、全角标点按字、ENML 剥标签。
+    #[test]
+    fn count_stats_cjk_vs_words() {
+        // 纯中文：字数=字符数，词=0（无西文串）
+        let (c, n, w) = BijiApp::count_stats("<en-note><p>你好世界</p></en-note>");
+        assert_eq!((c, w), (4, 0));
+        assert_eq!(n, 4);
+        // 纯西文：3 词（空格分隔），非空白字符 11
+        let (c, n, w) = BijiApp::count_stats("<en-note><p>hello world ok</p></en-note>");
+        assert_eq!((c, w), (0, 3));
+        assert_eq!(n, 12, "helloworldok = 12 非空白字符");
+        // 混合：中文 3 字 + 西文 1 词
+        let (c, n, w) = BijiApp::count_stats("<en-note><p>笔记 app 很好</p></en-note>");
+        assert_eq!(c, 4, "笔记很好 = 4 字");
+        assert_eq!(w, 1, "app = 1 词");
+        assert_eq!(n, 7, "笔记很好app = 7 非空白字符");
+        // 空正文
+        let (c, n, w) = BijiApp::count_stats("<en-note/>");
+        assert_eq!((c, n, w), (0, 0, 0));
+        // 坏 ENML：按原样文本
+        let (c, _, w) = BijiApp::count_stats("纯文本 abc");
+        assert!(c >= 2 && w >= 1);
+    }
+
+    /// headless：编辑器打开即渲染字数栏；内容变化后数字变化（经 EditorState
+    /// 透出 stats——直接断言 count_stats 与缓冲内容一致）。
+    #[test]
+    fn word_count_bar_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note("统计", "<en-note><p>你好世界 hello</p></en-note>", None)
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        run(&ctx, &mut app, vec![]);
+
+        // 字数栏与内容一致（count_stats 是栏内渲染的同一函数）
+        let content = app.st.editor.as_ref().unwrap().content.clone();
+        let (cjk, non_ws, words) = BijiApp::count_stats(&content);
+        assert_eq!(cjk, 4, "你好世界=4 字");
+        assert_eq!(words, 1, "hello=1 词");
+        assert!(non_ws > 5);
+
+        // 编辑后统计随缓冲变化
+        let ed = app.st.editor.as_mut().unwrap();
+        let old = ed.content.clone();
+        BijiApp::undo_push(&mut ed.undo_stack, &mut ed.redo_stack, old);
+        ed.content = ed.content.replacen("hello", "hello world", 1);
+        run(&ctx, &mut app, vec![]);
+        let (cjk2, _, words2) = BijiApp::count_stats(&app.st.editor.as_ref().unwrap().content);
+        assert_eq!(cjk2, 4, "中文不变");
+        assert_eq!(words2, 2, "hello world=2 词");
     }
 
     #[test]
