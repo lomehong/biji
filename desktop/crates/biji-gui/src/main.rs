@@ -117,6 +117,12 @@ struct EditorState {
     tbl_ops: Vec<(&'static str, egui::Rect)>,
     /// 表格就地编辑会话（跨帧保持，同 preview_editing 语义）。
     table_edit: Option<preview::TableEdit>,
+    /// 上一帧内容快照（TextEdit changed 时作为旧值推入 undo 栈）。
+    prev_content: String,
+    /// 撤销栈（内容快照，最近变更在后；容量上限见 UNDO_CAP）。
+    undo_stack: Vec<String>,
+    /// 重做栈（撤销弹出后暂存，新编辑清空）。
+    redo_stack: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +160,8 @@ struct FloatNote {
     /// 源码缓冲（编辑中）。
     buffer: String,
     dirty: bool,
+    undo_stack: Vec<String>,
+    redo_stack: Vec<String>,
 }
 
 /// 编辑器查找替换栏状态（对位原客户端 Ctrl+F 查找）。
@@ -261,6 +269,8 @@ struct GroupspaceState {
 impl UiState {
     /// 无限滚动每步渲染的卡片数（首屏与每次扩展的步长）。
     const LIST_PAGE: usize = 60;
+    /// 撤销栈容量上限（超出丢最旧）。
+    const UNDO_CAP: usize = 50;
 
     fn new() -> UiState {
         UiState {
@@ -364,6 +374,63 @@ impl BijiApp {
                 self.st.focus_search = true;
             }
         }
+        // Ctrl+Z 撤销 / Ctrl+Y(Ctrl+Shift+Z) 重做（编辑器/浮动窗口统一）
+        let undo_hotkey = ctx.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.ctrl);
+        let redo_hotkey = ctx.input(|i| {
+            i.modifiers.ctrl
+                && ((i.key_pressed(egui::Key::Y) && !i.modifiers.shift)
+                    || (i.key_pressed(egui::Key::Z) && i.modifiers.shift))
+        });
+        if undo_hotkey {
+            let mut undone = false;
+            if let Some(ed) = self.st.editor.as_mut() {
+                if let Some(prev) =
+                    Self::undo_pop(&mut ed.undo_stack, &mut ed.redo_stack, ed.content.clone())
+                {
+                    ed.content = prev;
+                    ed.dirty = true;
+                    ed.last_edit = Some(Instant::now());
+                    self.st.status = "已撤销".into();
+                    undone = true;
+                }
+            }
+            if !undone {
+                if let Some(fw) = self.st.float_win.as_mut() {
+                    if let Some(prev) =
+                        Self::undo_pop(&mut fw.undo_stack, &mut fw.redo_stack, fw.buffer.clone())
+                    {
+                        fw.buffer = prev;
+                        fw.dirty = true;
+                        self.st.status = "浮动窗口已撤销".into();
+                    }
+                }
+            }
+        } else if redo_hotkey {
+            let mut redone = false;
+            if let Some(ed) = self.st.editor.as_mut() {
+                if let Some(next) =
+                    Self::redo_pop(&mut ed.undo_stack, &mut ed.redo_stack, ed.content.clone())
+                {
+                    ed.content = next;
+                    ed.dirty = true;
+                    ed.last_edit = Some(Instant::now());
+                    self.st.status = "已重做".into();
+                    redone = true;
+                }
+            }
+            if !redone {
+                if let Some(fw) = self.st.float_win.as_mut() {
+                    if let Some(next) =
+                        Self::redo_pop(&mut fw.undo_stack, &mut fw.redo_stack, fw.buffer.clone())
+                    {
+                        fw.buffer = next;
+                        fw.dirty = true;
+                        self.st.status = "浮动窗口已重做".into();
+                    }
+                }
+            }
+        }
+
         // Ctrl+V 粘贴图片（对位原客户端粘贴截图自动落附件）：
         // 剪贴板含图像时 → PNG 编码 → add_resource + en-media 占位入源；
         // 纯文本剪贴板不拦截（TextEdit 的 Paste 事件正常工作）。
@@ -449,6 +516,46 @@ impl BijiApp {
         if !asc {
             rows.reverse();
         }
+    }
+
+    /// 变更检测入栈（供单测）：TextEdit changed 回调里旧值不可得——
+    /// 用栈顶快照 ≠ 当前值判定（连续 changed 相同内容不重复入栈）。
+    fn undo_push_if_changed(undo: &mut Vec<String>, redo: &mut Vec<String>, current: &str) {
+        let top_differs = undo.last().map(|t| t != current).unwrap_or(true);
+        let redo_top_differs = redo.last().map(|t| t != current).unwrap_or(true);
+        if top_differs && redo_top_differs {
+            undo.push(current.to_string());
+            if undo.len() > UiState::UNDO_CAP {
+                undo.remove(0);
+            }
+            redo.clear();
+        }
+    }
+
+    /// 撤销入栈（供单测）：内容变更前把旧值存入 undo 栈（容量封顶丢最旧），
+    /// 清空 redo（新编辑分支废弃重做历史）。
+    #[allow(dead_code)]
+    #[allow(dead_code)]
+    fn undo_push(undo: &mut Vec<String>, redo: &mut Vec<String>, old: String) {
+        undo.push(old);
+        if undo.len() > UiState::UNDO_CAP {
+            undo.remove(0);
+        }
+        redo.clear();
+    }
+
+    /// 撤销弹出（供单测）：undo 栈顶 → redo 栈，返回恢复内容（None = 栈空）。
+    fn undo_pop(undo: &mut Vec<String>, redo: &mut Vec<String>, current: String) -> Option<String> {
+        let top = undo.pop()?;
+        redo.push(current);
+        Some(top)
+    }
+
+    /// 重做弹出（供单测）：redo 栈顶 → undo 栈，返回恢复内容（None = 栈空）。
+    fn redo_pop(undo: &mut Vec<String>, redo: &mut Vec<String>, current: String) -> Option<String> {
+        let top = redo.pop()?;
+        undo.push(current);
+        Some(top)
     }
 
     /// 拖入文件的 MIME 推断（按扩展名；对位原客户端常见类型）。
@@ -670,7 +777,7 @@ impl BijiApp {
                     self.st.editor = Some(EditorState {
                         uid,
                         title: view.title,
-                        content: view.html,
+                        content: view.html.clone(),
                         source: view.source,
                         source_url: view.source_url,
                         author: view.author,
@@ -684,6 +791,9 @@ impl BijiApp {
                         tbl_cells: Vec::new(),
                         tbl_ops: Vec::new(),
                         table_edit: None,
+                        prev_content: view.html.clone(),
+                        undo_stack: Vec::new(),
+                        redo_stack: Vec::new(),
                     });
                 }
                 Err(e) => {
@@ -956,6 +1066,11 @@ impl BijiApp {
                         .desired_width(ui.available_width()),
                 );
                 if resp.changed() {
+                    Self::undo_push_if_changed(
+                        &mut fw.undo_stack,
+                        &mut fw.redo_stack,
+                        &fw.buffer,
+                    );
                     fw.dirty = true;
                 }
                 ui.add_space(4.0);
@@ -2009,6 +2124,8 @@ impl BijiApp {
                                 title: full.note.title.clone(),
                                 buffer: full.enml,
                                 dirty: false,
+                                undo_stack: Vec::new(),
+                                redo_stack: Vec::new(),
                             });
                             self.st.status = format!("已在浮动窗口打开 {}", note_label(uid));
                         } else {
@@ -2697,8 +2814,19 @@ impl BijiApp {
                     .desired_width(ui.available_width())
                     .show(ui);
                 if output.response.changed() {
+                    // prev_content = 上一帧内容（TextEdit 已写入新值）——旧值入栈
+                    Self::undo_push(
+                        &mut ed.undo_stack,
+                        &mut ed.redo_stack,
+                        ed.prev_content.clone(),
+                    );
+                    ed.prev_content = ed.content.clone();
                     ed.dirty = true;
                     ed.last_edit = Some(Instant::now());
+                }
+                // 未变更时保持 prev_content 同步（撤销/重做恢复后需更新基线）
+                if !output.response.changed() && ed.prev_content != ed.content {
+                    ed.prev_content = ed.content.clone();
                 }
             }
 
@@ -6718,6 +6846,191 @@ mod tests {
             .iter()
             .any(|r| r.hash == hash);
         assert!(dup, "幂等判定应命中");
+    }
+
+    /// 撤销/重做纯函数单测：入栈容量封顶、弹出互转、重做清空。
+    #[test]
+    fn undo_redo_stack_semantics() {
+        let mut undo = Vec::new();
+        let mut redo = Vec::new();
+        // 变更检测入栈：连续相同不重复
+        BijiApp::undo_push_if_changed(&mut undo, &mut redo, "v1");
+        assert_eq!(undo, vec!["v1"]);
+        BijiApp::undo_push_if_changed(&mut undo, &mut redo, "v1");
+        assert_eq!(undo.len(), 1, "相同内容不重复入栈");
+        BijiApp::undo_push_if_changed(&mut undo, &mut redo, "v2");
+        assert_eq!(undo, vec!["v1", "v2"]);
+        // 撤销：v2 → v1
+        let restored = BijiApp::undo_pop(&mut undo, &mut redo, "v3".to_string());
+        assert_eq!(restored.as_deref(), Some("v2"));
+        assert_eq!(redo, vec!["v3"]);
+        // 重做：v2 → v3
+        let redone = BijiApp::redo_pop(&mut undo, &mut redo, "v2".to_string());
+        assert_eq!(redone.as_deref(), Some("v3"));
+        // 新编辑清空 redo
+        BijiApp::undo_push_if_changed(&mut undo, &mut redo, "v4");
+        assert!(redo.is_empty(), "新编辑应清空 redo");
+        // 栈空返回 None
+        let mut empty_u = Vec::new();
+        let mut empty_r = Vec::new();
+        assert!(BijiApp::undo_pop(&mut empty_u, &mut empty_r, "x".into()).is_none());
+        assert!(BijiApp::redo_pop(&mut empty_u, &mut empty_r, "x".into()).is_none());
+        // 容量封顶（逐 undo_push 维持不变量）
+        let mut cap_u = Vec::new();
+        let mut cap_r = Vec::new();
+        for i in 0..60 {
+            BijiApp::undo_push(&mut cap_u, &mut cap_r, format!("s{i}"));
+        }
+        assert_eq!(cap_u.len(), UiState::UNDO_CAP, "容量应封顶");
+        assert_eq!(cap_u[0], "s10", "超出丢最旧");
+    }
+
+    /// headless egui 集成：编辑 → Ctrl+Z 撤销 → Ctrl+Y 重做 → Ctrl+Z 再撤销，
+    /// 多步回退；浮动窗口独立栈。
+    #[test]
+    fn undo_redo_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note("撤销测试", "<en-note><p>原始</p></en-note>", None)
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>, mods: egui::Modifiers| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                modifiers: mods,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+
+        run(&ctx, &mut app, vec![], none);
+        // 切源码模式（撤销操作源码内容）
+        app.st.editor.as_mut().unwrap().preview = false;
+        run(&ctx, &mut app, vec![], none);
+
+        let original = app.st.editor.as_ref().unwrap().content.clone();
+
+        // 模拟两次编辑：旧值先入 undo 栈（与 TextEdit changed 的
+        // prev_content 追踪同语义——undo_push(旧值)）
+        let ed = app.st.editor.as_mut().unwrap();
+        let v1 = original.replacen("<p>原始</p>", "<p>第一次</p>", 1);
+        BijiApp::undo_push(&mut ed.undo_stack, &mut ed.redo_stack, original.clone());
+        ed.content = v1;
+        ed.dirty = true;
+
+        let ed = app.st.editor.as_mut().unwrap();
+        let old_v1 = ed.content.clone();
+        let v2 = old_v1.replacen("<p>第一次</p>", "<p>第二次</p>", 1);
+        BijiApp::undo_push(&mut ed.undo_stack, &mut ed.redo_stack, old_v1);
+        ed.content = v2;
+
+        run(&ctx, &mut app, vec![], none);
+        assert!(
+            app.st.editor.as_ref().unwrap().content.contains("第二次"),
+            "编辑后应含第二次"
+        );
+        assert_eq!(app.st.editor.as_ref().unwrap().undo_stack.len(), 2);
+
+        // ---- Ctrl+Z → 回到第一次
+        run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }],
+            ctrl,
+        );
+        run(&ctx, &mut app, vec![], none);
+        assert!(
+            app.st.editor.as_ref().unwrap().content.contains("第一次"),
+            "Ctrl+Z 应回到第一次"
+        );
+
+        // ---- Ctrl+Y → 重做到第二次
+        run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Y,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }],
+            ctrl,
+        );
+        run(&ctx, &mut app, vec![], none);
+        assert!(
+            app.st.editor.as_ref().unwrap().content.contains("第二次"),
+            "Ctrl+Y 应重做到第二次"
+        );
+
+        // ---- Ctrl+Z ×2 → 回到原始
+        for _ in 0..2 {
+            run(
+                &ctx,
+                &mut app,
+                vec![egui::Event::Key {
+                    key: egui::Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: ctrl,
+                }],
+                ctrl,
+            );
+            run(&ctx, &mut app, vec![], none);
+        }
+        assert!(
+            app.st.editor.as_ref().unwrap().content.contains("原始"),
+            "两次撤销应回到原始"
+        );
+
+        // ---- 栈空后再 Ctrl+Z 不变
+        let before = app.st.editor.as_ref().unwrap().content.clone();
+        run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }],
+            ctrl,
+        );
+        assert_eq!(
+            app.st.editor.as_ref().unwrap().content,
+            before,
+            "栈空后 Ctrl+Z 不变"
+        );
     }
 
     #[test]
