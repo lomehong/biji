@@ -78,28 +78,31 @@ pub static LIGHT: Palette = Palette {
     hovered: Color32::from_rgb(0xF0, 0xF0, 0xF3),
 };
 
-/// 深色主题（对位原客户端深色模式：近黑底、深灰卡片、浅色正文、亮绿）。
+/// 深色主题。暖灰取值来自同代印象笔记 Mac 深色模式实拍采样
+/// （spike/webref/cand1.jpg，appinn 2018 评测图，同代设计语言）：
+/// 侧栏 #3B3738 / 列表 #2E2A29 / 卡片 #353130 / 正文 #E0E0E0 /
+/// 日期蓝 #317AC7（暗底提亮为 #4E93DC）。
 pub static DARK: Palette = Palette {
     green: Color32::from_rgb(0x00, 0xC8, 0x80),
     green_dark: Color32::from_rgb(0x35, 0xD9, 0x92),
-    green_edge: Color32::from_rgb(0x3E, 0xE8, 0x7C),
-    green_tint: Color32::from_rgb(0x18, 0x38, 0x28),
-    sidebar_bg: Color32::from_rgb(0x23, 0x23, 0x26),
-    sel_bg: Color32::from_rgb(0x3C, 0x3C, 0x41),
-    sidebar_hover: Color32::from_rgb(0x2E, 0x2E, 0x33),
-    bg: Color32::from_rgb(0x1E, 0x1E, 0x20),
-    white: Color32::from_rgb(0x2A, 0x2A, 0x2E),
-    text: Color32::from_rgb(0xE8, 0xE8, 0xEC),
-    subtle: Color32::from_rgb(0x9A, 0x9A, 0xA2),
-    menu_text: Color32::from_rgb(0xC9, 0xC9, 0xCF),
-    date_blue: Color32::from_rgb(0x8A, 0xB8, 0xE8),
+    green_edge: Color32::from_rgb(0x31, 0xEF, 0x6F),
+    green_tint: Color32::from_rgb(0x1C, 0x3A, 0x2D),
+    sidebar_bg: Color32::from_rgb(0x3B, 0x37, 0x38),
+    sel_bg: Color32::from_rgb(0x47, 0x42, 0x40),
+    sidebar_hover: Color32::from_rgb(0x42, 0x3D, 0x3C),
+    bg: Color32::from_rgb(0x2E, 0x2A, 0x29),
+    white: Color32::from_rgb(0x35, 0x31, 0x30),
+    text: Color32::from_rgb(0xE0, 0xE0, 0xE0),
+    subtle: Color32::from_rgb(0xA2, 0x9C, 0x98),
+    menu_text: Color32::from_rgb(0xC6, 0xC1, 0xBD),
+    date_blue: Color32::from_rgb(0x4E, 0x93, 0xDC),
     ai_purple: Color32::from_rgb(0xA9, 0x9C, 0xFF),
-    hairline: Color32::from_rgb(0x3A, 0x3A, 0x40),
-    card_border: Color32::from_rgb(0x38, 0x38, 0x3E),
-    link: Color32::from_rgb(0x7C, 0x9C, 0xF5),
-    extreme: Color32::from_rgb(0x1A, 0x1A, 0x1C),
-    faint: Color32::from_rgb(0x23, 0x23, 0x25),
-    hovered: Color32::from_rgb(0x36, 0x36, 0x3B),
+    hairline: Color32::from_rgb(0x46, 0x41, 0x3F),
+    card_border: Color32::from_rgb(0x42, 0x3E, 0x3C),
+    link: Color32::from_rgb(0x5B, 0x9B, 0xD8),
+    extreme: Color32::from_rgb(0x26, 0x23, 0x22),
+    faint: Color32::from_rgb(0x2A, 0x26, 0x25),
+    hovered: Color32::from_rgb(0x42, 0x3D, 0x3C),
 };
 
 static DARK_MODE: AtomicBool = AtomicBool::new(false);
