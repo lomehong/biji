@@ -1,50 +1,129 @@
-//! 视觉主题——对位原 Windows 笔记客户端（v7.4.30.9439）的实测配色。
+//! 视觉主题——双主题（浅色 / 深色），浅色对位原 Windows 笔记客户端
+//! （v7.4.30.9439）的实测配色，深色对位原客户端深色模式。
 //!
-//! 全部取值来自原客户端实机截图的程序化采样（spike/ref-*.png）：
+//! 浅色取值来自原客户端实机截图的程序化采样（spike/ref-*.png）：
 //! 品牌绿 = 「新建笔记」绿圆/同步圆钮的填充色，选中卡 = 绿描边 + 浅绿底，
 //! 侧栏 = 浅灰底 + 选中项深灰底，正文区纯白，链接为经典蓝。
+//! 深色：近黑底 + 深灰卡片/侧栏、浅色正文、亮一档的品牌绿与链接蓝。
+//! 当前模式是进程级原子状态，选择持久化在库 meta 表（key = "theme"）。
 
 use egui::{Color32, Context, Stroke, Visuals};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// 品牌绿（新建/同步等品牌动作、选中态文字与图标、列表日期）。
-pub const GREEN: Color32 = Color32::from_rgb(0x00, 0xB8, 0x70);
-/// 深一档的绿：白底上的绿字（对比度略好）。
-pub const GREEN_DARK: Color32 = Color32::from_rgb(0x00, 0x9E, 0x60);
-/// 选中笔记卡的亮绿描边。
-pub const GREEN_EDGE: Color32 = Color32::from_rgb(0x3E, 0xE8, 0x7C);
-/// 选中笔记卡的浅绿底。
-pub const GREEN_TINT: Color32 = Color32::from_rgb(0xEE, 0xFE, 0xF5);
-/// 侧栏浅灰底。
-pub const SIDEBAR_BG: Color32 = Color32::from_rgb(0xEC, 0xEC, 0xF0);
-/// 侧栏选中项底（比 SIDEBAR_BG 深一档）。
-pub const SEL_BG: Color32 = Color32::from_rgb(0xE2, 0xE2, 0xE6);
-/// 列表/窗口底。
-pub const BG: Color32 = Color32::from_rgb(0xFC, 0xFC, 0xFC);
-/// 编辑器纯白。
-pub const WHITE: Color32 = Color32::WHITE;
-/// 主文本。
-pub const TEXT: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1E);
-/// 次级灰（计数、摘要、占位提示）。
-pub const SUBTLE: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x90);
-/// 发丝分隔线。
-pub const HAIRLINE: Color32 = Color32::from_rgb(0xE2, 0xE2, 0xE6);
-/// 链接蓝（经典下划线蓝）。
-pub const LINK: Color32 = Color32::from_rgb(0x24, 0x56, 0xDC);
-/// 标注画布窗口深底（对位原 markup 编辑器的深色工作区）。
-pub const MARKUP_BG: Color32 = Color32::from_rgb(0x2B, 0x2E, 0x33);
+/// 双主题调色板（字段含义见各主题实例）。
+pub struct Palette {
+    /// 品牌绿（新建/同步等品牌动作、选中态文字与图标、列表日期）。
+    pub green: Color32,
+    /// 深一档的绿：浅色下白底绿字；深色下用更亮的绿保证对比。
+    pub green_dark: Color32,
+    /// 选中笔记卡的亮绿描边。
+    pub green_edge: Color32,
+    /// 选中笔记卡的浅绿底（深色下为深绿底）。
+    pub green_tint: Color32,
+    /// 侧栏底色。
+    pub sidebar_bg: Color32,
+    /// 侧栏选中项底。
+    pub sel_bg: Color32,
+    /// 侧栏悬停底。
+    pub sidebar_hover: Color32,
+    /// 列表/窗口底。
+    pub bg: Color32,
+    /// 卡片/弹窗底（浅色 = 纯白）。
+    pub white: Color32,
+    /// 主文本。
+    pub text: Color32,
+    /// 次级灰（计数、摘要、占位提示）。
+    pub subtle: Color32,
+    /// 发丝分隔线。
+    pub hairline: Color32,
+    /// 链接蓝（经典下划线蓝；深色下提亮）。
+    pub link: Color32,
+    /// 输入底/极底。
+    pub extreme: Color32,
+    /// 弱底（faint）。
+    pub faint: Color32,
+    /// 控件悬停底。
+    pub hovered: Color32,
+}
 
-/// 应用浅色主题（对位原客户端的浅色 UI）。
+/// 浅色主题（对位原客户端浅色 UI，逐值保持既有取色）。
+pub static LIGHT: Palette = Palette {
+    green: Color32::from_rgb(0x00, 0xB8, 0x70),
+    green_dark: Color32::from_rgb(0x00, 0x9E, 0x60),
+    green_edge: Color32::from_rgb(0x3E, 0xE8, 0x7C),
+    green_tint: Color32::from_rgb(0xEE, 0xFE, 0xF5),
+    sidebar_bg: Color32::from_rgb(0xEC, 0xEC, 0xF0),
+    sel_bg: Color32::from_rgb(0xE2, 0xE2, 0xE6),
+    sidebar_hover: Color32::from_rgb(0xE6, 0xE6, 0xEA),
+    bg: Color32::from_rgb(0xFC, 0xFC, 0xFC),
+    white: Color32::WHITE,
+    text: Color32::from_rgb(0x1A, 0x1A, 0x1E),
+    subtle: Color32::from_rgb(0x8A, 0x8A, 0x90),
+    hairline: Color32::from_rgb(0xE2, 0xE2, 0xE6),
+    link: Color32::from_rgb(0x24, 0x56, 0xDC),
+    extreme: Color32::from_rgb(0xF4, 0xF4, 0xF6),
+    faint: Color32::from_rgb(0xF4, 0xF4, 0xF6),
+    hovered: Color32::from_rgb(0xF0, 0xF0, 0xF3),
+};
+
+/// 深色主题（对位原客户端深色模式：近黑底、深灰卡片、浅色正文、亮绿）。
+pub static DARK: Palette = Palette {
+    green: Color32::from_rgb(0x00, 0xC8, 0x80),
+    green_dark: Color32::from_rgb(0x35, 0xD9, 0x92),
+    green_edge: Color32::from_rgb(0x3E, 0xE8, 0x7C),
+    green_tint: Color32::from_rgb(0x18, 0x38, 0x28),
+    sidebar_bg: Color32::from_rgb(0x23, 0x23, 0x26),
+    sel_bg: Color32::from_rgb(0x3C, 0x3C, 0x41),
+    sidebar_hover: Color32::from_rgb(0x2E, 0x2E, 0x33),
+    bg: Color32::from_rgb(0x1E, 0x1E, 0x20),
+    white: Color32::from_rgb(0x2A, 0x2A, 0x2E),
+    text: Color32::from_rgb(0xE8, 0xE8, 0xEC),
+    subtle: Color32::from_rgb(0x9A, 0x9A, 0xA2),
+    hairline: Color32::from_rgb(0x3A, 0x3A, 0x40),
+    link: Color32::from_rgb(0x7C, 0x9C, 0xF5),
+    extreme: Color32::from_rgb(0x1A, 0x1A, 0x1C),
+    faint: Color32::from_rgb(0x23, 0x23, 0x25),
+    hovered: Color32::from_rgb(0x36, 0x36, 0x3B),
+};
+
+static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+/// 当前是否深色模式（进程级状态，随库 meta 持久化恢复）。
+pub fn is_dark() -> bool {
+    DARK_MODE.load(Ordering::Relaxed)
+}
+
+/// 切换当前模式（启动时由库 meta 恢复，运行期由查看菜单/工具栏切换）。
+pub fn set_dark(on: bool) {
+    DARK_MODE.store(on, Ordering::Relaxed);
+}
+
+/// 当前调色板。
+pub fn pal() -> &'static Palette {
+    if is_dark() {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
+
+/// 应用当前主题（每帧调用；annotator 的局部深色画布后由本函数恢复）。
 pub fn apply(ctx: &Context) {
-    let mut v = Visuals::light();
-    v.override_text_color = Some(TEXT);
-    v.panel_fill = BG;
-    v.window_fill = WHITE;
-    v.extreme_bg_color = Color32::from_rgb(0xF4, 0xF4, 0xF6);
-    v.faint_bg_color = Color32::from_rgb(0xF4, 0xF4, 0xF6);
-    v.hyperlink_color = LINK;
-    v.selection.bg_fill = GREEN.gamma_multiply(0.22);
-    v.selection.stroke = Stroke::new(1.0_f32, GREEN);
-    v.window_stroke = Stroke::new(1.0_f32, HAIRLINE);
+    let (p, dark) = if is_dark() {
+        (&DARK, true)
+    } else {
+        (&LIGHT, false)
+    };
+    let mut v = if dark { Visuals::dark() } else { Visuals::light() };
+    v.override_text_color = Some(p.text);
+    v.panel_fill = p.bg;
+    v.window_fill = p.white;
+    v.extreme_bg_color = p.extreme;
+    v.faint_bg_color = p.faint;
+    v.hyperlink_color = p.link;
+    v.selection.bg_fill = p.green.gamma_multiply(if dark { 0.30 } else { 0.22 });
+    v.selection.stroke = Stroke::new(1.0_f32, p.green);
+    v.window_stroke = Stroke::new(1.0_f32, p.hairline);
     v.window_rounding = 6.0.into();
     v.window_shadow = egui::epaint::Shadow::NONE;
     for w in [
@@ -56,13 +135,13 @@ pub fn apply(ctx: &Context) {
     ] {
         w.rounding = 6.0.into();
     }
-    v.widgets.inactive.bg_fill = WHITE;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    v.widgets.hovered.bg_fill = Color32::from_rgb(0xF0, 0xF0, 0xF3);
-    v.widgets.active.bg_fill = SEL_BG;
-    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, GREEN_DARK);
+    v.widgets.inactive.bg_fill = p.white;
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.text);
+    v.widgets.hovered.bg_fill = p.hovered;
+    v.widgets.active.bg_fill = p.sel_bg;
+    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, p.green_dark);
     // 面板分隔线（egui 浅色默认纯黑，实测在侧栏右缘成粗黑带）改为发丝线
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, HAIRLINE);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.hairline);
     ctx.set_visuals(v);
     // 间距/字号在 egui 0.29 挂在 Style 上而非 Visuals。
     // 字号比例对位原客户端：正文 15 / 标题 24 / 按钮 14 / 小字 12（egui 默认 12.5/18/12.5/9）。
@@ -95,15 +174,16 @@ pub fn apply(ctx: &Context) {
     });
 }
 
-/// 标注画布窗口的深色视觉（局部生效，下帧开头由 `apply` 恢复浅色）。
+/// 标注画布窗口的深色视觉（局部生效，下帧开头由 `apply` 恢复当前主题）。
 pub fn apply_dark(ctx: &Context) {
+    let markup_bg = Color32::from_rgb(0x2B, 0x2E, 0x33);
     let mut v = Visuals::dark();
-    v.panel_fill = MARKUP_BG;
-    v.window_fill = MARKUP_BG;
+    v.panel_fill = markup_bg;
+    v.window_fill = markup_bg;
     v.extreme_bg_color = Color32::from_rgb(0x22, 0x24, 0x28);
     v.faint_bg_color = Color32::from_rgb(0x36, 0x39, 0x3F);
-    v.selection.bg_fill = GREEN.gamma_multiply(0.30);
-    v.selection.stroke = Stroke::new(1.0_f32, GREEN);
+    v.selection.bg_fill = LIGHT.green.gamma_multiply(0.30);
+    v.selection.stroke = Stroke::new(1.0_f32, LIGHT.green);
     for w in [
         &mut v.widgets.noninteractive,
         &mut v.widgets.inactive,
@@ -121,8 +201,8 @@ pub fn apply_dark(ctx: &Context) {
 
 /// 品牌绿填充药丸按钮：同步、标注画布的保存写回。
 pub fn green_button<'a>(text: &'a str) -> egui::Button<'a> {
-    egui::Button::new(egui::RichText::new(text).color(WHITE))
-        .fill(GREEN)
+    egui::Button::new(egui::RichText::new(text).color(Color32::WHITE))
+        .fill(pal().green)
         .stroke(Stroke::NONE)
         .rounding(12.0)
 }
@@ -141,16 +221,17 @@ pub fn nav_row_sized(
     label: &str,
     selected: bool,
 ) -> egui::Response {
+    let p = pal();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click());
     let fill = if selected {
-        SEL_BG
+        p.sel_bg
     } else if resp.hovered() {
-        Color32::from_rgb(0xE6, 0xE6, 0xEA)
+        p.sidebar_hover
     } else {
-        SIDEBAR_BG
+        p.sidebar_bg
     };
     ui.painter().rect_filled(rect, 6.0, fill);
-    let text_color = if selected { GREEN_DARK } else { TEXT };
+    let text_color = if selected { p.green_dark } else { p.text };
     // 图标/文字两段固定 x 排版：emoji 步进宽度不固定，合并成串会让文字
     // 起点漂移；拆两段后文字与分区头标签严格同轨（x+30）。
     let icon_galley = ui.painter().layout_no_wrap(
@@ -187,12 +268,13 @@ pub fn section_header(
 ) -> bool {
     let mut plus_clicked = false;
     ui.horizontal(|ui| {
+        let p = pal();
         let w = ui.available_width() - if trailing_plus { 34.0 } else { 0.0 };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::click());
         if resp.hovered() {
-            ui.painter().rect_filled(rect, 6.0, Color32::from_rgb(0xE6, 0xE6, 0xEA));
+            ui.painter().rect_filled(rect, 6.0, p.sidebar_hover);
         }
-        let gray = SUBTLE;
+        let gray = p.subtle;
         let arrow = if *open { "▼" } else { "▶" };
         let arrow_galley = ui.painter().layout_no_wrap(
             arrow.to_string(),
@@ -226,8 +308,7 @@ pub fn section_header(
             );
             let presp = ui.interact(prect, egui::Id::new(("section-plus", label)), egui::Sense::click());
             if presp.hovered() {
-                ui.painter()
-                    .rect_filled(prect, 6.0, Color32::from_rgb(0xE2, 0xE2, 0xE6));
+                ui.painter().rect_filled(prect, 6.0, p.sel_bg);
             }
             let plus_galley = ui.painter().layout_no_wrap(
                 "＋".to_string(),

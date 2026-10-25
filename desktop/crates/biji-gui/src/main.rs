@@ -257,6 +257,9 @@ struct BijiApp {
 
 impl BijiApp {
     fn new(service: NoteService, cmd_rx: mpsc::Receiver<NodeWebkitCommand>) -> BijiApp {
+        // 主题随库持久化（meta 表 key = "theme"），默认浅色
+        let dark = service.store().meta_get("theme").as_deref() == Some("dark");
+        theme::set_dark(dark);
         let mut app = BijiApp {
             service,
             cmd_rx,
@@ -264,6 +267,21 @@ impl BijiApp {
         };
         app.refresh_rows();
         app
+    }
+
+    /// 切换浅色/深色主题并写入库 meta（重启后保持）。
+    fn toggle_theme(&mut self) {
+        let on = !theme::is_dark();
+        theme::set_dark(on);
+        let label = if on { "深色" } else { "浅色" };
+        match self
+            .service
+            .store()
+            .meta_set("theme", if on { "dark" } else { "light" })
+        {
+            Ok(()) => self.st.status = format!("已切换到{label}模式"),
+            Err(e) => self.st.status = format!("主题切换成功但保存失败: {e}"),
+        }
     }
 
     // ----- 数据刷新 -----
@@ -661,19 +679,19 @@ impl BijiApp {
 
     /// 菜单栏（对位原客户端 文件/编辑/查看/笔记/格式/工具/帮助 一行）。
     fn draw_menubar(&mut self, ctx: &egui::Context) {
-        let menu_text = |s: &str| egui::RichText::new(s).size(13.0).color(theme::TEXT);
+        let menu_text = |s: &str| egui::RichText::new(s).size(13.0).color(theme::pal().text);
         egui::TopBottomPanel::top("menubar")
             .frame(
                 egui::Frame::default()
-                    .fill(theme::WHITE)
+                    .fill(theme::pal().white)
                     .inner_margin(egui::Margin::symmetric(8.0, 2.0)),
             )
             .show(ctx, |ui| {
                 // 菜单按钮扁平化：静态纯文字，hover 才显灰底（对位原生菜单栏）
                 {
                     let w = &mut ui.style_mut().visuals.widgets;
-                    w.inactive.bg_fill = theme::WHITE;
-                    w.inactive.weak_bg_fill = theme::WHITE;
+                    w.inactive.bg_fill = theme::pal().white;
+                    w.inactive.weak_bg_fill = theme::pal().white;
                     w.inactive.bg_stroke = egui::Stroke::NONE;
                     w.hovered.bg_fill = egui::Color32::from_rgb(0xEF, 0xEF, 0xF2);
                     w.hovered.weak_bg_fill = egui::Color32::from_rgb(0xEF, 0xEF, 0xF2);
@@ -710,6 +728,18 @@ impl BijiApp {
                         if ui.button("☰ 紧凑列表").clicked() {
                             self.st.list_compact = true;
                             self.refresh_rows();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui
+                            .button(if theme::is_dark() {
+                                "☀️ 浅色模式"
+                            } else {
+                                "🌙 深色模式"
+                            })
+                            .clicked()
+                        {
+                            self.toggle_theme();
                             ui.close_menu();
                         }
                         ui.separator();
@@ -751,7 +781,7 @@ impl BijiApp {
                             ui.label(
                                 egui::RichText::new("（未打开笔记）")
                                     .small()
-                                    .color(theme::SUBTLE),
+                                    .color(theme::pal().subtle),
                             );
                         }
                     });
@@ -832,7 +862,7 @@ impl BijiApp {
                         ui.label(
                             egui::RichText::new(user)
                                 .small()
-                                .color(theme::SUBTLE),
+                                .color(theme::pal().subtle),
                         );
                         let pending = self.pending_sync_count();
                         if ui
@@ -840,6 +870,18 @@ impl BijiApp {
                             .clicked()
                         {
                             self.do_sync();
+                        }
+                        // 主题快捷切换（对位原客户端工具栏的明暗切换钮）
+                        if ui
+                            .button(if theme::is_dark() { "☀️" } else { "🌙" })
+                            .on_hover_text(if theme::is_dark() {
+                                "切换到浅色模式"
+                            } else {
+                                "切换到深色模式"
+                            })
+                            .clicked()
+                        {
+                            self.toggle_theme();
                         }
                     });
                 });
@@ -878,7 +920,7 @@ impl BijiApp {
             .default_width(190.0)
             .frame(
                 egui::Frame::default()
-                    .fill(theme::SIDEBAR_BG)
+                    .fill(theme::pal().sidebar_bg)
                     .inner_margin(egui::Margin::same(8.0)),
             )
             // 原客户端侧栏与内容区无可见分隔线，靠底色区分
@@ -886,20 +928,20 @@ impl BijiApp {
                 // 新建笔记：白药丸 + 绿圆＋（对位原客户端侧栏顶部组合控件；
                 // 内边距 10px 与导航行图标左缘对齐）
                 let pill = egui::Frame::default()
-                    .fill(theme::WHITE)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::HAIRLINE))
+                    .fill(theme::pal().white)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
                     .rounding(15.0)
                     .inner_margin(egui::Margin::symmetric(10.0, 4.0));
                 let pill_inner = pill.show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let plus = egui::Button::new(
-                            egui::RichText::new("＋").small().color(theme::WHITE),
+                            egui::RichText::new("＋").small().color(theme::pal().white),
                         )
-                        .fill(theme::GREEN)
+                        .fill(theme::pal().green)
                         .stroke(egui::Stroke::NONE)
                         .rounding(11.0);
                         ui.add_sized([22.0, 22.0], plus);
-                        ui.label(egui::RichText::new("新建笔记").color(theme::TEXT));
+                        ui.label(egui::RichText::new("新建笔记").color(theme::pal().text));
                     });
                 });
                 if ui
@@ -952,9 +994,9 @@ impl BijiApp {
                                             egui::Button::new(
                                                 egui::RichText::new("✕")
                                                     .small()
-                                                    .color(theme::SUBTLE),
+                                                    .color(theme::pal().subtle),
                                             )
-                                            .fill(theme::SIDEBAR_BG)
+                                            .fill(theme::pal().sidebar_bg)
                                             .stroke(egui::Stroke::NONE),
                                         )
                                         .on_hover_text("删除笔记本")
@@ -965,7 +1007,7 @@ impl BijiApp {
                                     ui.label(
                                         egui::RichText::new(format!("{}", nb.note_count))
                                             .small()
-                                            .color(theme::SUBTLE),
+                                            .color(theme::pal().subtle),
                                     );
                                 },
                             );
@@ -1091,7 +1133,7 @@ impl BijiApp {
                     egui::RichText::new(format!("{header} ▼"))
                         .size(17.0)
                         .strong()
-                        .color(theme::TEXT),
+                        .color(theme::pal().text),
                 );
                 ui.add_space(2.0);
                 // 列表头控件行（对位原客户端：条数 + 排序下拉 + 方向 + 视图切换）
@@ -1100,7 +1142,7 @@ impl BijiApp {
                     ui.label(
                         egui::RichText::new(format!("{}条笔记", self.st.rows.len()))
                             .small()
-                            .color(theme::SUBTLE),
+                            .color(theme::pal().subtle),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -1164,7 +1206,7 @@ impl BijiApp {
                         .collect();
                     if rows.is_empty() {
                         ui.add_space(20.0);
-                        ui.label(egui::RichText::new("（空）").color(theme::SUBTLE));
+                        ui.label(egui::RichText::new("（空）").color(theme::pal().subtle));
                     }
                     for row in rows {
                         let selected = self.st.selected_note == Some(row.uid);
@@ -1177,15 +1219,15 @@ impl BijiApp {
                                         egui::RichText::new(if selected { "●" } else { "○" })
                                             .small()
                                             .color(if selected {
-                                                theme::GREEN
+                                                theme::pal().green
                                             } else {
-                                                theme::SUBTLE
+                                                theme::pal().subtle
                                             }),
                                     );
                                     ui.label(
                                         egui::RichText::new(&row.title)
                                             .size(13.0)
-                                            .color(theme::TEXT),
+                                            .color(theme::pal().text),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -1193,7 +1235,7 @@ impl BijiApp {
                                             ui.label(
                                                 egui::RichText::new(util::fmt_date(row.date))
                                                     .small()
-                                                    .color(theme::SUBTLE),
+                                                    .color(theme::pal().subtle),
                                             );
                                         },
                                     );
@@ -1248,17 +1290,17 @@ impl BijiApp {
                         // （对位原客户端笔记列表的卡片选中态）
                         let frame = egui::Frame::default()
                             .fill(if selected {
-                                theme::GREEN_TINT
+                                theme::pal().green_tint
                             } else {
-                                theme::WHITE
+                                theme::pal().white
                             })
                             .rounding(8.0)
                             .stroke(egui::Stroke::new(
                                 if selected { 2.0_f32 } else { 1.0_f32 },
                                 if selected {
-                                    theme::GREEN_EDGE
+                                    theme::pal().green_edge
                                 } else {
-                                    theme::HAIRLINE
+                                    theme::pal().hairline
                                 },
                             ))
                             .inner_margin(egui::Margin::same(10.0));
@@ -1268,26 +1310,26 @@ impl BijiApp {
                                 egui::RichText::new(&row.title)
                                     .size(15.0)
                                     .strong()
-                                    .color(theme::TEXT),
+                                    .color(theme::pal().text),
                             );
                             if !row.snippet.is_empty() {
                                 ui.label(
                                     egui::RichText::new(&row.snippet)
                                         .small()
-                                        .color(theme::SUBTLE),
+                                        .color(theme::pal().subtle),
                                 );
                             }
                             ui.horizontal(|ui| {
                                 ui.label(
                                     egui::RichText::new(util::fmt_date(row.date))
                                         .small()
-                                        .color(theme::GREEN),
+                                        .color(theme::pal().green),
                                 );
                                 if let Some(tags) = &row.tags {
                                     ui.label(
                                         egui::RichText::new(format!("🏷 {tags}"))
                                             .small()
-                                            .color(theme::SUBTLE),
+                                            .color(theme::pal().subtle),
                                     );
                                 }
                             });
@@ -1341,7 +1383,7 @@ impl BijiApp {
                         let more = ui.label(
                             egui::RichText::new("↓ 继续滚动加载更多…")
                                 .small()
-                                .color(theme::SUBTLE),
+                                .color(theme::pal().subtle),
                         );
                         if more.rect.intersects(ui.clip_rect()) {
                             self.st.list_limit =
@@ -1425,10 +1467,10 @@ impl BijiApp {
                                         egui::Button::new(
                                             egui::RichText::new(format!("📓 {name}"))
                                                 .small()
-                                                .color(theme::TEXT),
+                                                .color(theme::pal().text),
                                         )
-                                        .fill(theme::BG)
-                                        .stroke(egui::Stroke::new(1.0_f32, theme::HAIRLINE))
+                                        .fill(theme::pal().bg)
+                                        .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
                                         .rounding(12.0),
                                     )
                                     .on_hover_text("在侧栏打开该笔记本")
@@ -1441,7 +1483,7 @@ impl BijiApp {
                         ui.label(
                             egui::RichText::new(util::fmt_epoch(full.note.date_updated))
                                 .small()
-                                .color(theme::SUBTLE),
+                                .color(theme::pal().subtle),
                         );
                         if ui
                             .small_button("ℹ")
@@ -1474,9 +1516,9 @@ impl BijiApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("● 保存").color(theme::GREEN_DARK),
+                                egui::RichText::new("● 保存").color(theme::pal().green_dark),
                             )
-                            .fill(theme::BG)
+                            .fill(theme::pal().bg)
                             .stroke(egui::Stroke::NONE),
                         )
                         .clicked()
@@ -1484,7 +1526,7 @@ impl BijiApp {
                         action = Action::Save;
                     }
                 } else {
-                    ui.label(egui::RichText::new("已保存").small().color(theme::SUBTLE));
+                    ui.label(egui::RichText::new("已保存").small().color(theme::pal().subtle));
                 }
                 ui.separator();
                 if ui.selectable_label(!ed.preview, "✏️ 编辑").clicked() {
@@ -1499,8 +1541,8 @@ impl BijiApp {
                 ui.separator();
                 if ui
                     .add(
-                        egui::Button::new(egui::RichText::new("🗑 删除").color(theme::SUBTLE))
-                            .fill(theme::BG)
+                        egui::Button::new(egui::RichText::new("🗑 删除").color(theme::pal().subtle))
+                            .fill(theme::pal().bg)
                             .stroke(egui::Stroke::NONE),
                     )
                     .clicked()
@@ -1509,8 +1551,8 @@ impl BijiApp {
                 }
                 if ui
                     .add(
-                        egui::Button::new(egui::RichText::new("▶ 放映本篇").color(theme::SUBTLE))
-                            .fill(theme::BG)
+                        egui::Button::new(egui::RichText::new("▶ 放映本篇").color(theme::pal().subtle))
+                            .fill(theme::pal().bg)
                             .stroke(egui::Stroke::NONE),
                     )
                     .clicked()
@@ -1600,7 +1642,7 @@ impl BijiApp {
                     ui.menu_button(
                         egui::RichText::new("🏷 添加标签…")
                             .small()
-                            .color(theme::GREEN_DARK),
+                            .color(theme::pal().green_dark),
                         |ui| {
                             let tags = self.service.store().list_tags().unwrap_or_default();
                             let mut any = false;
@@ -1618,15 +1660,15 @@ impl BijiApp {
                                 ui.label(
                                     egui::RichText::new("（没有可添加的标签）")
                                         .small()
-                                        .color(theme::SUBTLE),
+                                        .color(theme::pal().subtle),
                                 );
                             }
                         },
                     );
                     for (t_uid, t_name) in &attached {
                         let chip = egui::Frame::default()
-                            .fill(theme::WHITE)
-                            .stroke(egui::Stroke::new(1.0_f32, theme::HAIRLINE))
+                            .fill(theme::pal().white)
+                            .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
                             .rounding(10.0)
                             .inner_margin(egui::Margin::symmetric(8.0, 2.0));
                         chip.show(ui, |ui| {
@@ -1634,14 +1676,14 @@ impl BijiApp {
                                 ui.label(
                                     egui::RichText::new(format!("🏷 {t_name}"))
                                         .small()
-                                        .color(theme::TEXT),
+                                        .color(theme::pal().text),
                                 );
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            egui::RichText::new("✕").small().color(theme::SUBTLE),
+                                            egui::RichText::new("✕").small().color(theme::pal().subtle),
                                         )
-                                        .fill(theme::WHITE)
+                                        .fill(theme::pal().white)
                                         .stroke(egui::Stroke::NONE),
                                     )
                                     .on_hover_text("移除标签")
@@ -2582,28 +2624,28 @@ impl BijiApp {
                                 .min_col_width(72.0)
                                 .show(ui, |ui| {
                                     ui.label(
-                                        egui::RichText::new("创建时间").color(theme::SUBTLE),
+                                        egui::RichText::new("创建时间").color(theme::pal().subtle),
                                     );
                                     ui.label(util::fmt_epoch(full.note.date_created));
                                     ui.end_row();
                                     ui.label(
-                                        egui::RichText::new("更新时间").color(theme::SUBTLE),
+                                        egui::RichText::new("更新时间").color(theme::pal().subtle),
                                     );
                                     ui.label(util::fmt_epoch(full.note.date_updated));
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("字数").color(theme::SUBTLE));
+                                    ui.label(egui::RichText::new("字数").color(theme::pal().subtle));
                                     ui.label(format!("{words} 字"));
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("笔记本").color(theme::SUBTLE));
+                                    ui.label(egui::RichText::new("笔记本").color(theme::pal().subtle));
                                     ui.label(nb_name);
                                     ui.end_row();
-                                    ui.label(egui::RichText::new("标签").color(theme::SUBTLE));
+                                    ui.label(egui::RichText::new("标签").color(theme::pal().subtle));
                                     ui.label(full.note.tags_text.unwrap_or_else(|| "—".into()));
                                     ui.end_row();
                                     if let Some(url) =
                                         full.note.source_url.as_deref().filter(|s| !s.is_empty())
                                     {
-                                        ui.label(egui::RichText::new("来源").color(theme::SUBTLE));
+                                        ui.label(egui::RichText::new("来源").color(theme::pal().subtle));
                                         ui.label(url.to_string());
                                         ui.end_row();
                                     }
@@ -3562,6 +3604,141 @@ mod tests {
     enum ConfirmKind {
         Notebook,
         Tag,
+    }
+
+    /// headless egui 集成：查看菜单 → 深色模式 → 全局/visuals/调色板/库 meta
+    /// 四路生效；重开同一库恢复深色；切回浅色持久化。
+    #[test]
+    fn dark_mode_toggles_and_persists_headless() {
+        theme::set_dark(false);
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("theme.exb");
+
+        {
+            let store = Store::open(&db).unwrap();
+            let (tx, _rx) = mpsc::channel();
+            let mut app = BijiApp::new(
+                NoteService::new(store, Box::new(CmdFrontend { tx })),
+                mpsc::channel().1,
+            );
+            let ctx = egui::Context::default();
+            let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+                theme::apply(ctx); // 对位 update() 每帧先应用主题
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| app.draw_main(ctx));
+            };
+            let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+                let mods = egui::Modifiers::default();
+                run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+                run(
+                    ctx,
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: mods,
+                    }],
+                );
+                run(
+                    ctx,
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: mods,
+                    }],
+                );
+            };
+
+            // 初始浅色
+            run(&ctx, &mut app, vec![]);
+            assert!(!theme::is_dark());
+            assert!(!ctx.style().visuals.dark_mode, "初始应为浅色 visuals");
+
+            // 点「查看(V)」菜单按钮（菜单栏第 3 个菜单，扫 x 段）
+            let mut menu: Option<(egui::Pos2, egui::Rect)> = None;
+            for xi in (200..320).step_by(10) {
+                let pos = egui::pos2(xi as f32, 20.0);
+                click(&ctx, &mut app, pos);
+                if let Some(r) = ctx.memory(|m| {
+                    let mut best: Option<egui::Rect> = None;
+                    let mut bd = f32::MAX;
+                    for layer in m.layer_ids() {
+                        if layer.order != egui::Order::Foreground {
+                            continue;
+                        }
+                        if let Some(r) = m.area_rect(layer.id) {
+                            if r.width() < 30.0 || r.width() > 460.0 || r.height() > 460.0 {
+                                continue;
+                            }
+                            let d = r.center().distance(pos);
+                            if d < 140.0 && d < bd {
+                                bd = d;
+                                best = Some(r);
+                            }
+                        }
+                    }
+                    best
+                }) {
+                    menu = Some((pos, r));
+                    break;
+                }
+            }
+            let (btn_pos, menu) = menu.expect("点击查看菜单应展开下拉");
+            // 菜单项序：卡片视图 / 紧凑列表 / ─ / 深色模式 / ─ / 演示模式…
+            // 每轮先重开菜单再试点项（误点其它项会关菜单）
+            let mut toggled = false;
+            for dy in (48..160).step_by(6) {
+                click(&ctx, &mut app, btn_pos);
+                click(
+                    &ctx,
+                    &mut app,
+                    egui::pos2(menu.center().x, menu.min.y + dy as f32),
+                );
+                if theme::is_dark() {
+                    toggled = true;
+                    break;
+                }
+            }
+            assert!(toggled, "应能点到「🌙 深色模式」");
+            // visuals 与面板底色在下一帧生效
+            run(&ctx, &mut app, vec![]);
+            assert!(ctx.style().visuals.dark_mode, "切换后 visuals 应为深色");
+            assert_eq!(ctx.style().visuals.panel_fill, theme::DARK.bg);
+            assert_eq!(ctx.style().visuals.window_fill, theme::DARK.white);
+            assert_eq!(
+                app.service.store().meta_get("theme").as_deref(),
+                Some("dark"),
+                "主题选择应写入库 meta"
+            );
+        }
+
+        // 模拟重启：重置全局为默认浅色，重开同一库应恢复深色
+        theme::set_dark(false);
+        let store2 = Store::open(&db).unwrap();
+        let (tx2, _rx2) = mpsc::channel();
+        let mut app2 = BijiApp::new(
+            NoteService::new(store2, Box::new(CmdFrontend { tx: tx2 })),
+            mpsc::channel().1,
+        );
+        assert!(theme::is_dark(), "重启后应从 meta 恢复深色模式");
+
+        // 切回浅色（工具栏快捷钮同一路径）并持久化
+        app2.toggle_theme();
+        assert!(!theme::is_dark());
+        assert_eq!(
+            app2.service.store().meta_get("theme").as_deref(),
+            Some("light")
+        );
     }
 
     #[test]
