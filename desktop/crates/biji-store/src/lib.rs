@@ -646,6 +646,29 @@ impl Store {
         Ok(uid)
     }
 
+    /// 重命名标签（journal 记 update，同步轮次推 updateTag 新名；
+    /// 关联笔记的 tags 派生文本同步刷新）。
+    pub fn rename_tag(&self, uid: i64, new_name: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE tag_attr SET name = ?2, date_updated = ?3 WHERE uid = ?1",
+            params![uid, new_name, now_epoch()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(uid));
+        }
+        let note_ids: Vec<i64> = {
+            let mut stmt =
+                self.conn.prepare("SELECT note_uid FROM note_tag WHERE tag_uid = ?1")?;
+            let rows = stmt.query_map(params![uid], |r| r.get(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for note_uid in note_ids {
+            self.refresh_note_tags_text(note_uid)?;
+        }
+        self.journal("tag", uid, "update")?;
+        Ok(())
+    }
+
     pub fn list_tags(&self) -> Result<Vec<Tag>> {
         let mut stmt = self.conn.prepare(
             "SELECT uid, parent_uid, name, date_created, date_updated, note_count FROM tag_attr ORDER BY name",
@@ -1515,6 +1538,38 @@ mod tests {
         // 不存在的对象：显式报错而非静默
         assert!(s.rename_notebook(9999, "x").is_err());
         assert!(s.move_note(9999, None).is_err());
+    }
+
+    #[test]
+    fn rename_tag_updates_links_and_journal() {
+        let s = store();
+        let tag = s.create_tag("重要", None).unwrap();
+        let uid = s
+            .create_note(&NoteDraft {
+                title: "t".into(),
+                enml: "<en-note/>".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        s.attach_tag(uid, tag).unwrap();
+
+        s.rename_tag(tag, "关键").unwrap();
+        // 名称落库
+        assert!(s.list_tags().unwrap().iter().any(|t| t.name == "关键"));
+        assert!(!s.list_tags().unwrap().iter().any(|t| t.name == "重要"));
+        // 关联笔记的 tags 派生文本同步刷新
+        assert_eq!(
+            s.get_note(uid).unwrap().note.tags_text.as_deref(),
+            Some("关键")
+        );
+        // journal 记 tag update（同步轮次推 updateTag 新名）
+        let last = s.sync_journal_since(0).unwrap().pop().unwrap();
+        assert_eq!(
+            (last.kind.as_str(), last.item_uid, last.op.as_str()),
+            ("tag", tag, "update")
+        );
+        // 不存在的标签显式报错
+        assert!(s.rename_tag(9999, "x").is_err());
     }
 
     #[test]

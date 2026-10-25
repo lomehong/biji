@@ -127,6 +127,7 @@ struct ListRow {
 #[derive(Debug, Clone)]
 enum Confirm {
     DeleteNotebook(i64, String),
+    DeleteTag(i64, String),
 }
 
 /// 笔记列表排序键（对位原客户端列表头排序：更新时间/创建时间/标题）。
@@ -169,6 +170,8 @@ struct UiState {
     note_info: Option<i64>,
     /// 重命名笔记本弹窗（uid + 编辑缓冲）。
     rename_nb: Option<(i64, String)>,
+    /// 重命名标签弹窗（uid + 编辑缓冲）。
+    rename_tag: Option<(i64, String)>,
     present: Option<(Vec<i64>, usize)>,
     status: String,
     show_new_notebook: bool,
@@ -229,6 +232,7 @@ impl UiState {
             focus_search: false,
             note_info: None,
             rename_nb: None,
+            rename_tag: None,
             present: None,
             status: "就绪".into(),
             show_new_notebook: false,
@@ -865,6 +869,8 @@ impl BijiApp {
         let tags = self.service.store().list_tags().unwrap_or_default();
         let mut action: Option<Selection> = None;
         let mut to_confirm_delete: Option<(i64, String)> = None;
+        let mut to_confirm_delete_tag: Option<(i64, String)> = None;
+        let mut rename_tag_req: Option<(i64, String)> = None;
         let mut open_new_nb = false;
 
         egui::SidePanel::left("sidebar")
@@ -971,17 +977,27 @@ impl BijiApp {
                     for t in &tags {
                         let selected =
                             !self.st.trash_view && self.st.selection == Selection::Tag(t.uid);
-                        if theme::nav_row(
+                        let row = theme::nav_row(
                             ui,
                             "🏷",
                             &format!("{} ({})", t.name, t.note_count),
                             selected,
-                        )
-                        .clicked()
-                        {
+                        );
+                        if row.clicked() {
                             action = Some(Selection::Tag(t.uid));
                             self.st.trash_view = false;
                         }
+                        // 右键菜单（对位原客户端标签行）：重命名 / 删除
+                        row.context_menu(|ui| {
+                            if ui.button("✏️ 重命名标签").clicked() {
+                                rename_tag_req = Some((t.uid, t.name.clone()));
+                                ui.close_menu();
+                            }
+                            if ui.button("🗑 删除标签").clicked() {
+                                to_confirm_delete_tag = Some((t.uid, t.name.clone()));
+                                ui.close_menu();
+                            }
+                        });
                     }
                 }
                 ui.add_space(10.0);
@@ -1014,6 +1030,12 @@ impl BijiApp {
         }
         if let Some((uid, name)) = to_confirm_delete {
             self.st.confirm = Some(Confirm::DeleteNotebook(uid, name));
+        }
+        if let Some((uid, name)) = to_confirm_delete_tag {
+            self.st.confirm = Some(Confirm::DeleteTag(uid, name));
+        }
+        if let Some((uid, name)) = rename_tag_req {
+            self.st.rename_tag = Some((uid, name));
         }
     }
 
@@ -2650,6 +2672,56 @@ impl BijiApp {
                 self.st.rename_nb = None;
             }
         }
+        // 重命名标签（侧栏标签行右键入口）
+        if self.st.rename_tag.is_some() {
+            let mut close = false;
+            let mut confirm = false;
+            egui::Window::new("重命名标签")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    let Some((uid, buf)) = self.st.rename_tag.as_mut() else {
+                        return;
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label("名称:");
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(buf)
+                                .desired_width(ui.available_width()),
+                        );
+                        if !resp.has_focus() && ui.rect_contains_pointer(ui.max_rect()) {
+                            resp.request_focus();
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                    let _ = uid;
+                });
+            if confirm {
+                if let Some((uid, buf)) = self.st.rename_tag.take() {
+                    let name = buf.trim().to_string();
+                    if name.is_empty() {
+                        self.st.status = "标签名称不能为空".into();
+                    } else {
+                        match self.service.store().rename_tag(uid, &name) {
+                            Ok(()) => {
+                                self.st.status = format!("标签已重命名为「{name}」");
+                                self.refresh_rows();
+                            }
+                            Err(e) => self.st.status = format!("重命名失败: {e}"),
+                        }
+                    }
+                }
+            } else if close {
+                self.st.rename_tag = None;
+            }
+        }
         // 新建笔记本
         if self.st.show_new_notebook {
             let mut create = false;
@@ -2713,6 +2785,39 @@ impl BijiApp {
                             self.st.selection = Selection::All;
                         }
                         self.st.status = format!("笔记本「{name}」已删除");
+                        self.refresh_rows();
+                    }
+                    Err(e) => self.st.status = format!("删除失败: {e}"),
+                }
+                self.st.confirm = None;
+            } else if let Some(false) = answer {
+                self.st.confirm = None;
+            }
+        }
+
+        // 删除标签确认
+        if let Some(Confirm::DeleteTag(uid, name)) = self.st.confirm.clone() {
+            let mut answer: Option<bool> = None;
+            egui::Window::new("删除标签")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("删除标签「{name}」？将从所有笔记上移除。"));
+                    ui.horizontal(|ui| {
+                        if ui.button("删除").clicked() {
+                            answer = Some(true);
+                        }
+                        if ui.button("取消").clicked() {
+                            answer = Some(false);
+                        }
+                    });
+                });
+            if let Some(true) = answer {
+                match self.service.store().delete_tag(uid) {
+                    Ok(()) => {
+                        if self.st.selection == Selection::Tag(uid) {
+                            self.st.selection = Selection::All;
+                        }
+                        self.st.status = format!("标签「{name}」已删除（删除账已记）");
                         self.refresh_rows();
                     }
                     Err(e) => self.st.status = format!("删除失败: {e}"),
@@ -3246,6 +3351,217 @@ mod tests {
                 .is_deleted,
             "右键「移入回收站」应把笔记移入回收站"
         );
+    }
+
+    /// headless egui 集成：右键标签行 → 重命名标签（对话框→确定落库）；
+    /// 右键标签行 → 删除标签（确认弹窗→删除落库 + 解除笔记关联）。
+    #[test]
+    fn tag_context_menu_rename_delete_headless() {
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let tag = app.service.store().create_tag("重要", None).unwrap();
+        let note = app
+            .service
+            .create_note("带标签", "<en-note><p>x</p></en-note>", None)
+            .unwrap();
+        app.service.store().attach_tag(note, tag).unwrap();
+        app.refresh_rows();
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.draw_main(ctx));
+        };
+        run(&ctx, &mut app, vec![]);
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2, secondary: bool| {
+            let btn = if secondary {
+                egui::PointerButton::Secondary
+            } else {
+                egui::PointerButton::Primary
+            };
+            let mods = egui::Modifiers::default();
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: true,
+                    modifiers: mods,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: false,
+                    modifiers: mods,
+                }],
+            );
+        };
+        let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
+            ctx.memory(|m| {
+                let mut best: Option<egui::Rect> = None;
+                let mut best_d = f32::MAX;
+                for layer in m.layer_ids() {
+                    if layer.order != egui::Order::Foreground {
+                        continue;
+                    }
+                    let Some(r) = m.area_rect(layer.id) else {
+                        continue;
+                    };
+                    if r.width() < 30.0 || r.width() > 420.0 || r.height() > 420.0 {
+                        continue;
+                    }
+                    let d = r.center().distance(near);
+                    if d < 80.0 && d < best_d {
+                        best_d = d;
+                        best = Some(r);
+                    }
+                }
+                best
+            })
+        };
+
+        // ---- 1) 右键「重要」标签行 → 重命名标签 → 对话框 → 确定
+        // 标签区在笔记本区下方，扫描更宽的 y 范围
+        let mut menu = None;
+        for yi in (150..420).step_by(8) {
+            let y = yi as f32;
+            let pos = egui::pos2(100.0, y);
+            click(&ctx, &mut app, pos, true);
+            // 笔记本行右键也会弹菜单：区分方式是菜单第一项文字不同，
+            // 这里直接按「重命名标签」打开后的对话框标题判定是否命中。
+            if let Some(r) = popup_near(&ctx, pos) {
+                menu = Some(r);
+                break;
+            }
+        }
+        let menu = menu.expect("侧栏标签/笔记本行右键应弹出菜单");
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(menu.center().x, menu.min.y + 18.0),
+            false,
+        );
+        // 若命中的是标签行，此刻应打开「重命名标签」对话框
+        assert!(
+            app.st.rename_tag.is_some() || app.st.rename_nb.is_some(),
+            "第一项重命名应打开对话框"
+        );
+        if app.st.rename_tag.is_none() {
+            panic!("扫描应命中标签行而非笔记本行（打开了重命名笔记本）");
+        }
+        if let Some((_, buf)) = app.st.rename_tag.as_mut() {
+            buf.clear();
+            buf.push_str("核心");
+        }
+        let win = ctx
+            .memory(|m| m.area_rect(egui::Id::new("重命名标签")))
+            .expect("重命名标签窗口应出现");
+        'confirm: for x in 20..(win.width() as i32 - 20) {
+            let pos = egui::pos2(win.min.x + x as f32 + 0.5, win.max.y - 22.0);
+            click(&ctx, &mut app, pos, false);
+            if app.st.rename_tag.is_none() {
+                break 'confirm;
+            }
+        }
+        assert!(app.st.rename_tag.is_none(), "应能点到「确定」");
+        assert!(
+            app.service
+                .store()
+                .list_tags()
+                .unwrap()
+                .iter()
+                .any(|t| t.name == "核心"),
+            "标签重命名应落库"
+        );
+        assert_eq!(
+            app.service.store().get_note(note).unwrap().note.tags_text,
+            Some("核心".to_string()),
+            "笔记的 tags 派生文本应随重命名刷新"
+        );
+
+        // ---- 2) 右键标签行 → 删除标签 → 确认弹窗 → 删除
+        let mut menu2 = None;
+        for yi in (150..420).step_by(8) {
+            let y = yi as f32;
+            let pos = egui::pos2(100.0, y);
+            click(&ctx, &mut app, pos, true);
+            if let Some(r) = popup_near(&ctx, pos) {
+                menu2 = Some(r);
+                break;
+            }
+        }
+        let menu2 = menu2.expect("应再次弹出菜单");
+        // 第二项：删除标签
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(menu2.center().x, menu2.min.y + 44.0),
+            false,
+        );
+        assert!(
+            matches!(st_confirm(&app), Some(ConfirmKind::Tag)),
+            "应打开删除标签确认弹窗"
+        );
+        let win2 = ctx
+            .memory(|m| m.area_rect(egui::Id::new("删除标签")))
+            .expect("删除标签确认窗口应出现");
+        'del: for x in 20..(win2.width() as i32 - 20) {
+            let pos = egui::pos2(win2.min.x + x as f32 + 0.5, win2.max.y - 22.0);
+            click(&ctx, &mut app, pos, false);
+            if app.st.confirm.is_none() {
+                break 'del;
+            }
+        }
+        assert!(app.st.confirm.is_none(), "应能点到「删除」");
+        assert!(
+            app.service
+                .store()
+                .list_tags()
+                .unwrap()
+                .iter()
+                .all(|t| t.name != "核心"),
+            "删除标签后标签应消失"
+        );
+        assert!(
+            app.service
+                .store()
+                .note_tags(note)
+                .unwrap()
+                .is_empty(),
+            "笔记与标签的关联应解除"
+        );
+    }
+
+    /// 测试辅助：确认弹窗种类（避免在断言里解构私有枚举）。
+    fn st_confirm(app: &BijiApp) -> Option<ConfirmKind> {
+        match &app.st.confirm {
+            Some(Confirm::DeleteNotebook(..)) => Some(ConfirmKind::Notebook),
+            Some(Confirm::DeleteTag(..)) => Some(ConfirmKind::Tag),
+            None => None,
+        }
+    }
+
+    #[derive(PartialEq, Debug)]
+    enum ConfirmKind {
+        Notebook,
+        Tag,
     }
 
     #[test]
