@@ -721,6 +721,178 @@ pub fn gradient_pill(p: &Painter, r: Rect, left: Color32, right: Color32, bg: Co
     }
 }
 
+/// 加号。
+pub fn plus(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.3, c);
+    let cc = r.center();
+    let a = r.width() * 0.36;
+    p.line_segment([egui::pos2(cc.x - a, cc.y), egui::pos2(cc.x + a, cc.y)], s);
+    p.line_segment([egui::pos2(cc.x, cc.y - a), egui::pos2(cc.x, cc.y + a)], s);
+}
+
+/// 铅笔（编辑）。
+pub fn pencil(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.14, r.max.x), lerp(r.min.y, 0.86, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.78, r.max.x), lerp(r.min.y, 0.22, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.94, r.max.x), lerp(r.min.y, 0.38, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.3, r.max.x), lerp(r.min.y, 0.94, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.14, r.max.x), lerp(r.min.y, 0.86, r.max.y)),
+        ],
+        s,
+    ));
+}
+
+/// 眼睛（预览）。
+pub fn eye(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.1, c);
+    let cy = r.center().y;
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(r.min.x, cy),
+            egui::pos2(lerp(r.min.x, 0.3, r.max.x), lerp(r.min.y, 0.24, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.7, r.max.x), lerp(r.min.y, 0.24, r.max.y)),
+            egui::pos2(r.max.x, cy),
+            egui::pos2(lerp(r.min.x, 0.7, r.max.x), lerp(r.min.y, 0.76, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.3, r.max.x), lerp(r.min.y, 0.76, r.max.y)),
+            egui::pos2(r.min.x, cy),
+        ],
+        s,
+    ));
+    p.circle_stroke(r.center(), r.height() * 0.16, s);
+}
+
+/// 播放（放映）。
+pub fn play(p: &Painter, r: Rect, c: Color32) {
+    let pts = vec![
+        egui::pos2(lerp(r.min.x, 0.26, r.max.x), lerp(r.min.y, 0.16, r.max.y)),
+        egui::pos2(lerp(r.min.x, 0.26, r.max.x), lerp(r.min.y, 0.84, r.max.y)),
+        egui::pos2(lerp(r.min.x, 0.84, r.max.x), r.center().y),
+    ];
+    p.add(egui::Shape::convex_polygon(pts, c, egui::Stroke::NONE));
+}
+
+/// 打印机（导出 PDF）。
+pub fn printer(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    // 出纸
+    p.rect_stroke(
+        Rect::from_min_size(
+            egui::pos2(lerp(r.min.x, 0.26, r.max.x), lerp(r.min.y, 0.1, r.max.y)),
+            egui::vec2(r.width() * 0.48, r.height() * 0.26),
+        ),
+        egui::Rounding::same(1.0),
+        s,
+    );
+    // 机身
+    p.rect_stroke(
+        Rect::from_min_size(
+            egui::pos2(r.min.x, lerp(r.min.y, 0.3, r.max.y)),
+            egui::vec2(r.width(), r.height() * 0.34),
+        ),
+        egui::Rounding::same(2.0),
+        s,
+    );
+    // 纸张出口
+    p.rect_stroke(
+        Rect::from_min_size(
+            egui::pos2(lerp(r.min.x, 0.26, r.max.x), lerp(r.min.y, 0.6, r.max.y)),
+            egui::vec2(r.width() * 0.48, r.height() * 0.32),
+        ),
+        egui::Rounding::same(1.0),
+        s,
+    );
+    p.circle_filled(
+        egui::pos2(lerp(r.min.x, 0.86, r.max.x), lerp(r.min.y, 0.42, r.max.y)),
+        sw(r) * 0.9,
+        c,
+    );
+}
+
+/// 对话气泡（聊天）。
+pub fn chat(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let body = Rect::from_min_size(
+        egui::pos2(r.min.x, r.min.y),
+        egui::vec2(r.width(), r.height() * 0.72),
+    );
+    p.rect_stroke(body, egui::Rounding::same(3.0), s);
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.3, r.max.x), body.max.y),
+            egui::pos2(lerp(r.min.x, 0.24, r.max.x), r.max.y),
+            egui::pos2(lerp(r.min.x, 0.52, r.max.x), body.max.y),
+        ],
+        s,
+    ));
+}
+
+/// 文件夹（素材库/移动到）。
+pub fn folder(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(r.min.x, lerp(r.min.y, 0.2, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.34, r.max.x), lerp(r.min.y, 0.2, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.44, r.max.x), lerp(r.min.y, 0.34, r.max.y)),
+            egui::pos2(r.max.x, lerp(r.min.y, 0.34, r.max.y)),
+            egui::pos2(r.max.x, lerp(r.min.y, 0.84, r.max.y)),
+            egui::pos2(r.min.x, lerp(r.min.y, 0.84, r.max.y)),
+            egui::pos2(r.min.x, lerp(r.min.y, 0.2, r.max.y)),
+        ],
+        s,
+    ));
+}
+
+/// 关闭叉（退出）。
+pub fn x_mark(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    p.line_segment(
+        [egui::pos2(r.min.x, r.min.y), egui::pos2(r.max.x, r.max.y)],
+        s,
+    );
+    p.line_segment(
+        [egui::pos2(r.max.x, r.min.y), egui::pos2(r.min.x, r.max.y)],
+        s,
+    );
+}
+
+/// 菜单/弹层内图标行（图标 + 文字，整行可点，悬停灰底）。
+/// 弹层宽度由调用方 `ui.set_min_width` 保证。返回是否被点击。
+pub fn menu_item(ui: &mut egui::Ui, icon: Option<&PaintFn>, label: &str) -> bool {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, theme::pal().hovered);
+    }
+    if let Some(icon) = icon {
+        icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(rect.min.x + 15.0, rect.center().y),
+                egui::vec2(13.0, 13.0),
+            ),
+            theme::pal().text,
+        );
+    }
+    let g = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::new(14.0, egui::FontFamily::Proportional),
+        theme::pal().text,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            rect.min.x + if icon.is_some() { 28.0 } else { 10.0 },
+            rect.center().y - g.size().y * 0.5,
+        ),
+        g,
+        theme::pal().text,
+    );
+    resp.clicked()
+}
+
 // ---------- 图标按钮 ----------
 
 /// 朴素图标钮（列表头/元信息行）：悬停显灰底，图标居中。

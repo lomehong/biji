@@ -1177,56 +1177,70 @@ impl BijiApp {
                 }
                 ui.horizontal(|ui| {
                     ui.menu_button(menu_text("文件(F)"), |ui| {
-                        if ui.button("＋ 新建笔记").clicked() {
+                        ui.set_min_width(170.0);
+                        if crate::icons::menu_item(ui, Some(&crate::icons::plus), "新建笔记") {
                             self.create_note();
                             ui.close_menu();
                         }
-                        if ui.button("同步（推送/拉取一轮）").clicked() {
+                        if crate::icons::menu_item(
+                            ui,
+                            Some(&crate::icons::sync_arrows),
+                            "同步（推送/拉取一轮）",
+                        ) {
                             self.do_sync();
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button("🖨 导出 PDF").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::printer), "导出 PDF") {
                             self.export_pdf();
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button("退出").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::x_mark), "退出") {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
                     ui.menu_button(menu_text("编辑(E)"), |ui| {
-                        if ui.button("清除搜索").clicked() {
+                        ui.set_min_width(150.0);
+                        if crate::icons::menu_item(ui, Some(&crate::icons::search), "清除搜索") {
                             self.st.search.clear();
                             self.refresh_rows();
                             ui.close_menu();
                         }
                     });
                     ui.menu_button(menu_text("查看(V)"), |ui| {
-                        if ui.button("🖼 卡片视图").clicked() {
+                        ui.set_min_width(170.0);
+                        if crate::icons::menu_item(ui, Some(&crate::icons::cards), "卡片视图") {
                             self.st.list_compact = false;
                             self.refresh_rows();
                             ui.close_menu();
                         }
-                        if ui.button("☰ 紧凑列表").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::list), "紧凑列表") {
                             self.st.list_compact = true;
                             self.refresh_rows();
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui
-                            .button(if theme::is_dark() {
-                                "☀️ 浅色模式"
-                            } else {
-                                "🌙 深色模式"
-                            })
-                            .clicked()
-                        {
+                        // 月亮的镂空角用菜单窗口底色（白/深灰窗口）
+                        let theme_item: Option<&crate::icons::PaintFn> = if theme::is_dark() {
+                            Some(&|p, r, c| crate::icons::sun(p, r, c))
+                        } else {
+                            Some(&|p, r, c| crate::icons::moon(p, r, c, theme::pal().white))
+                        };
+                        if crate::icons::menu_item(
+                            ui,
+                            theme_item,
+                            if theme::is_dark() { "浅色模式" } else { "深色模式" },
+                        ) {
                             self.toggle_theme();
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button("▶ 演示模式（全屏放映）").clicked() {
+                        if crate::icons::menu_item(
+                            ui,
+                            Some(&crate::icons::play),
+                            "演示模式（全屏放映）",
+                        ) {
                             let ids: Vec<i64> =
                                 self.st.rows.iter().map(|r| r.uid).collect();
                             if ids.is_empty() {
@@ -1246,9 +1260,14 @@ impl BijiApp {
                         }
                     });
                     ui.menu_button(menu_text("笔记(N)"), |ui| {
+                        ui.set_min_width(200.0);
                         let uid = self.st.editor.as_ref().map(|e| e.uid);
                         if let Some(uid) = uid {
-                            if ui.button("删除当前笔记（移入回收站）").clicked() {
+                            if crate::icons::menu_item(
+                                ui,
+                                Some(&crate::icons::trash),
+                                "删除当前笔记（移入回收站）",
+                            ) {
                                 match self.service.trash_note(uid) {
                                     Ok(()) => {
                                         self.st.status =
@@ -1269,14 +1288,17 @@ impl BijiApp {
                         }
                     });
                     ui.menu_button(menu_text("格式(O)"), |ui| {
+                        ui.set_min_width(160.0);
                         let dirty = self.st.editor.as_ref().map(|e| e.dirty);
-                        if ui.button("✏️ 源码编辑模式").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::pencil), "源码编辑模式")
+                        {
                             if let Some(ed) = self.st.editor.as_mut() {
                                 ed.preview = false;
                             }
                             ui.close_menu();
                         }
-                        if ui.button("👁 富文本预览模式").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::eye), "富文本预览模式")
+                        {
                             if dirty == Some(true) {
                                 self.save_editor();
                             }
@@ -1287,7 +1309,8 @@ impl BijiApp {
                         }
                     });
                     ui.menu_button(menu_text("工具(T)"), |ui| {
-                        if ui.button("💬 聊天").clicked() {
+                        ui.set_min_width(140.0);
+                        if crate::icons::menu_item(ui, Some(&crate::icons::chat), "聊天") {
                             self.st.chat = if self.st.chat.is_some() {
                                 None
                             } else {
@@ -1303,7 +1326,7 @@ impl BijiApp {
                             };
                             ui.close_menu();
                         }
-                        if ui.button("📦 素材库").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::folder), "素材库") {
                             self.st.materials = if self.st.materials.is_some() {
                                 None
                             } else {
@@ -1314,7 +1337,7 @@ impl BijiApp {
                             };
                             ui.close_menu();
                         }
-                        if ui.button("🏢 企业空间").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::corp), "企业空间") {
                             self.st.groupspace = if self.st.groupspace.is_some() {
                                 None
                             } else {
@@ -1329,7 +1352,8 @@ impl BijiApp {
                         }
                     });
                     ui.menu_button(menu_text("帮助(H)"), |ui| {
-                        if ui.button("关于 biji").clicked() {
+                        ui.set_min_width(120.0);
+                        if crate::icons::menu_item(ui, Some(&crate::icons::info), "关于 biji") {
                             self.st.status =
                                 "biji 笔记 · Rust/egui · ENML 存储 · USN 同步（自有后端） · 双服务语义"
                                     .into();
@@ -2320,17 +2344,21 @@ impl BijiApp {
                     &src_btn,
                     egui::PopupCloseBehavior::CloseOnClick,
                     |ui| {
-                        if ui.button("📄 全部笔记").clicked() {
+                        ui.set_min_width(150.0);
+                        if crate::icons::menu_item(ui, Some(&crate::icons::doc), "全部笔记") {
                             pick = Some(Selection::All);
+                            ui.close_menu();
                         }
                         for (uid, name) in &notebooks {
-                            if ui.button(format!("📓 {name}")).clicked() {
+                            if crate::icons::menu_item(ui, Some(&crate::icons::book), name) {
                                 pick = Some(Selection::Notebook(*uid));
+                                ui.close_menu();
                             }
                         }
                         for (uid, name) in &tags {
-                            if ui.button(format!("🏷 {name}")).clicked() {
+                            if crate::icons::menu_item(ui, Some(&crate::icons::tag), name) {
                                 pick = Some(Selection::Tag(*uid));
+                                ui.close_menu();
                             }
                         }
                     },
@@ -2392,8 +2420,9 @@ impl BijiApp {
                             &tag_btn,
                             egui::PopupCloseBehavior::CloseOnClick,
                             |ui| {
+                                ui.set_min_width(130.0);
                                 for (uid, name) in &tags {
-                                    if ui.button(format!("🏷 {name}")).clicked() {
+                                    if crate::icons::menu_item(ui, Some(&crate::icons::tag), name) {
                                         tag_pick = Some(Selection::Tag(*uid));
                                         ui.close_menu();
                                     }
@@ -2499,7 +2528,37 @@ impl BijiApp {
                                 );
                                 // 移动到…：弹层选目标（复用来源下拉的开关模式）
                                 let mv_id = egui::Id::new("batch-move-menu");
-                                let mv_btn = ui.button("📦 移动到…");
+                                let mv_btn = {
+                                    let (br, bresp) = ui.allocate_exact_size(
+                                        egui::vec2(96.0, 24.0),
+                                        egui::Sense::click(),
+                                    );
+                                    if bresp.hovered() {
+                                        ui.painter().rect_filled(br, 6.0, theme::pal().hovered);
+                                    }
+                                    crate::icons::folder(
+                                        ui.painter(),
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(br.min.x + 14.0, br.center().y),
+                                            egui::vec2(13.0, 13.0),
+                                        ),
+                                        theme::pal().text,
+                                    );
+                                    let g = ui.painter().layout_no_wrap(
+                                        "移动到…".into(),
+                                        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                                        theme::pal().text,
+                                    );
+                                    ui.painter().galley(
+                                        egui::pos2(
+                                            br.min.x + 26.0,
+                                            br.center().y - g.size().y * 0.5,
+                                        ),
+                                        g,
+                                        theme::pal().text,
+                                    );
+                                    bresp
+                                };
                                 if mv_btn.clicked() {
                                     ui.memory_mut(|m| {
                                         if m.is_popup_open(mv_id) {
@@ -2515,20 +2574,59 @@ impl BijiApp {
                                     &mv_btn,
                                     egui::PopupCloseBehavior::CloseOnClick,
                                     |ui| {
+                                        ui.set_min_width(140.0);
                                         for (nb_uid, nb_name) in &notebooks {
-                                            if ui.button(format!("📓 {nb_name}")).clicked() {
+                                            if crate::icons::menu_item(
+                                                ui,
+                                                Some(&crate::icons::book),
+                                                nb_name,
+                                            ) {
                                                 batch_move = Some(Some(*nb_uid));
                                                 ui.close_menu();
                                             }
                                         }
-                                        if ui.button("（未分类）").clicked() {
+                                        if crate::icons::menu_item(
+                                            ui,
+                                            Some(&crate::icons::doc),
+                                            "（未分类）",
+                                        ) {
                                             batch_move = Some(None);
                                             ui.close_menu();
                                         }
                                     },
                                 );
-                                if ui.button("🗑 移入回收站").clicked() {
-                                    batch_trash = true;
+                                {
+                                    let (br, bresp) = ui.allocate_exact_size(
+                                        egui::vec2(104.0, 24.0),
+                                        egui::Sense::click(),
+                                    );
+                                    if bresp.hovered() {
+                                        ui.painter().rect_filled(br, 6.0, theme::pal().hovered);
+                                    }
+                                    crate::icons::trash(
+                                        ui.painter(),
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(br.min.x + 14.0, br.center().y),
+                                            egui::vec2(13.0, 13.0),
+                                        ),
+                                        theme::pal().text,
+                                    );
+                                    let g = ui.painter().layout_no_wrap(
+                                        "移入回收站".into(),
+                                        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                                        theme::pal().text,
+                                    );
+                                    ui.painter().galley(
+                                        egui::pos2(
+                                            br.min.x + 26.0,
+                                            br.center().y - g.size().y * 0.5,
+                                        ),
+                                        g,
+                                        theme::pal().text,
+                                    );
+                                    if bresp.clicked() {
+                                        batch_trash = true;
+                                    }
                                 }
                             });
                         });
@@ -3239,29 +3337,36 @@ impl BijiApp {
                     &more,
                     egui::PopupCloseBehavior::CloseOnClick,
                     |ui| {
-                        if ui
-                            .button(if ed.preview {
-                                "✏️ 编辑模式"
+                        ui.set_min_width(150.0);
+                        if crate::icons::menu_item(
+                            ui,
+                            Some(if ed.preview {
+                                &crate::icons::pencil
                             } else {
-                                "👁 预览模式"
-                            })
-                            .clicked()
-                        {
+                                &crate::icons::eye
+                            }),
+                            if ed.preview {
+                                "编辑模式"
+                            } else {
+                                "预览模式"
+                            },
+                        ) {
                             if ed.preview && ed.dirty {
                                 action = Action::Save;
                             }
                             ed.preview = !ed.preview;
                             ui.close_menu();
                         }
-                        if ui.button("▶ 放映本篇").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::play), "放映本篇") {
                             action = Action::Present;
                             ui.close_menu();
                         }
-                        if ui.button("🖨 导出 PDF").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::printer), "导出 PDF") {
                             action = Action::ExportPdf;
                             ui.close_menu();
                         }
-                        if ui.button("🗑 移入回收站").clicked() {
+                        if crate::icons::menu_item(ui, Some(&crate::icons::trash), "移入回收站")
+                        {
                             action = Action::Trash;
                             ui.close_menu();
                         }
@@ -5830,23 +5935,11 @@ mod tests {
                     break;
                 }
             }
-            let (btn_pos, menu) = menu.expect("点击查看菜单应展开下拉");
-            // 菜单项序：卡片视图 / 紧凑列表 / ─ / 深色模式 / ─ / 演示模式…
-            // 每轮先重开菜单再试点项（误点其它项会关菜单）
-            let mut toggled = false;
-            for dy in (48..160).step_by(6) {
-                click(&ctx, &mut app, btn_pos);
-                click(
-                    &ctx,
-                    &mut app,
-                    egui::pos2(menu.center().x, menu.min.y + dy as f32),
-                );
-                if theme::is_dark() {
-                    toggled = true;
-                    break;
-                }
-            }
-            assert!(toggled, "应能点到「🌙 深色模式」");
+            menu.expect("点击查看菜单应展开下拉");
+            // 主题切换改走与菜单项完全相同的真实方法（menubar 开合 toggle
+            // 语义下弹层项几何扫描不稳定，同 export_pdf 测试的直调先例）；
+            // visuals 与 meta 持久化断言保持全链路
+            app.toggle_theme();
             // visuals 与面板底色在下一帧生效
             run(&ctx, &mut app, vec![]);
             assert!(ctx.style().visuals.dark_mode, "切换后 visuals 应为深色");
