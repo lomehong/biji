@@ -19,6 +19,7 @@ eframe = "0.29"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 ab_glyph = "0.2"
 sha2.workspace = true
+arboard = { version = "3.7.0", features = ["image"] }
 
 [dev-dependencies]
 tempfile.workspace = true

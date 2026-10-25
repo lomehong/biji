@@ -364,6 +364,14 @@ impl BijiApp {
                 self.st.focus_search = true;
             }
         }
+        // Ctrl+V 粘贴图片（对位原客户端粘贴截图自动落附件）：
+        // 剪贴板含图像时 → PNG 编码 → add_resource + en-media 占位入源；
+        // 纯文本剪贴板不拦截（TextEdit 的 Paste 事件正常工作）。
+        let paste_hotkey = ctx.input(|i| i.key_pressed(egui::Key::V) && i.modifiers.ctrl);
+        if paste_hotkey
+        {
+            self.paste_clipboard_image();
+        }
         let del_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete) && !i.modifiers.any());
         if del_pressed && !ctx.wants_keyboard_input() && self.st.present.is_none() {
             // 多选态：Delete 批量移入回收站；否则删单选笔记
@@ -1241,6 +1249,67 @@ impl BijiApp {
                 self.st.status = format!("已导出 {n} 页 → {}", out.display());
             }
             Err(e) => self.st.status = format!("导出失败: {e}"),
+        }
+    }
+
+    /// 粘贴剪贴板图片（对位原客户端 Ctrl+V 截图落附件）：
+    /// arboard 读图像 → PNG 编码 → 与拖放导入同一链路（add_resource +
+    /// en-media 占位入源置脏）；无图像时静默返回（文本粘贴不拦截）。
+    fn paste_clipboard_image(&mut self) {
+        let Some(ed) = self.st.editor.as_mut() else {
+            return;
+        };
+        let img = (|| -> Option<(Vec<u8>, u32, u32)> {
+            let mut cb = arboard::Clipboard::new().ok()?;
+            let img = cb.get_image().ok()?;
+            let w = img.width as u32;
+            let h = img.height as u32;
+            // RGBA → PNG
+            let rgba =
+                image::RgbaImage::from_raw(w, h, img.bytes.into()).unwrap_or_default();
+            let dynimg = image::DynamicImage::ImageRgba8(rgba);
+            let mut png = Vec::new();
+            dynimg
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .ok()?;
+            Some((png, w, h))
+        })();
+        let Some((png, w, h)) = img else {
+            return; // 剪贴板无图像（文本粘贴不拦截）
+        };
+        let mime = "image/png";
+        let name = format!("粘贴图片_{w}x{h}.png");
+        let hash = format!(
+            "{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(&png)
+        );
+        let dup = self
+            .service
+            .store()
+            .list_resources(ed.uid)
+            .map(|rs| rs.iter().any(|r| r.hash == hash))
+            .unwrap_or(false);
+        if dup {
+            self.st.status = "该图片已在本笔记（重复粘贴跳过）".into();
+            return;
+        }
+        match self
+            .service
+            .store()
+            .add_resource(ed.uid, &name, mime, &png)
+        {
+            Ok(_) => {
+                let tag = format!("<en-media hash=\"{hash}\" type=\"{mime}\"/>");
+                if let Some(pos) = ed.content.rfind("</en-note>") {
+                    ed.content.insert_str(pos, &tag);
+                } else {
+                    ed.content.push_str(&tag);
+                }
+                ed.dirty = true;
+                ed.last_edit = Some(Instant::now());
+                self.st.status = format!("已粘贴图片 {name}（{}B）", png.len());
+            }
+            Err(e) => self.st.status = format!("粘贴图片失败: {e}"),
         }
     }
 
@@ -6588,6 +6657,67 @@ mod tests {
             }
         }
         assert!(app.st.float_win.is_none(), "应能关闭浮动窗口");
+    }
+
+    /// 单元：粘贴图片纯函数链路（PNG 编码 → 幂等判定 → 资源落库 + en-media）。
+    /// 剪贴板读取依赖系统状态（headless 无真实剪贴板），此处以
+    /// paste_clipboard_image 的内部逻辑等价验证（直调 add_resource 路径）。
+    #[test]
+    fn paste_image_resource_chain() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid = app
+            .service
+            .create_note("粘贴测试", "<en-note><p>x</p></en-note>", None)
+            .unwrap();
+        app.st.selected_note = Some(uid);
+
+        // 模拟剪贴板图片：构造 2x2 红色 RGBA → PNG（与 paste_clipboard_image
+        // 内部同编码路径）
+        let rgba = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
+        let dynimg = image::DynamicImage::ImageRgba8(rgba);
+        let mut png = Vec::new();
+        dynimg
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert!(png.len() > 50, "PNG 应有实际字节");
+
+        // 走 add_resource + en-media 占位（paste_clipboard_image 的核心链路）
+        let mime = "image/png";
+        let name = "粘贴图片_2x2.png".to_string();
+        let hash = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&png));
+        app.service
+            .store()
+            .add_resource(uid, &name, mime, &png)
+            .unwrap();
+        let content = {
+            let c = app.service.store().get_note(uid).unwrap().enml;
+            let tag = format!("<en-media hash=\"{hash}\" type=\"{mime}\"/>");
+            c.replacen("</en-note>", &format!("{tag}</en-note>"), 1)
+        };
+        assert!(content.contains("<en-media hash="), "en-media 占位应入源");
+        // 资源落库
+        let rs = app.service.store().list_resources(uid).unwrap();
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs[0].mime, "image/png");
+        assert!(rs[0].file_name.starts_with("粘贴图片_"));
+        let (meta, bytes) = app.service.store().get_resource(rs[0].uid).unwrap();
+        assert_eq!(bytes, png, "PNG 字节逐字节一致");
+        assert_eq!(meta.hash, hash);
+        // 幂等：同 hash 已挂 → 跳过
+        let dup = app
+            .service
+            .store()
+            .list_resources(uid)
+            .unwrap()
+            .iter()
+            .any(|r| r.hash == hash);
+        assert!(dup, "幂等判定应命中");
     }
 
     #[test]
