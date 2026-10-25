@@ -146,6 +146,16 @@ enum FindAction {
     Close,
 }
 
+/// 浮动笔记窗口（对位原客户端「在新窗口打开」）：独立第二编辑会话，
+/// 源码编辑 + 显式保存，与主编辑器并行互不干扰。
+struct FloatNote {
+    uid: i64,
+    title: String,
+    /// 源码缓冲（编辑中）。
+    buffer: String,
+    dirty: bool,
+}
+
 /// 编辑器查找替换栏状态（对位原客户端 Ctrl+F 查找）。
 #[derive(Default, Clone)]
 struct FindState {
@@ -201,6 +211,8 @@ struct UiState {
     tag_filter: String,
     /// 编辑器查找替换栏（None = 关闭）。
     find: Option<FindState>,
+    /// 浮动笔记窗口（第二笔记对照查看/编辑，对位原客户端新窗口打开）。
+    float_win: Option<FloatNote>,
     /// 重命名笔记本弹窗（uid + 编辑缓冲）。
     rename_nb: Option<(i64, String)>,
     /// 重命名标签弹窗（uid + 编辑缓冲）。
@@ -269,6 +281,7 @@ impl UiState {
             anchor: None,
             tag_filter: String::new(),
             find: None,
+            float_win: None,
             rename_nb: None,
             rename_tag: None,
             present: None,
@@ -526,6 +539,7 @@ impl BijiApp {
 
     /// 笔记卡右键菜单（对位原客户端）：移入回收站 / 添加-取消快捷方式 /
     /// 移动到笔记本（平铺各笔记本与「未分类」——直列目标比悬停子菜单更可用）。
+    #[allow(clippy::too_many_arguments)]
     fn note_context_menu(
         resp: &egui::Response,
         uid: i64,
@@ -533,11 +547,16 @@ impl BijiApp {
         notebooks: &[(i64, String)],
         trash_req: &mut Option<i64>,
         shortcut_req: &mut Option<i64>,
+        float_req: &mut Option<i64>,
         move_req: &mut Option<(i64, Option<i64>)>,
     ) {
         resp.context_menu(|ui| {
             if ui.button("🗑 移入回收站").clicked() {
                 *trash_req = Some(uid);
+                ui.close_menu();
+            }
+            if ui.button("🗔 在浮动窗口打开").clicked() {
+                *float_req = Some(uid);
                 ui.close_menu();
             }
             if ui
@@ -890,8 +909,84 @@ impl BijiApp {
         self.draw_sidebar(ctx);
         self.draw_note_list(ctx);
         egui::CentralPanel::default().show(ctx, |ui| self.draw_editor(ui));
+        self.draw_float_window(ctx);
         self.draw_status_bar(ctx);
         self.draw_dialogs(ctx);
+    }
+
+    /// 浮动笔记窗口（对位原客户端「在新窗口打开」双窗口对照）：
+    /// 独立第二会话——标题只读 + 源码编辑 + 显式保存，与主编辑器并行。
+    fn draw_float_window(&mut self, ctx: &egui::Context) {
+        let Some(fw) = self.st.float_win.as_mut() else {
+            return;
+        };
+        let mut close = false;
+        let mut save = false;
+        egui::Window::new(format!("🗔 {}", fw.title))
+            .id(egui::Id::new("float-note-win"))
+            .collapsible(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(if fw.dirty {
+                        "● 未保存（独立编辑会话）"
+                    } else {
+                        "已保存"
+                    })
+                    .small()
+                    .color(if fw.dirty {
+                        theme::pal().green_dark
+                    } else {
+                        theme::pal().subtle
+                    }),
+                );
+                let resp = ui.add(
+                    egui::TextEdit::multiline(&mut fw.buffer)
+                        .font(egui::TextStyle::Monospace)
+                        .code_editor()
+                        .id(egui::Id::new("float-enml"))
+                        .desired_width(ui.available_width()),
+                );
+                if resp.changed() {
+                    fw.dirty = true;
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("💾 保存").clicked() {
+                        save = true;
+                    }
+                    if ui.button("关闭").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if save {
+            // 与主编辑器同一保存链路（update_note 全量写回）
+            if let Some(fw) = self.st.float_win.as_ref() {
+                let view = crate::NoteView {
+                    id: fw.uid,
+                    title: fw.title.clone(),
+                    source: None,
+                    html: fw.buffer.clone(),
+                    content_class: None,
+                    source_url: None,
+                    author: None,
+                };
+                match self.service.update_note(&view) {
+                    Ok(()) => {
+                        if let Some(fw) = self.st.float_win.as_mut() {
+                            fw.dirty = false;
+                        }
+                        self.st.status = format!("浮动窗口已保存 {}", note_label(view.id));
+                        self.refresh_rows();
+                    }
+                    Err(e) => self.st.status = format!("浮动窗口保存失败: {e}"),
+                }
+            }
+        }
+        if close {
+            self.st.float_win = None;
+        }
     }
 
     /// 菜单栏（对位原客户端 文件/编辑/查看/笔记/格式/工具/帮助 一行）。
@@ -1544,6 +1639,7 @@ impl BijiApp {
                 ui.add_space(2.0);
                 let mut trash_req: Option<i64> = None;
                 let mut shortcut_req: Option<i64> = None;
+                let mut float_req: Option<i64> = None;
                 let mut move_req: Option<(i64, Option<i64>)> = None;
                 let pinned: std::collections::HashSet<i64> = self
                     .service
@@ -1702,6 +1798,7 @@ impl BijiApp {
                                     &notebooks,
                                     &mut trash_req,
                                     &mut shortcut_req,
+                                    &mut float_req,
                                     &mut move_req,
                                 );
                             }
@@ -1804,6 +1901,7 @@ impl BijiApp {
                                 &notebooks,
                                 &mut trash_req,
                                 &mut shortcut_req,
+                                &mut float_req,
                                 &mut move_req,
                             );
                         }
@@ -1832,6 +1930,21 @@ impl BijiApp {
                             self.refresh_rows();
                         }
                         Err(e) => self.st.status = format!("删除失败: {e}"),
+                    }
+                }
+                if let Some(uid) = float_req {
+                    if let Ok(full) = self.service.store().get_note(uid) {
+                        if self.st.editor.as_ref().map(|e| e.uid) != Some(uid) {
+                            self.st.float_win = Some(FloatNote {
+                                uid,
+                                title: full.note.title.clone(),
+                                buffer: full.enml,
+                                dirty: false,
+                            });
+                            self.st.status = format!("已在浮动窗口打开 {}", note_label(uid));
+                        } else {
+                            self.st.status = "该笔记已在主编辑器打开".into();
+                        }
                     }
                 }
                 if let Some(uid) = shortcut_req {
@@ -6247,6 +6360,234 @@ mod tests {
             saved.contains("改丙") && saved.matches("<tr>").count() == base_tr + 1,
             "表格编辑结果应落库"
         );
+    }
+
+    /// headless egui 集成：双窗口对照——主编辑器开 A、浮动窗口开 B（右键菜单），
+    /// 双源码并行编辑各自保存落库互不干扰。
+    #[test]
+    fn float_window_parallel_edit_headless() {
+        theme::set_dark(false);
+        let store = Store::open_memory().unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut app = BijiApp::new(
+            NoteService::new(store, Box::new(CmdFrontend { tx })),
+            mpsc::channel().1,
+        );
+        let uid_a = app
+            .service
+            .create_note("主窗口A", "<en-note><p>AAA</p></en-note>", None)
+            .unwrap();
+        let uid_b = app
+            .service
+            .create_note("浮动B", "<en-note><p>BBB</p></en-note>", None)
+            .unwrap();
+        app.refresh_rows();
+        app.st.selected_note = Some(uid_a);
+
+        let ctx = egui::Context::default();
+        let run = |ctx: &egui::Context, app: &mut BijiApp, events: Vec<egui::Event>| {
+            theme::apply(ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.handle_global_shortcuts(ctx);
+                app.draw_main(ctx);
+            });
+        };
+        let none = egui::Modifiers::default();
+        let click = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: none,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: none,
+                }],
+            );
+        };
+        let rclick = |ctx: &egui::Context, app: &mut BijiApp, pos: egui::Pos2| {
+            run(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: none,
+                }],
+            );
+            run(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Secondary,
+                    pressed: false,
+                    modifiers: none,
+                }],
+            );
+        };
+        let popup_near = |ctx: &egui::Context, near: egui::Pos2| -> Option<egui::Rect> {
+            ctx.memory(|m| {
+                let mut best: Option<egui::Rect> = None;
+                let mut bd = f32::MAX;
+                for layer in m.layer_ids() {
+                    if layer.order != egui::Order::Foreground {
+                        continue;
+                    }
+                    if let Some(r) = m.area_rect(layer.id) {
+                        if r.width() < 30.0 || r.width() > 460.0 || r.height() > 460.0 {
+                            continue;
+                        }
+                        let d = r.center().distance(near);
+                        if d < 200.0 && d < bd {
+                            bd = d;
+                            best = Some(r);
+                        }
+                    }
+                }
+                best
+            })
+        };
+        run(&ctx, &mut app, vec![]);
+
+        // ---- 1) 右键 B 卡 → 「🗔 在浮动窗口打开」（菜单项 2 区间扫，重开式）
+        let first = app.st.rows[0].uid;
+        assert_eq!(first, uid_b, "最新在前（更新时间降序）");
+        let card = ctx
+            .read_response(egui::Id::new(("note-card", uid_b)))
+            .expect("B 卡应已渲染")
+            .rect
+            .center();
+        let mut opened = false;
+        for dy in (36..78).step_by(6) {
+            rclick(&ctx, &mut app, card);
+            let Some(m) = popup_near(&ctx, card) else {
+                continue;
+            };
+            click(&ctx, &mut app, egui::pos2(m.center().x, m.min.y + dy as f32));
+            if app
+                .st
+                .float_win
+                .as_ref()
+                .map(|f| f.uid == uid_b)
+                .unwrap_or(false)
+            {
+                opened = true;
+                break;
+            }
+            assert!(
+                !app.service.store().get_note(uid_b).unwrap().note.is_deleted,
+                "扫描误回收（dy={dy}）"
+            );
+        }
+        assert!(opened, "应能经右键菜单在浮动窗口打开 B");
+        run(&ctx, &mut app, vec![]);
+        let fw_rect = ctx
+            .read_response(egui::Id::new("float-enml"))
+            .expect("浮动窗口源码框应出现")
+            .rect;
+        assert!(app.st.float_win.as_ref().unwrap().buffer.contains("BBB"));
+
+        // ---- 2) 双窗口并行编辑
+        app.st.editor.as_mut().unwrap().preview = false;
+        run(&ctx, &mut app, vec![]);
+        // 浮动窗口 B：聚焦源码框注入文本
+        click(&ctx, &mut app, fw_rect.center());
+        run(&ctx, &mut app, vec![egui::Event::Text("B加".into())]);
+        assert!(app.st.float_win.as_ref().unwrap().dirty, "浮动编辑应置脏");
+        // 主窗口 A：源码缓冲编辑（与真实编辑等效的缓冲变更）
+        let c = app.st.editor.as_ref().unwrap().content.clone();
+        app.st.editor.as_mut().unwrap().content =
+            c.replacen("<p>AAA</p>", "<p>AAA改</p>", 1);
+        app.st.editor.as_mut().unwrap().dirty = true;
+
+        // ---- 3) 各自保存：浮动「💾 保存」（窗口底部按钮行）→ 主 Ctrl+S
+        let mut saved_fw = false;
+        for dy in (8..90).step_by(8) {
+            let pos = egui::pos2(fw_rect.min.x + 20.0, fw_rect.max.y + dy as f32);
+            click(&ctx, &mut app, pos);
+            if app
+                .st
+                .float_win
+                .as_ref()
+                .map(|f| !f.dirty)
+                .unwrap_or(false)
+            {
+                saved_fw = true;
+                break;
+            }
+        }
+        assert!(saved_fw, "应能点到浮动窗口「保存」");
+        let saved_b = app.service.store().get_note(uid_b).unwrap().enml;
+        assert!(saved_b.contains("B加"), "浮动编辑应落库 B: {saved_b}");
+        assert!(!saved_b.contains("AAA"), "B 不应混入 A 内容");
+
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 900.0),
+            )),
+            modifiers: ctrl,
+            events: vec![egui::Event::Key {
+                key: egui::Key::S,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            app.handle_global_shortcuts(ctx);
+            app.draw_main(ctx);
+        });
+        let saved_a = app.service.store().get_note(uid_a).unwrap().enml;
+        assert!(saved_a.contains("AAA改"), "主编辑器编辑应落库 A");
+        assert!(!saved_a.contains("B加"), "A 不应混入 B 内容");
+        assert!(
+            app.service
+                .store()
+                .get_note(uid_b)
+                .unwrap()
+                .enml
+                .contains("B加"),
+            "保存 A 不应覆盖 B"
+        );
+
+        // ---- 4) 关闭浮动窗口
+        for dy in (8..90).step_by(8) {
+            let pos = egui::pos2(fw_rect.min.x + 70.0, fw_rect.max.y + dy as f32);
+            click(&ctx, &mut app, pos);
+            if app.st.float_win.is_none() {
+                break;
+            }
+        }
+        assert!(app.st.float_win.is_none(), "应能关闭浮动窗口");
     }
 
     #[test]
