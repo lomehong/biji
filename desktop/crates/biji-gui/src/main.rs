@@ -2768,25 +2768,28 @@ impl BijiApp {
                 open_link = sess.open_note;
             } else {
                 // 格式工具行（对位原客户端格式栏；作用于 ENML 源码选区）
-                const FORMATS: &[(&str, &str, &str)] = &[
-                    ("B", "<b>", "</b>"),
-                    ("I", "<i>", "</i>"),
-                    ("U", "<u>", "</u>"),
-                    ("S", "<s>", "</s>"),
-                    ("高亮", "<span style=\"background-color:#ffd54f\">", "</span>"),
-                    ("H1", "<h1>", "</h1>"),
-                    ("H2", "<h2>", "</h2>"),
-                    ("代码", "<code>", "</code>"),
-                    ("表格", "<table><tr><td>", "</td></tr></table>"),
-                    ("—", "<hr/>", ""),
+                // 格式工具栏（图标化，对位原客户端格式栏外观）：
+                // (图标, hover 提示, open, close)——图标用 Unicode/emoji，
+                // hover 保留文字说明（无障碍 + 可发现性）
+                const FORMATS: &[(&str, &str, &str, &str)] = &[
+                    ("B", "粗体", "<b>", "</b>"),
+                    ("I", "斜体", "<i>", "</i>"),
+                    ("U", "下划线", "<u>", "</u>"),
+                    ("S̶", "删除线", "<s>", "</s>"),
+                    ("🖍", "高亮", "<span style=\"background-color:#ffd54f\">", "</span>"),
+                    ("H₁", "一级标题", "<h1>", "</h1>"),
+                    ("H₂", "二级标题", "<h2>", "</h2>"),
+                    ("⟨⟩", "行内代码", "<code>", "</code>"),
+                    ("▦", "插入表格", "<table><tr><td>", "</td></tr></table>"),
+                    ("―", "水平分割线", "<hr/>", ""),
                 ];
                 let editor_id = egui::Id::new("enml-source");
                 let selection = egui::TextEdit::load_state(ui.ctx(), editor_id)
                     .as_ref()
                     .and_then(|st| st.cursor.char_range());
                 ui.horizontal(|ui| {
-                    for (label, open, close) in FORMATS {
-                        if ui.small_button(*label).clicked() {
+                    for (icon, tip, open, close) in FORMATS {
+                        if ui.small_button(*icon).on_hover_text(*tip).clicked() {
                             let (newc, newr) =
                                 util::wrap_enml_around_selection(&ed.content, selection, open, close);
                             ed.content = newc;
@@ -2799,7 +2802,11 @@ impl BijiApp {
                         }
                     }
                     ui.separator();
-                    if ui.small_button("待办").clicked() {
+                    if ui
+                        .small_button("☑")
+                        .on_hover_text("待办清单")
+                        .clicked()
+                    {
                         let (newc, newr) =
                             util::wrap_enml_around_selection(&ed.content, selection, "<en-todo/>", "");
                         ed.content = newc;
@@ -2810,7 +2817,11 @@ impl BijiApp {
                             egui::TextEdit::store_state(ui.ctx(), editor_id, st);
                         }
                     }
-                    if ui.small_button("链接").clicked() {
+                    if ui
+                        .small_button("🔗")
+                        .on_hover_text("插入链接")
+                        .clicked()
+                    {
                         let (newc, newr) = util::wrap_enml_around_selection(
                             &ed.content,
                             selection,
