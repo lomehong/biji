@@ -2008,7 +2008,10 @@ impl BijiApp {
                             ui.allocate_exact_size(egui::vec2(64.0, 26.0), egui::Sense::click());
                         let c0 = egui::Color32::from_rgb(0x6D, 0x8C, 0xF0);
                         let c1 = egui::Color32::from_rgb(0x8F, 0x7C, 0xF0);
+                        // 胶囊状（全圆角，官方同款药丸）：分段横向渐变，
+                        // 首末段用单侧圆角拼出胶囊轮廓
                         let steps = 16;
+                        let seg_w = pr.width() / steps as f32;
                         for i in 0..steps {
                             let t = i as f32 / (steps - 1) as f32;
                             let cc = egui::Color32::from_rgb(
@@ -2016,13 +2019,30 @@ impl BijiApp {
                                 (c0.g() as f32 + (c1.g() as f32 - c0.g() as f32) * t) as u8,
                                 (c0.b() as f32 + (c1.b() as f32 - c0.b() as f32) * t) as u8,
                             );
-                            let x0 = pr.min.x + pr.width() * (i as f32 / steps as f32);
+                            let x0 = pr.min.x + seg_w * i as f32;
+                            let rounding = if i == 0 {
+                                egui::Rounding {
+                                    nw: 13.0,
+                                    ne: 0.0,
+                                    sw: 13.0,
+                                    se: 0.0,
+                                }
+                            } else if i == steps - 1 {
+                                egui::Rounding {
+                                    nw: 0.0,
+                                    ne: 13.0,
+                                    sw: 0.0,
+                                    se: 13.0,
+                                }
+                            } else {
+                                egui::Rounding::ZERO
+                            };
                             ui.painter().rect_filled(
                                 egui::Rect::from_min_size(
-                                    egui::pos2(x0, pr.min.y + 1.0),
-                                    egui::vec2(pr.width() / steps as f32 + 1.0, pr.height() - 2.0),
+                                    egui::pos2(x0, pr.min.y),
+                                    egui::vec2(seg_w + 1.0, pr.height()),
                                 ),
-                                0.0,
+                                rounding,
                                 cc,
                             );
                         }
@@ -4358,150 +4378,6 @@ impl BijiApp {
                 ui.separator();
             }
 
-            // 标签行（对位原客户端「添加标签…」）：绿色入口菜单 + 已挂标签 chip
-            {
-                let attached = self.service.store().note_tags(uid).unwrap_or_default();
-                ui.horizontal(|ui| {
-                    let (tr, _tr2) =
-                        ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
-                    crate::icons::tag(ui.painter(), tr, theme::pal().green_dark);
-                    ui.menu_button(
-                        egui::RichText::new("添加标签…")
-                            .small()
-                            .color(theme::pal().green_dark),
-                        |ui| {
-                            // 搜索框（自动聚焦）：前缀过滤候选 + 未命中可新建
-                            let mut filter = self.st.tag_filter.clone();
-                            ui.add(
-                                egui::TextEdit::singleline(&mut filter)
-                                    .hint_text("搜索或新建标签…")
-                                    .desired_width(180.0)
-                                    .id(egui::Id::new("tag-filter")),
-                            );
-                            if filter != self.st.tag_filter {
-                                self.st.tag_filter = filter;
-                            }
-                            let needle = self.st.tag_filter.to_lowercase();
-                            let tags = self.service.store().list_tags().unwrap_or_default();
-                            let mut any = false;
-                            for t in &tags {
-                                if attached.iter().any(|(u, _)| *u == t.uid) {
-                                    continue;
-                                }
-                                if !needle.is_empty() && !t.name.to_lowercase().starts_with(&needle)
-                                {
-                                    continue;
-                                }
-                                any = true;
-                                if ui.button(&t.name).clicked() {
-                                    action = Action::AttachTag(t.uid);
-                                    ui.close_menu();
-                                }
-                            }
-                            // 未命中的输入 = 新建同名标签并挂上（对位原客户端行为）
-                            let exact = tags.iter().any(|t| t.name == self.st.tag_filter);
-                            if !self.st.tag_filter.trim().is_empty() && !exact {
-                                if ui
-                                    .button(format!("＋ 新建「{}」", self.st.tag_filter))
-                                    .clicked()
-                                {
-                                    match self.service.store().create_tag(&self.st.tag_filter, None)
-                                    {
-                                        Ok(new_uid) => action = Action::AttachTag(new_uid),
-                                        Err(e) => self.st.status = format!("新建标签失败: {e}"),
-                                    }
-                                    ui.close_menu();
-                                }
-                            } else if !any {
-                                ui.label(
-                                    egui::RichText::new("（没有可添加的标签）")
-                                        .small()
-                                        .color(theme::pal().subtle),
-                                );
-                            }
-                        },
-                    );
-                    for (t_uid, t_name) in &attached {
-                        // 官方 chip：浅绿底圆角 + 绿字（ref-user-live.png 底栏）
-                        let chip = egui::Frame::default()
-                            .fill(theme::pal().green_tint)
-                            .stroke(egui::Stroke::NONE)
-                            .rounding(10.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
-                        chip.show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(t_name)
-                                        .small()
-                                        .color(theme::pal().green_dark),
-                                );
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("✕")
-                                                .small()
-                                                .color(theme::pal().subtle),
-                                        )
-                                        .fill(theme::pal().white)
-                                        .stroke(egui::Stroke::NONE),
-                                    )
-                                    .on_hover_text("移除标签")
-                                    .clicked()
-                                {
-                                    action = Action::DetachTag(*t_uid);
-                                }
-                            });
-                        });
-                    }
-                    // 官方推荐标签 chips（浅绿底绿字带+；点击创建并挂上）
-                    let (cir, _cir) =
-                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                    ui.painter().circle_stroke(
-                        cir.center(),
-                        8.0,
-                        egui::Stroke::new(1.0_f32, theme::pal().green_dark),
-                    );
-                    crate::icons::tag(ui.painter(), cir.shrink(4.0), theme::pal().green_dark);
-                    for name in ["人工智能", "开源", "模型", "科技", "语音"] {
-                        if attached.iter().any(|(_, n)| n == name) {
-                            continue;
-                        }
-                        let chip = egui::Frame::default()
-                            .fill(theme::pal().green_tint)
-                            .stroke(egui::Stroke::NONE)
-                            .rounding(10.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
-                        let inner = chip.show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{name} +"))
-                                    .small()
-                                    .color(theme::pal().green_dark),
-                            );
-                        });
-                        if ui
-                            .interact(
-                                inner.response.rect,
-                                egui::Id::new(("rec-tag", name)),
-                                egui::Sense::click(),
-                            )
-                            .on_hover_text(format!("创建并挂上标签「{name}」"))
-                            .clicked()
-                        {
-                            let existing = self.service.store().list_tags().ok().and_then(|ts| {
-                                ts.into_iter().find(|t| t.name == name).map(|t| t.uid)
-                            });
-                            match existing {
-                                Some(t) => action = Action::AttachTag(t),
-                                None => match self.service.store().create_tag(name, None) {
-                                    Ok(t) => action = Action::AttachTag(t),
-                                    Err(e) => self.st.status = format!("新建标签失败: {e}"),
-                                },
-                            }
-                        }
-                    }
-                });
-            }
-
             // 正文：预览（读克隆，避免借用在服务调用间存活）或源码编辑
             if ed.preview {
                 let content = ed.content.clone();
@@ -5022,6 +4898,149 @@ impl BijiApp {
                 .on_hover_text("中文按字、西文连续字母数字按词统计（ENML 剥离标签后的纯文本）");
             }
 
+            // 标签行（对位原客户端「添加标签…」）：绿色入口菜单 + 已挂标签 chip
+            {
+                let attached = self.service.store().note_tags(uid).unwrap_or_default();
+                ui.horizontal(|ui| {
+                    let (tr, _tr2) =
+                        ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                    crate::icons::tag(ui.painter(), tr, theme::pal().green_dark);
+                    ui.menu_button(
+                        egui::RichText::new("添加标签…")
+                            .small()
+                            .color(theme::pal().green_dark),
+                        |ui| {
+                            // 搜索框（自动聚焦）：前缀过滤候选 + 未命中可新建
+                            let mut filter = self.st.tag_filter.clone();
+                            ui.add(
+                                egui::TextEdit::singleline(&mut filter)
+                                    .hint_text("搜索或新建标签…")
+                                    .desired_width(180.0)
+                                    .id(egui::Id::new("tag-filter")),
+                            );
+                            if filter != self.st.tag_filter {
+                                self.st.tag_filter = filter;
+                            }
+                            let needle = self.st.tag_filter.to_lowercase();
+                            let tags = self.service.store().list_tags().unwrap_or_default();
+                            let mut any = false;
+                            for t in &tags {
+                                if attached.iter().any(|(u, _)| *u == t.uid) {
+                                    continue;
+                                }
+                                if !needle.is_empty() && !t.name.to_lowercase().starts_with(&needle)
+                                {
+                                    continue;
+                                }
+                                any = true;
+                                if ui.button(&t.name).clicked() {
+                                    action = Action::AttachTag(t.uid);
+                                    ui.close_menu();
+                                }
+                            }
+                            // 未命中的输入 = 新建同名标签并挂上（对位原客户端行为）
+                            let exact = tags.iter().any(|t| t.name == self.st.tag_filter);
+                            if !self.st.tag_filter.trim().is_empty() && !exact {
+                                if ui
+                                    .button(format!("＋ 新建「{}」", self.st.tag_filter))
+                                    .clicked()
+                                {
+                                    match self.service.store().create_tag(&self.st.tag_filter, None)
+                                    {
+                                        Ok(new_uid) => action = Action::AttachTag(new_uid),
+                                        Err(e) => self.st.status = format!("新建标签失败: {e}"),
+                                    }
+                                    ui.close_menu();
+                                }
+                            } else if !any {
+                                ui.label(
+                                    egui::RichText::new("（没有可添加的标签）")
+                                        .small()
+                                        .color(theme::pal().subtle),
+                                );
+                            }
+                        },
+                    );
+                    for (t_uid, t_name) in &attached {
+                        // 官方 chip：浅绿底圆角 + 绿字（ref-user-live.png 底栏）
+                        let chip = egui::Frame::default()
+                            .fill(theme::pal().green_tint)
+                            .stroke(egui::Stroke::NONE)
+                            .rounding(10.0)
+                            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+                        chip.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(t_name)
+                                        .small()
+                                        .color(theme::pal().green_dark),
+                                );
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("✕")
+                                                .small()
+                                                .color(theme::pal().subtle),
+                                        )
+                                        .fill(theme::pal().white)
+                                        .stroke(egui::Stroke::NONE),
+                                    )
+                                    .on_hover_text("移除标签")
+                                    .clicked()
+                                {
+                                    action = Action::DetachTag(*t_uid);
+                                }
+                            });
+                        });
+                    }
+                    // 官方推荐标签 chips（浅绿底绿字带+；点击创建并挂上）
+                    let (cir, _cir) =
+                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    ui.painter().circle_stroke(
+                        cir.center(),
+                        8.0,
+                        egui::Stroke::new(1.0_f32, theme::pal().green_dark),
+                    );
+                    crate::icons::tag(ui.painter(), cir.shrink(4.0), theme::pal().green_dark);
+                    for name in ["人工智能", "开源", "模型", "科技", "语音"] {
+                        if attached.iter().any(|(_, n)| n == name) {
+                            continue;
+                        }
+                        let chip = egui::Frame::default()
+                            .fill(theme::pal().green_tint)
+                            .stroke(egui::Stroke::NONE)
+                            .rounding(10.0)
+                            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+                        let inner = chip.show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{name} +"))
+                                    .small()
+                                    .color(theme::pal().green_dark),
+                            );
+                        });
+                        if ui
+                            .interact(
+                                inner.response.rect,
+                                egui::Id::new(("rec-tag", name)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_text(format!("创建并挂上标签「{name}」"))
+                            .clicked()
+                        {
+                            let existing = self.service.store().list_tags().ok().and_then(|ts| {
+                                ts.into_iter().find(|t| t.name == name).map(|t| t.uid)
+                            });
+                            match existing {
+                                Some(t) => action = Action::AttachTag(t),
+                                None => match self.service.store().create_tag(name, None) {
+                                    Ok(t) => action = Action::AttachTag(t),
+                                    Err(e) => self.st.status = format!("新建标签失败: {e}"),
+                                },
+                            }
+                        }
+                    }
+                });
+            }
             // 自动保存：编辑后 2 秒无新输入即落库。
             if action == Action::None && ed.dirty {
                 if let Some(t) = ed.last_edit {
@@ -8042,7 +8061,8 @@ mod tests {
         app.st.tag_filter = "重".into();
         // 打开「🏷 添加标签…」菜单：标签行在编辑器面板（正文下方）
         let mut menu = None;
-        'scan: for yi in (150..870).step_by(10) {
+        // 标签行在编辑器底部：自下而上扫描，先命中真菜单
+        'scan: for yi in (150..1200).step_by(10).rev() {
             for xi in (505..1560).step_by(40) {
                 let pos = egui::pos2(xi as f32, yi as f32);
                 click(&ctx, &mut app, pos);
@@ -8053,12 +8073,16 @@ mod tests {
             }
         }
         let (btn_pos, mrect) = menu.expect("点击「添加标签…」应弹出菜单（含搜索框）");
-        // 前缀过滤后的首候选 = 重要（名称序：重要 < 重量；旅游被过滤）
-        click(
-            &ctx,
-            &mut app,
-            egui::pos2(mrect.center().x, mrect.min.y + 52.0),
-        );
+        // 前缀过滤后的首候选 = 重要（名称序：重要 < 重量；旅游被过滤）。
+        // 菜单贴底弹出时可能被 egui 翻转/裁剪，候选绝对位置不定——
+        // 在菜单矩形内自上而下扫描点击，直到挂载成功
+        eprintln!("[tagdbg] mrect={mrect:?} btn_pos={btn_pos:?}");
+        'cand: for cy in (mrect.min.y as i32 + 20..mrect.max.y as i32 - 4).step_by(6) {
+            click(&ctx, &mut app, egui::pos2(mrect.center().x, cy as f32));
+            if !app.service.store().note_tags(uid).unwrap().is_empty() {
+                break 'cand;
+            }
+        }
         let tags = app.service.store().note_tags(uid).unwrap();
         assert_eq!(
             tags,
