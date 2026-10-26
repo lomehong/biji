@@ -468,6 +468,8 @@ pub struct PreviewSession {
     pub sel_pieces: Vec<Piece>,
     /// 渲染态格式施加请求：选区 → 拆分文本节点插入标记元素。
     pub request_format: Option<FormatApply>,
+    /// 块级列表施加请求（Some(ordered)）。
+    pub request_list: Option<bool>,
     /// 点击了 biji://note/N 链接：请求打开目标笔记（调用方同帧消费）。
     pub open_note: Option<i64>,
     /// 表格就地编辑会话（块/行/列 + 缓冲）。
@@ -483,6 +485,8 @@ pub struct PreviewSession {
     /// 本帧表格交互矩形透出（自动化/测试确定性定位；生产亦可作热区调试）。
     pub tbl_cells: Vec<(usize, usize, egui::Rect)>,
     pub tbl_ops: Vec<(&'static str, egui::Rect)>,
+    /// 本帧各链接屏幕矩形（测试直点；块渲染时逐块追加）。
+    pub link_rects: Vec<egui::Rect>,
 }
 
 /// 表格就地编辑会话。
@@ -580,6 +584,32 @@ pub fn apply_format_edits(doc: &mut Enml, apply: &FormatApply) -> usize {
 
 /// 选区 → 格式编辑列表：对每个与 [sel_start, sel_end) 相交的片段，
 /// 求其节点内 char 区间（文本节点不分裂：节点内起点恒为 0）。
+/// 将选区所在块转为列表（ul/ol 包 li；所见即所得块级操作）。
+pub fn apply_block_list(doc: &mut Enml, block: usize, ordered: bool) -> bool {
+    if block >= doc.root.children.len() {
+        return false;
+    }
+    let child = std::mem::replace(&mut doc.root.children[block], Node::Text(String::new()));
+    let li = match child {
+        Node::Text(t) => Node::Element(biji_enml::Element {
+            name: "li".into(),
+            attrs: Vec::new(),
+            children: vec![Node::Text(t)],
+        }),
+        Node::Element(mut el) => {
+            el.name = "li".into();
+            Node::Element(el)
+        }
+    };
+    let name = if ordered { "ol" } else { "ul" };
+    doc.root.children[block] = Node::Element(biji_enml::Element {
+        name: name.into(),
+        attrs: Vec::new(),
+        children: vec![li],
+    });
+    true
+}
+
 /// 由当前所见选区构造格式施加请求（无有效选区返回 None）。
 /// 供编辑器预览态常驻工具栏与选区浮动条共用。
 pub fn sel_format_req(
@@ -1164,6 +1194,13 @@ fn selectable_block(
             .index
             .min(plain_len)
     };
+    // 链接屏幕矩形透出（测试直点用；与命中判定同一套矩形）
+    for (st, ln, _) in &ctx.links {
+        let a = galley.pos_from_ccursor(egui::text::CCursor::new(*st));
+        let b = galley.pos_from_ccursor(egui::text::CCursor::new(st + ln));
+        ses.link_rects
+            .push(egui::Rect::from_min_max(a.min, b.max).translate(rect.min.to_vec2()));
+    }
     let holds_sel = ses.sel.map(|(b, _, _)| b) == Some(block_idx);
     if response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
@@ -1175,6 +1212,14 @@ fn selectable_block(
             if let Some((b, anchor, _)) = ses.sel {
                 ses.sel = Some((b, anchor, hit(pos)));
             }
+        }
+        if std::env::var("BIJI_DBG").is_ok() && block_idx == 0 {
+            eprintln!(
+                "[blk0] rect={:?} links={:?} clicked={}",
+                rect,
+                ctx.links,
+                response.clicked()
+            );
         }
     } else if response.clicked() {
         // 单击：先看是否命中链接（biji://note/N → 内部导航，对位原

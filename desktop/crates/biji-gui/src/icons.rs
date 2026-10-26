@@ -374,6 +374,8 @@ pub fn clip(p: &Painter, r: Rect, c: Color32) {
 }
 
 /// 分享（三节点连线）。
+/// 上一代顶栏/编辑器钮图标，官方钮组改排后暂留备用。
+#[allow(dead_code)]
 pub fn share(p: &Painter, r: Rect, c: Color32) {
     let s = Stroke::new(sw(r), c);
     let n1 = egui::pos2(lerp(r.min.x, 0.18, r.max.x), r.center().y);
@@ -441,6 +443,8 @@ pub fn globe(p: &Painter, r: Rect, c: Color32) {
 }
 
 /// 信息（笔记信息）。
+/// 上一代顶栏/编辑器钮图标，官方钮组改排后暂留备用。
+#[allow(dead_code)]
 pub fn info(p: &Painter, r: Rect, c: Color32) {
     let s = Stroke::new(sw(r), c);
     let cc = r.center();
@@ -691,6 +695,8 @@ pub fn moon(p: &Painter, r: Rect, c: Color32, carve: Color32) {
 }
 
 /// 手机（线性竖机 + 底部横杠）。
+/// 上一代顶栏/编辑器钮图标，官方钮组改排后暂留备用。
+#[allow(dead_code)]
 pub fn phone(p: &Painter, r: Rect, c: Color32) {
     let s = Stroke::new(sw(r), c);
     let body = Rect::from_center_size(r.center(), egui::vec2(r.width() * 0.62, r.height() * 0.92));
@@ -711,6 +717,8 @@ pub fn phone(p: &Painter, r: Rect, c: Color32) {
 }
 
 /// 水平渐变圆角胶囊（四角以底色圆盖出圆角；bg 传所在面板底色）。
+/// 上一代顶栏/编辑器钮图标，官方钮组改排后暂留备用。
+#[allow(dead_code)]
 pub fn gradient_pill(p: &Painter, r: Rect, left: Color32, right: Color32, bg: Color32) {
     // 内部渐变（24 根竖条线性插值；无纹理依赖）
     let steps = 24usize;
@@ -1128,6 +1136,8 @@ pub fn icon_btn(ui: &mut egui::Ui, size: f32, tip: &str, paint: &PaintFn) -> egu
 }
 
 /// 灰底圆角图标钮（编辑器工具行，对位原客户端浅灰方钮 + 绿图标）。
+/// 上一代顶栏/编辑器钮图标，官方钮组改排后暂留备用。
+#[allow(dead_code)]
 pub fn chrome_btn(ui: &mut egui::Ui, size: f32, tip: &str, paint: &PaintFn) -> egui::Response {
     let pal = theme::pal();
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
@@ -1273,6 +1283,12 @@ pub fn graph_nodes(p: &Painter, r: Rect, c: Color32) {
     for n in [a, b, d] {
         p.circle_filled(n, r.width() * 0.12, c);
     }
+}
+
+/// 重做（撤销的水平镜像）。
+pub fn redo(p: &Painter, r: Rect, c: Color32) {
+    let mirrored = Rect::from_min_max(egui::pos2(r.max.x, r.min.y), egui::pos2(r.min.x, r.max.y));
+    undo(p, mirrored, c);
 }
 
 /// 帮助（圆 + 问号）。

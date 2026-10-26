@@ -115,6 +115,8 @@ struct EditorState {
     /// 表格交互矩形透出（预览帧回写，测试确定性定位）。
     tbl_cells: Vec<(usize, usize, egui::Rect)>,
     tbl_ops: Vec<(&'static str, egui::Rect)>,
+    /// 链接屏幕矩形（预览渲染透出，测试直点）。
+    link_rects: Vec<(i64, egui::Rect)>,
     /// 表格就地编辑会话（跨帧保持，同 preview_editing 语义）。
     table_edit: Option<preview::TableEdit>,
     /// 上一帧内容快照（TextEdit changed 时作为旧值推入 undo 栈）。
@@ -206,6 +208,8 @@ struct UiState {
     show_statusbar: bool,
     /// 快捷键列表窗口（帮助→快捷键）。
     show_shortcuts_win: bool,
+    /// 演示钩子：启动时一次性打开的笔记 uid（取走即空，避免逐帧抢占选中）。
+    autoopen: Option<i64>,
     /// Ctrl+F 置位：下一帧聚焦搜索框。
     focus_search: bool,
     /// 笔记信息弹窗（ℹ）。
@@ -301,6 +305,9 @@ impl UiState {
             show_wc: true,
             show_statusbar: true,
             show_shortcuts_win: false,
+            autoopen: std::env::var("BIJI_AUTOOPEN")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok()),
             focus_search: false,
             note_info: None,
             multi_select: Vec::new(),
@@ -876,6 +883,7 @@ impl BijiApp {
                         preview_buffer: String::new(),
                         preview_sel: None,
                         tbl_cells: Vec::new(),
+                        link_rects: Vec::new(),
                         tbl_ops: Vec::new(),
                         table_edit: None,
                         prev_content: view.html.clone(),
@@ -1518,7 +1526,6 @@ impl BijiApp {
                     .inner_margin(egui::Margin::symmetric(8.0, 9.0)),
             )
             .show(ctx, |ui| {
-                eprintln!("[menubar-probe] panel max_rect={:?}", ui.max_rect());
                 // 菜单按钮扁平化：静态纯文字，hover 才显灰底（对位原生菜单栏）
                 {
                     let w = &mut ui.style_mut().visuals.widgets;
@@ -2367,7 +2374,8 @@ impl BijiApp {
                     });
                 ui.add_space(4.0);
                 // 快捷方式分区（对位原客户端侧栏置顶笔记）：点击直达笔记
-                if !shortcut_notes.is_empty() {
+                {
+                    // 官方即使无快捷方式也显示该行（空区可折叠）
                     let (sc_hdr, _scp) = theme::nav_row_chev(
                         ui,
                         ui.available_width(),
@@ -3981,7 +3989,15 @@ impl BijiApp {
             /// 导出当前笔记为 PDF（⋯ 菜单入口）。
             ExportPdf,
         }
+        let mut undo_req = false;
+        let mut redo_req = false;
         let (action, uid, info_req, find_action, open_link) = {
+            let full_note_shared = self
+                .st
+                .selected_note
+                .and_then(|uid| self.service.store().get_note(uid).ok())
+                .map(|f| f.note.is_shared)
+                .unwrap_or(false);
             let Some(ed) = self.st.editor.as_mut() else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.add_space(80.0);
@@ -4046,57 +4062,136 @@ impl BijiApp {
                                 .small()
                                 .color(theme::pal().subtle),
                         );
-                        if crate::icons::icon_btn(ui, 20.0, "笔记信息", &crate::icons::info)
-                            .clicked()
-                        {
-                            show_info = true;
-                        }
                         if full.note.is_shared {
                             let (gr, _gr2) = ui
                                 .allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                             crate::icons::globe(ui.painter(), gr, theme::pal().green_dark);
-                            ui.label(
-                                egui::RichText::new("已共享")
-                                    .small()
-                                    .color(theme::pal().green_dark),
-                            );
                         }
-                        // 手机预览 + AI 渐变胶囊（对位原客户端编辑器顶栏右端）
-                        if crate::icons::icon_btn(ui, 24.0, "手机预览", &crate::icons::phone)
+                        // 官方 meta 右侧钮组：↶ ↷ 查看历史版本 ⤴ 👤+ ⋯
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // ⋯ 更多（编辑/预览/放映/导出/笔记信息/移入回收站）
+                            let more =
+                                crate::icons::icon_btn(ui, 24.0, "更多操作", &crate::icons::dots);
+                            egui::popup_below_widget(
+                                ui,
+                                egui::Id::new("editor-more-menu"),
+                                &more,
+                                egui::PopupCloseBehavior::CloseOnClick,
+                                |ui| {
+                                    ui.set_min_width(150.0);
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(if ed.preview {
+                                            &crate::icons::pencil
+                                        } else {
+                                            &crate::icons::eye
+                                        }),
+                                        if ed.preview {
+                                            "编辑模式"
+                                        } else {
+                                            "预览模式"
+                                        },
+                                    ) {
+                                        if ed.preview && ed.dirty {
+                                            action = Action::Save;
+                                        }
+                                        ed.preview = !ed.preview;
+                                        ui.close_menu();
+                                    }
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::play),
+                                        "放映本篇",
+                                    ) {
+                                        action = Action::Present;
+                                        ui.close_menu();
+                                    }
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::printer),
+                                        "导出 PDF",
+                                    ) {
+                                        action = Action::ExportPdf;
+                                        ui.close_menu();
+                                    }
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::info),
+                                        "笔记信息",
+                                    ) {
+                                        show_info = true;
+                                        ui.close_menu();
+                                    }
+                                    if crate::icons::menu_item(
+                                        ui,
+                                        Some(&crate::icons::trash),
+                                        "移入回收站",
+                                    ) {
+                                        action = Action::Trash;
+                                        ui.close_menu();
+                                    }
+                                },
+                            );
+                            if crate::icons::icon_btn(
+                                ui,
+                                24.0,
+                                "协作（暂未开放）",
+                                &crate::icons::person_plus,
+                            )
                             .clicked()
-                        {
-                            self.st.status = "手机预览暂未开放".into();
-                        }
-                        {
-                            let (ar, aresp) = ui
-                                .allocate_exact_size(egui::vec2(58.0, 24.0), egui::Sense::click());
-                            crate::icons::gradient_pill(
-                                ui.painter(),
-                                ar,
-                                egui::Color32::from_rgb(0x6D, 0x97, 0xFF),
-                                egui::Color32::from_rgb(0x91, 0x84, 0xFF),
-                                theme::pal().bg,
-                            );
-                            let sp = egui::Rect::from_center_size(
-                                egui::pos2(ar.min.x + 17.0, ar.center().y),
-                                egui::vec2(11.0, 11.0),
-                            );
-                            crate::icons::sparkle(ui.painter(), sp, theme::pal().white);
-                            let g = ui.painter().layout_no_wrap(
-                                "AI".into(),
-                                egui::FontId::new(13.0, theme::bold_family()),
-                                theme::pal().white,
-                            );
-                            ui.painter().galley(
-                                egui::pos2(ar.min.x + 27.0, ar.center().y - g.size().y * 0.5),
-                                g,
-                                theme::pal().white,
-                            );
-                            if aresp.clicked() {
-                                self.st.status = "AI 助理暂未开放".into();
+                            {
+                                self.st.status = "协作暂未开放".into();
                             }
-                            let _ = aresp.on_hover_text("AI 助理");
-                        }
+                            let share_tip = if full_note_shared {
+                                "取消共享"
+                            } else {
+                                "共享"
+                            };
+                            if crate::icons::icon_btn(ui, 24.0, share_tip, &crate::icons::share_box)
+                                .clicked()
+                            {
+                                action = Action::ToggleShared;
+                            }
+                            // 查看历史版本（绿字绿描边药丸，对位官方）
+                            let ver = egui::Frame::default()
+                                .stroke(egui::Stroke::new(1.0_f32, theme::pal().green_dark))
+                                .rounding(10.0)
+                                .inner_margin(egui::Margin::symmetric(8.0, 3.0));
+                            let ver_inner = ver.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let (vr, _vr2) = ui.allocate_exact_size(
+                                        egui::vec2(12.0, 12.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    crate::icons::clock(ui.painter(), vr, theme::pal().green_dark);
+                                    ui.label(
+                                        egui::RichText::new("查看历史版本")
+                                            .small()
+                                            .color(theme::pal().green_dark),
+                                    );
+                                });
+                            });
+                            if ui
+                                .interact(
+                                    ver_inner.response.rect,
+                                    egui::Id::new("version-pill"),
+                                    egui::Sense::click(),
+                                )
+                                .clicked()
+                            {
+                                self.st.status = "历史版本快照（规划中）".into();
+                            }
+                            if crate::icons::icon_btn(ui, 22.0, "重做(Ctrl+Y)", &crate::icons::redo)
+                                .clicked()
+                            {
+                                redo_req = true;
+                            }
+                            if crate::icons::icon_btn(ui, 22.0, "撤销(Ctrl+Z)", &crate::icons::undo)
+                                .clicked()
+                            {
+                                undo_req = true;
+                            }
+                        });
                     });
                     // AI 助理行（对位原客户端编辑器顶部 AI 入口；视觉占位）
                     ui.horizontal(|ui| {
@@ -4187,137 +4282,6 @@ impl BijiApp {
                 ed.last_edit = Some(Instant::now());
             }
             ui.add_space(2.0);
-
-            // 工具行（对位原客户端：保存 pill + 版本 pill + 灰底圆角图标钮；
-            // 编辑/预览/删除/放映收进 ⋯ 菜单；只改 ed 状态与动作标记）
-            let full_note_shared = self
-                .service
-                .store()
-                .get_note(ed.uid)
-                .ok()
-                .map(|f| f.note.is_shared)
-                .unwrap_or(false);
-            ui.horizontal(|ui| {
-                if ed.dirty {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("● 保存").color(theme::pal().green_dark),
-                            )
-                            .fill(theme::pal().bg)
-                            .stroke(egui::Stroke::NONE),
-                        )
-                        .clicked()
-                    {
-                        action = Action::Save;
-                    }
-                } else {
-                    ui.label(
-                        egui::RichText::new("已保存")
-                            .small()
-                            .color(theme::pal().subtle),
-                    );
-                }
-                // 版本 pill（绿字浅绿底；视觉对位，暂为入口占位）
-                let ver = egui::Frame::default()
-                    .fill(theme::pal().green_tint)
-                    .stroke(egui::Stroke::NONE)
-                    .rounding(10.0)
-                    .inner_margin(egui::Margin::symmetric(8.0, 3.0));
-                let ver_inner = ver.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let (vr, _vr2) =
-                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                        crate::icons::clock(ui.painter(), vr, theme::pal().green_dark);
-                        ui.label(
-                            egui::RichText::new("版本")
-                                .small()
-                                .color(theme::pal().green_dark),
-                        );
-                    });
-                });
-                ui.interact(
-                    ver_inner.response.rect,
-                    egui::Id::new("version-pill"),
-                    egui::Sense::hover(),
-                )
-                .on_hover_text("历史版本");
-                // 附件提示（拖入文件添加；附件条在下方展示）
-                if crate::icons::icon_btn(ui, 24.0, "拖入文件以添加附件", &crate::icons::clip)
-                    .clicked()
-                {
-                    self.st.status = "把文件拖入笔记正文区即可添加附件".into();
-                }
-                // 共享（灰底圆角钮，对位原客户端分享钮）
-                if crate::icons::chrome_btn(
-                    ui,
-                    24.0,
-                    "协作（暂未开放）",
-                    &crate::icons::person_plus,
-                )
-                .clicked()
-                {
-                    self.st.status = "协作暂未开放".into();
-                }
-                if crate::icons::chrome_btn(
-                    ui,
-                    24.0,
-                    if full_note_shared {
-                        "取消共享"
-                    } else {
-                        "共享"
-                    },
-                    &crate::icons::share,
-                )
-                .clicked()
-                {
-                    action = Action::ToggleShared;
-                }
-                // ⋯ 更多：编辑/预览/放映/导出/删除
-                let more = crate::icons::chrome_btn(ui, 24.0, "更多操作", &crate::icons::dots);
-                egui::popup_below_widget(
-                    ui,
-                    egui::Id::new("editor-more-menu"),
-                    &more,
-                    egui::PopupCloseBehavior::CloseOnClick,
-                    |ui| {
-                        ui.set_min_width(150.0);
-                        if crate::icons::menu_item(
-                            ui,
-                            Some(if ed.preview {
-                                &crate::icons::pencil
-                            } else {
-                                &crate::icons::eye
-                            }),
-                            if ed.preview {
-                                "编辑模式"
-                            } else {
-                                "预览模式"
-                            },
-                        ) {
-                            if ed.preview && ed.dirty {
-                                action = Action::Save;
-                            }
-                            ed.preview = !ed.preview;
-                            ui.close_menu();
-                        }
-                        if crate::icons::menu_item(ui, Some(&crate::icons::play), "放映本篇") {
-                            action = Action::Present;
-                            ui.close_menu();
-                        }
-                        if crate::icons::menu_item(ui, Some(&crate::icons::printer), "导出 PDF") {
-                            action = Action::ExportPdf;
-                            ui.close_menu();
-                        }
-                        if crate::icons::menu_item(ui, Some(&crate::icons::trash), "移入回收站")
-                        {
-                            action = Action::Trash;
-                            ui.close_menu();
-                        }
-                    },
-                );
-            });
-            ui.separator();
 
             // 附件条
             let uid = ed.uid;
@@ -4489,6 +4453,52 @@ impl BijiApp {
                             });
                         });
                     }
+                    // 官方推荐标签 chips（浅绿底绿字带+；点击创建并挂上）
+                    let (cir, _cir) =
+                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    ui.painter().circle_stroke(
+                        cir.center(),
+                        8.0,
+                        egui::Stroke::new(1.0_f32, theme::pal().green_dark),
+                    );
+                    crate::icons::tag(ui.painter(), cir.shrink(4.0), theme::pal().green_dark);
+                    for name in ["人工智能", "开源", "模型", "科技", "语音"] {
+                        if attached.iter().any(|(_, n)| n == name) {
+                            continue;
+                        }
+                        let chip = egui::Frame::default()
+                            .fill(theme::pal().green_tint)
+                            .stroke(egui::Stroke::NONE)
+                            .rounding(10.0)
+                            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+                        let inner = chip.show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{name} +"))
+                                    .small()
+                                    .color(theme::pal().green_dark),
+                            );
+                        });
+                        if ui
+                            .interact(
+                                inner.response.rect,
+                                egui::Id::new(("rec-tag", name)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_text(format!("创建并挂上标签「{name}」"))
+                            .clicked()
+                        {
+                            let existing = self.service.store().list_tags().ok().and_then(|ts| {
+                                ts.into_iter().find(|t| t.name == name).map(|t| t.uid)
+                            });
+                            match existing {
+                                Some(t) => action = Action::AttachTag(t),
+                                None => match self.service.store().create_tag(name, None) {
+                                    Ok(t) => action = Action::AttachTag(t),
+                                    Err(e) => self.st.status = format!("新建标签失败: {e}"),
+                                },
+                            }
+                        }
+                    }
                 });
             }
 
@@ -4503,11 +4513,13 @@ impl BijiApp {
                     sel: ed.preview_sel,
                     sel_pieces: Vec::new(),
                     request_format: None,
+                    request_list: None,
                     open_note: None,
                     table_edit: ed.table_edit.clone(),
                     request_cell: None,
                     request_table: None,
                     tbl_cells: Vec::new(),
+                    link_rects: Vec::new(),
                     tbl_ops: Vec::new(),
                     request_widths: None,
                     col_drag_rects: Vec::new(),
@@ -4596,78 +4608,215 @@ impl BijiApp {
                         }
                     }
                 }
-                // 编辑工具栏（预览态常驻，对位官方格式栏；作用于所见选区）
-                {
-                    let purple = theme::pal().ai_purple;
-                    ui.horizontal(|ui| {
-                        let (sr, _sr) =
-                            ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
-                        crate::icons::sparkle(ui.painter(), sr, purple);
-                        ui.label(egui::RichText::new("AI 助理").color(purple));
-                        ui.separator();
-                        // 扁平白底钮（同源码格式行处理）
-                        {
-                            let w = &mut ui.style_mut().visuals.widgets;
-                            w.inactive.bg_fill = theme::pal().white;
-                            w.inactive.weak_bg_fill = theme::pal().white;
-                            w.inactive.bg_stroke = egui::Stroke::NONE;
-                            w.hovered.bg_fill = theme::pal().hovered;
-                            w.hovered.weak_bg_fill = theme::pal().hovered;
-                            w.hovered.bg_stroke = egui::Stroke::NONE;
-                        }
-                        const BTNS: &[(&str, &str, &str, &str)] = &[
-                            ("B", "b", "", "粗体(Ctrl+B)"),
-                            ("I", "i", "", "斜体(Ctrl+I)"),
-                            ("U", "u", "", "下划线(Ctrl+U)"),
-                            ("S", "s", "", "删除线"),
-                            ("{ }", "code", "", "行内代码"),
-                            (
-                                "高亮",
-                                "span",
-                                "style=\"background-color:#ffd54f\"",
-                                "高亮(Ctrl+Shift+H)",
-                            ),
-                            ("链接", "a", "href=\"\"", "超链接"),
-                        ];
-                        for (label, tag, attr, tip) in BTNS {
-                            let attrs: Vec<(String, String)> = if attr.is_empty() {
-                                Vec::new()
-                            } else {
-                                let (k, v) = attr.split_once('=').unwrap_or(("href", "\"\""));
-                                vec![(k.to_string(), v.trim_matches('"').to_string())]
-                            };
-                            if ui
-                                .button(egui::RichText::new(*label).size(13.0))
-                                .on_hover_text(*tip)
-                                .clicked()
+                if std::env::var("BIJI_NOTOOLBAR").is_err() {
+                    // 编辑工具栏（预览态常驻，对位官方格式栏完整排布）：
+                    // AI 助理 | 字体/字号/颜色（下拉） | B I U S | 高亮 {} | 列表×3 | 表格 — | 链接 清除
+                    {
+                        let purple = theme::pal().ai_purple;
+                        ui.horizontal(|ui| {
+                            let (sr, _sr) = ui
+                                .allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
+                            crate::icons::sparkle(ui.painter(), sr, purple);
+                            // AI 助理下拉（占位提示）
+                            egui::ComboBox::from_id_salt("tb-ai")
+                                .selected_text(egui::RichText::new("AI 助理").color(purple))
+                                .width(70.0)
+                                .show_ui(ui, |ui| {
+                                    let _ = ui.selectable_label(false, "向 AI 提问");
+                                    let _ = ui.selectable_label(false, "总结本篇");
+                                });
+                            ui.separator();
+                            // 扁平白底钮（同源码格式行）
                             {
-                                match preview::sel_format_req(&sess, tag, attrs) {
-                                    Some(f) => sess.request_format = Some(f),
-                                    None => {
-                                        self.st.status = "先在正文选中内容再施加格式".into();
+                                let w = &mut ui.style_mut().visuals.widgets;
+                                w.inactive.bg_fill = theme::pal().white;
+                                w.inactive.weak_bg_fill = theme::pal().white;
+                                w.inactive.bg_stroke = egui::Stroke::NONE;
+                                w.hovered.bg_fill = theme::pal().hovered;
+                                w.hovered.weak_bg_fill = theme::pal().hovered;
+                                w.hovered.bg_stroke = egui::Stroke::NONE;
+                            }
+                            let apply_span =
+                                |sess: &preview::PreviewSession,
+                                 style: &str|
+                                 -> Option<preview::FormatApply> {
+                                    preview::sel_format_req(
+                                        sess,
+                                        "span",
+                                        vec![("style".into(), style.into())],
+                                    )
+                                };
+                            // 字体下拉（选区 span font-family）
+                            let fonts = ["微软雅黑", "宋体", "黑体", "楷体"];
+                            let font_sel = fonts[0];
+                            egui::ComboBox::from_id_salt("tb-font")
+                                .selected_text(font_sel)
+                                .width(90.0)
+                                .show_ui(ui, |ui| {
+                                    for f in fonts {
+                                        if ui.selectable_label(false, f).clicked() {
+                                            let style = format!("font-family:'{f}'");
+                                            match apply_span(&sess, &style) {
+                                                Some(f) => sess.request_format = Some(f),
+                                                None => {
+                                                    self.st.status =
+                                                        "先在正文选中内容再施加格式".into();
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            // 字号下拉（选区 span font-size）
+                            let sizes = ["12", "14", "16", "18", "24"];
+                            egui::ComboBox::from_id_salt("tb-size")
+                                .selected_text("16")
+                                .width(52.0)
+                                .show_ui(ui, |ui| {
+                                    for sz in sizes {
+                                        if ui.selectable_label(false, sz).clicked() {
+                                            let style = format!("font-size:{sz}px");
+                                            match apply_span(&sess, &style) {
+                                                Some(f) => sess.request_format = Some(f),
+                                                None => {
+                                                    self.st.status =
+                                                        "先在正文选中内容再施加格式".into();
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            // 颜色下拉（选区 span color）
+                            egui::ComboBox::from_id_salt("tb-color")
+                                .selected_text(egui::RichText::new("a").strong())
+                                .width(30.0)
+                                .show_ui(ui, |ui| {
+                                    let colors =
+                                        [("红", "#D83931"), ("蓝", "#1B6EC2"), ("绿", "#0E8A50")];
+                                    for (cname, hex) in colors {
+                                        if ui
+                                            .selectable_label(
+                                                false,
+                                                egui::RichText::new(cname).color(
+                                                    egui::Color32::from_rgb(0xD8, 0x39, 0x31),
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            let style = format!("color:{hex}");
+                                            match apply_span(&sess, &style) {
+                                                Some(f) => sess.request_format = Some(f),
+                                                None => {
+                                                    self.st.status =
+                                                        "先在正文选中内容再施加格式".into();
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            ui.separator();
+                            const BTNS: &[(&str, &str, &str, &str)] = &[
+                                ("B", "b", "", "粗体(Ctrl+B)"),
+                                ("I", "i", "", "斜体(Ctrl+I)"),
+                                ("U", "u", "", "下划线(Ctrl+U)"),
+                                ("S", "s", "", "删除线"),
+                                ("{ }", "code", "", "行内代码"),
+                                (
+                                    "高亮",
+                                    "span",
+                                    "style=\"background-color:#ffd54f\"",
+                                    "高亮(Ctrl+Shift+H)",
+                                ),
+                                ("链接", "a", "href=\"\"", "超链接"),
+                            ];
+                            for (label, tag, attr, tip) in BTNS {
+                                let attrs: Vec<(String, String)> = if attr.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    let (k, v) = attr.split_once('=').unwrap_or(("href", "\"\""));
+                                    vec![(k.to_string(), v.trim_matches('"').to_string())]
+                                };
+                                if ui
+                                    .button(egui::RichText::new(*label).size(13.0))
+                                    .on_hover_text(*tip)
+                                    .clicked()
+                                {
+                                    match preview::sel_format_req(&sess, tag, attrs) {
+                                        Some(f) => sess.request_format = Some(f),
+                                        None => {
+                                            self.st.status = "先在正文选中内容再施加格式".into();
+                                        }
                                     }
                                 }
                             }
-                        }
-                        ui.separator();
-                        if ui
-                            .button(egui::RichText::new("☑").size(13.0))
-                            .on_hover_text("待办事项（源码模式插入）")
-                            .clicked()
-                        {
-                            self.st.status = "待办事项：切源码模式后由 格式(O) 菜单插入".into();
-                        }
-                        ui.separator();
-                        if ui
-                            .button(egui::RichText::new("表格").size(13.0))
-                            .on_hover_text("插入表格（源码模式）")
-                            .clicked()
-                        {
-                            self.st.status = "表格：切源码模式后由 格式(O) 菜单插入".into();
-                        }
-                    });
-                    ui.add_space(2.0);
+                            ui.separator();
+                            // 列表三钮（块级，所见即所得）
+                            if ui
+                                .button(egui::RichText::new("•").size(14.0))
+                                .on_hover_text("无序列表")
+                                .clicked()
+                            {
+                                sess.request_list = Some(false);
+                            }
+                            if ui
+                                .button(egui::RichText::new("1.").size(12.0))
+                                .on_hover_text("有序列表")
+                                .clicked()
+                            {
+                                sess.request_list = Some(true);
+                            }
+                            if ui
+                                .button(egui::RichText::new("☑").size(13.0))
+                                .on_hover_text("待办事项（源码模式插入）")
+                                .clicked()
+                            {
+                                self.st.status = "待办事项：切源码模式后由 格式(O) 菜单插入".into();
+                            }
+                            ui.separator();
+                            if ui
+                                .button(egui::RichText::new("表格").size(13.0))
+                                .on_hover_text("插入表格（源码模式）")
+                                .clicked()
+                            {
+                                self.st.status = "表格：切源码模式后由 格式(O) 菜单插入".into();
+                            }
+                            if ui
+                                .button(egui::RichText::new("—").size(13.0))
+                                .on_hover_text("插入水平线（源码模式）")
+                                .clicked()
+                            {
+                                self.st.status = "水平线：切源码模式后由 格式(O) 菜单插入".into();
+                            }
+                            ui.separator();
+                            // 链接已并入上方按钮组；清除格式（提示）
+                            if ui
+                                .button(egui::RichText::new("清除").size(13.0))
+                                .on_hover_text("清除格式（源码模式）")
+                                .clicked()
+                            {
+                                self.st.status = "清除格式暂未实现".into();
+                            }
+                        });
+                        ui.add_space(2.0);
+                    }
                 }
+                // 块级列表施加（选区首块 → ul/ol）
+                if let Some(ordered) = sess.request_list.take() {
+                    if let Some(doc) = parsed.as_ref() {
+                        if let Some((blk, _, _)) = sess.sel {
+                            let mut doc_mut = doc.clone();
+                            if preview::apply_block_list(&mut doc_mut, blk, ordered) {
+                                doc_mut.sanitize();
+                                ed.content = doc_mut.to_xml();
+                                ed.dirty = true;
+                                ed.last_edit = Some(Instant::now());
+                                self.st.status = "已应用列表（所见即所得）".into();
+                            }
+                        } else {
+                            self.st.status = "先在正文选中内容再应用列表".into();
+                        }
+                    }
+                }
+
                 // 渲染态选区格式施加：拆分文本节点插入标记元素后整体回写
                 if let Some(fmt) = sess.request_format.take() {
                     if let Some(doc) = parsed.as_ref() {
@@ -4688,6 +4837,11 @@ impl BijiApp {
                 ed.preview_buffer = sess.buffer;
                 ed.preview_sel = sess.sel;
                 ed.tbl_cells = sess.tbl_cells.clone();
+                ed.link_rects = sess
+                    .link_rects
+                    .iter()
+                    .map(|r| (99999_i64, *r)) // uid 占位：测试只取矩形
+                    .collect();
                 ed.tbl_ops = sess.tbl_ops.clone();
                 ed.table_edit = sess.table_edit.take();
                 open_link = sess.open_note;
@@ -4885,6 +5039,12 @@ impl BijiApp {
                 open_link,
             )
         };
+        if undo_req {
+            self.perform_undo();
+        }
+        if redo_req {
+            self.perform_redo();
+        }
         if let Some(u) = info_req {
             self.st.note_info = Some(u);
         }
@@ -6153,6 +6313,10 @@ impl BijiApp {
 
 impl eframe::App for BijiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // TEMP-SHOT-HOOK（提交前撤销）：演示库启动时一次性打开指定笔记
+        if let Some(u) = self.st.autoopen.take() {
+            Self::click_select(&mut self.st, u, egui::Modifiers::NONE);
+        }
         // 每帧先恢复浅色（标注窗口的深色视觉只局部生效一帧）。
         theme::apply(ctx);
         self.drain_commands(ctx);
@@ -6579,7 +6743,7 @@ mod tests {
 
         // ---- 1) 右键「工作」笔记本行 → 菜单 → 重命名 → 对话框 → 确定
         let mut menu = None;
-        for yi in (60..280).step_by(8) {
+        for yi in (60..340).step_by(8) {
             let y = yi as f32;
             let pos = egui::pos2(100.0, y);
             click(&ctx, &mut app, pos, true);
@@ -8339,16 +8503,13 @@ mod tests {
         run(&ctx, &mut app, vec![]);
         assert!(!app.st.rows[0].shared, "初始无徽标");
 
-        // 编辑器工具行「共享」钮：以「版本 pill」id 定位（动态、免盲扫），
-        // 共享钮在其右侧 +clip(24)+协作(24)+三倍间距(8)
+        // 编辑器 meta 右簇「共享」钮：以「版本 pill」id 定位（动态、免盲扫），
+        // RTL 追加序 =⋯,人+,共享,药丸,重做,撤销 → 共享钮在药丸右侧 +间距(8)+半宽(12)
         let vrect = ctx
             .read_response(egui::Id::new("version-pill"))
             .expect("版本 pill 应已渲染")
             .rect;
-        let share_pos = egui::pos2(
-            vrect.max.x + 8.0 + 24.0 + 8.0 + 24.0 + 8.0 + 12.0,
-            vrect.center().y,
-        );
+        let share_pos = egui::pos2(vrect.max.x + 8.0 + 12.0, vrect.center().y);
         click(&ctx, &mut app, share_pos);
         assert!(
             app.service.store().get_note(uid).unwrap().note.is_shared,
@@ -8577,23 +8738,21 @@ mod tests {
             "应处于预览态（链接点击路径）"
         );
 
-        // 扫描编辑器正文区域点击，直到跳转到目标笔记
-        let mut jumped = false;
-        'scan: for yi in (170..560).step_by(10) {
-            for xi in (505..1300).step_by(24) {
-                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
-                if app.st.selected_note == Some(target) {
-                    jumped = true;
-                    break 'scan;
-                }
-                // 护栏：误入行内编辑态（✎ 按钮）不致命，但不应改选其它笔记
-                assert!(
-                    app.st.selected_note.is_some(),
-                    "扫描不应丢失选中（xi={xi} yi={yi}）"
-                );
-            }
-        }
-        assert!(jumped, "点击链接应跳转到目标笔记");
+        // 直点链接矩形中心（渲染透出的屏幕矩形，免盲扫）
+        let lrect1 = app
+            .st
+            .editor
+            .as_ref()
+            .and_then(|e| e.link_rects.first().copied())
+            .expect("链接矩形应已透出")
+            .1;
+        click(&ctx, &mut app, lrect1.center());
+        assert!(
+            app.st.selected_note == Some(target),
+            "点击链接应跳转到目标笔记（点 {} 后 sel={:?}）",
+            lrect1.center(),
+            app.st.selected_note
+        );
         run(&ctx, &mut app, vec![]);
         assert_eq!(
             app.st.editor.as_ref().map(|e| e.title.clone()),
@@ -8613,23 +8772,21 @@ mod tests {
             .unwrap();
         app.st.selected_note = Some(bad);
         run(&ctx, &mut app, vec![]);
-        let mut hit_bad = false;
-        'scan2: for yi in (170..560).step_by(10) {
-            for xi in (505..1300).step_by(8) {
-                click(&ctx, &mut app, egui::pos2(xi as f32, yi as f32));
-                if xi % 120 == 40 && yi % 50 == 0 {
-                    eprintln!(
-                        "scan2 xi={} yi={} status={:?} sel={:?}",
-                        xi, yi, app.st.status, app.st.selected_note
-                    );
-                }
-                if app.st.status.contains("不存在") {
-                    hit_bad = true;
-                    break 'scan2;
-                }
-            }
-        }
-        assert!(hit_bad, "坏链接应给出诚实提示");
+        // 直点坏链接矩形中心（渲染透出的屏幕矩形，免盲扫）
+        let lrect = app
+            .st
+            .editor
+            .as_ref()
+            .and_then(|e| e.link_rects.first().copied())
+            .expect("坏链接矩形应已透出")
+            .1;
+        click(&ctx, &mut app, lrect.center());
+        assert!(
+            app.st.status.contains("不存在"),
+            "坏链接应给出诚实提示（点 {} 后 status={:?}）",
+            lrect.center(),
+            app.st.status
+        );
         assert_eq!(app.st.selected_note, Some(bad), "坏链接不应跳转");
     }
 
