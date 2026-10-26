@@ -2999,41 +2999,47 @@ impl BijiApp {
                 {
                     self.st.status = "知识星图暂未实现（规划中）".into();
                 }
-                // 底部图标行（右对齐）：列表视图 / 帮助 / 回收站
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // 底部图标行（钉在侧栏底部）：列表视图 / 帮助 / 回收站
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(14.0);
-                    let (g1, g1r) =
-                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
-                    if g1r.hovered() {
-                        ui.painter().rect_filled(g1, 6.0, theme::pal().hovered);
-                    }
-                    crate::icons::rows_view(ui.painter(), g1.shrink(3.0), theme::pal().subtle);
-                    if g1r.clicked() {
-                        self.st.status = "侧栏列表视图切换暂未实现".into();
-                    }
-                    let _g1r = g1r.on_hover_text("侧栏列表视图");
-                    let (g2, g2r) =
-                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
-                    if g2r.hovered() {
-                        ui.painter().rect_filled(g2, 6.0, theme::pal().hovered);
-                    }
-                    crate::icons::help_circle(ui.painter(), g2.shrink(3.0), theme::pal().subtle);
-                    if g2r.clicked() {
-                        self.st.status = "帮助：见 帮助(H) 菜单（F1）".into();
-                    }
-                    let _g2r = g2r.on_hover_text("帮助");
-                    let (g3, g3r) =
-                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
-                    if g3r.hovered() {
-                        ui.painter().rect_filled(g3, 6.0, theme::pal().hovered);
-                    }
-                    crate::icons::trash(ui.painter(), g3.shrink(3.0), theme::pal().subtle);
-                    if g3r.clicked() {
-                        self.st.trash_view = true;
-                        action = Some(self.st.selection.clone());
-                    }
-                    let _g3r = g3r.on_hover_text("回收站");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(14.0);
+                        let (g1, g1r) =
+                            ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                        if g1r.hovered() {
+                            ui.painter().rect_filled(g1, 6.0, theme::pal().hovered);
+                        }
+                        crate::icons::rows_view(ui.painter(), g1.shrink(3.0), theme::pal().subtle);
+                        if g1r.clicked() {
+                            self.st.status = "侧栏列表视图切换暂未实现".into();
+                        }
+                        let _g1r = g1r.on_hover_text("侧栏列表视图");
+                        let (g2, g2r) =
+                            ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                        if g2r.hovered() {
+                            ui.painter().rect_filled(g2, 6.0, theme::pal().hovered);
+                        }
+                        crate::icons::help_circle(
+                            ui.painter(),
+                            g2.shrink(3.0),
+                            theme::pal().subtle,
+                        );
+                        if g2r.clicked() {
+                            self.st.status = "帮助：见 帮助(H) 菜单（F1）".into();
+                        }
+                        let _g2r = g2r.on_hover_text("帮助");
+                        let (g3, g3r) =
+                            ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                        if g3r.hovered() {
+                            ui.painter().rect_filled(g3, 6.0, theme::pal().hovered);
+                        }
+                        crate::icons::trash(ui.painter(), g3.shrink(3.0), theme::pal().subtle);
+                        if g3r.clicked() {
+                            self.st.trash_view = true;
+                            action = Some(self.st.selection.clone());
+                        }
+                        let _g3r = g3r.on_hover_text("回收站");
+                    });
                 });
             });
 
@@ -4589,6 +4595,78 @@ impl BijiApp {
                             }
                         }
                     }
+                }
+                // 编辑工具栏（预览态常驻，对位官方格式栏；作用于所见选区）
+                {
+                    let purple = theme::pal().ai_purple;
+                    ui.horizontal(|ui| {
+                        let (sr, _sr) =
+                            ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
+                        crate::icons::sparkle(ui.painter(), sr, purple);
+                        ui.label(egui::RichText::new("AI 助理").color(purple));
+                        ui.separator();
+                        // 扁平白底钮（同源码格式行处理）
+                        {
+                            let w = &mut ui.style_mut().visuals.widgets;
+                            w.inactive.bg_fill = theme::pal().white;
+                            w.inactive.weak_bg_fill = theme::pal().white;
+                            w.inactive.bg_stroke = egui::Stroke::NONE;
+                            w.hovered.bg_fill = theme::pal().hovered;
+                            w.hovered.weak_bg_fill = theme::pal().hovered;
+                            w.hovered.bg_stroke = egui::Stroke::NONE;
+                        }
+                        const BTNS: &[(&str, &str, &str, &str)] = &[
+                            ("B", "b", "", "粗体(Ctrl+B)"),
+                            ("I", "i", "", "斜体(Ctrl+I)"),
+                            ("U", "u", "", "下划线(Ctrl+U)"),
+                            ("S", "s", "", "删除线"),
+                            ("{ }", "code", "", "行内代码"),
+                            (
+                                "高亮",
+                                "span",
+                                "style=\"background-color:#ffd54f\"",
+                                "高亮(Ctrl+Shift+H)",
+                            ),
+                            ("链接", "a", "href=\"\"", "超链接"),
+                        ];
+                        for (label, tag, attr, tip) in BTNS {
+                            let attrs: Vec<(String, String)> = if attr.is_empty() {
+                                Vec::new()
+                            } else {
+                                let (k, v) = attr.split_once('=').unwrap_or(("href", "\"\""));
+                                vec![(k.to_string(), v.trim_matches('"').to_string())]
+                            };
+                            if ui
+                                .button(egui::RichText::new(*label).size(13.0))
+                                .on_hover_text(*tip)
+                                .clicked()
+                            {
+                                match preview::sel_format_req(&sess, tag, attrs) {
+                                    Some(f) => sess.request_format = Some(f),
+                                    None => {
+                                        self.st.status = "先在正文选中内容再施加格式".into();
+                                    }
+                                }
+                            }
+                        }
+                        ui.separator();
+                        if ui
+                            .button(egui::RichText::new("☑").size(13.0))
+                            .on_hover_text("待办事项（源码模式插入）")
+                            .clicked()
+                        {
+                            self.st.status = "待办事项：切源码模式后由 格式(O) 菜单插入".into();
+                        }
+                        ui.separator();
+                        if ui
+                            .button(egui::RichText::new("表格").size(13.0))
+                            .on_hover_text("插入表格（源码模式）")
+                            .clicked()
+                        {
+                            self.st.status = "表格：切源码模式后由 格式(O) 菜单插入".into();
+                        }
+                    });
+                    ui.add_space(2.0);
                 }
                 // 渲染态选区格式施加：拆分文本节点插入标记元素后整体回写
                 if let Some(fmt) = sess.request_format.take() {

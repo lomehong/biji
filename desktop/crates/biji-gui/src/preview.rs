@@ -580,6 +580,30 @@ pub fn apply_format_edits(doc: &mut Enml, apply: &FormatApply) -> usize {
 
 /// 选区 → 格式编辑列表：对每个与 [sel_start, sel_end) 相交的片段，
 /// 求其节点内 char 区间（文本节点不分裂：节点内起点恒为 0）。
+/// 由当前所见选区构造格式施加请求（无有效选区返回 None）。
+/// 供编辑器预览态常驻工具栏与选区浮动条共用。
+pub fn sel_format_req(
+    ses: &PreviewSession,
+    tag: &str,
+    attrs: Vec<(String, String)>,
+) -> Option<FormatApply> {
+    let (b, a, h) = ses.sel?;
+    if a == h || !ses.sel_pieces.iter().any(|p| p.path.first() == Some(&b)) {
+        return None;
+    }
+    Some(selection_edits(
+        &ses.sel_pieces,
+        ses.sel_pieces
+            .last()
+            .map(|p| p.char_start + p.char_len)
+            .unwrap_or(0),
+        a.min(h),
+        a.max(h),
+        tag,
+        attrs,
+    ))
+}
+
 pub fn selection_edits(
     pieces: &[Piece],
     block_plain_len: usize,
@@ -1273,11 +1297,13 @@ pub fn render_interactive(ui: &mut egui::Ui, doc: &Enml, ses: &mut PreviewSessio
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                if ui
-                    .small_button("✎")
-                    .on_hover_text("编辑此块 HTML（格式保留）")
-                    .clicked()
-                {
+                let edit_btn = crate::icons::icon_btn(
+                    ui,
+                    24.0,
+                    "编辑此块 HTML（格式保留）",
+                    &crate::icons::pencil,
+                );
+                if edit_btn.clicked() {
                     ses.editing = Some(i);
                     ses.sel = None; // 进编辑态清选区
                     ses.buffer = match child {
