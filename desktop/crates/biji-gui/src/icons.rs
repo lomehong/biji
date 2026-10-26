@@ -638,6 +638,8 @@ pub fn sync_arrows(p: &Painter, r: Rect, c: Color32) {
 }
 
 /// 太阳（浅色模式标记：圆 + 八向短芒）。
+/// 顶栏日月钮收编进 ⋯ 弹层后暂缺调用（主题弹层复用留位）。
+#[allow(dead_code)]
 pub fn sun(p: &Painter, r: Rect, c: Color32) {
     let cc = r.center();
     let rad = r.height() * 0.24;
@@ -659,6 +661,8 @@ pub fn sun(p: &Painter, r: Rect, c: Color32) {
 }
 
 /// 月亮（深色模式标记：圆盘被背景色圆切出月牙；carve 传所在底色）。
+/// 同 sun。
+#[allow(dead_code)]
 pub fn moon(p: &Painter, r: Rect, c: Color32, carve: Color32) {
     let cc = r.center();
     let rad = r.height() * 0.38;
@@ -1119,6 +1123,375 @@ pub fn chrome_btn(ui: &mut egui::Ui, size: f32, tip: &str, paint: &PaintFn) -> e
     ui.painter().rect_filled(rect, 8.0, bg);
     paint(ui.painter(), rect.shrink(size * 0.24), pal.green_dark);
     resp.on_hover_text(tip)
+}
+
+/// 空间（立方盒）。
+pub fn cube(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let mid_y = lerp(r.min.y, 0.32, r.max.y);
+    let l = r.min.x + r.width() * 0.08;
+    let rt = r.max.x - r.width() * 0.08;
+    let cx = r.center().x;
+    let top = r.min.y + r.height() * 0.06;
+    let bot = r.max.y - r.height() * 0.06;
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(cx, top),
+            egui::pos2(rt, mid_y),
+            egui::pos2(cx, bot),
+            egui::pos2(l, mid_y),
+            egui::pos2(cx, top),
+        ],
+        s,
+    ));
+    for x in [l, rt] {
+        p.line_segment(
+            [
+                egui::pos2(x, mid_y),
+                egui::pos2(x, lerp(r.min.y, 0.68, r.max.y)),
+            ],
+            s,
+        );
+    }
+    p.line_segment([egui::pos2(cx, bot), egui::pos2(cx, mid_y)], s);
+}
+
+/// 清单（圆 + 对勾）。
+pub fn check_circle(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.circle_stroke(r.center(), r.width() * 0.42, s);
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.30, r.max.x), lerp(r.min.y, 0.52, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.45, r.max.x), lerp(r.min.y, 0.68, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.72, r.max.x), lerp(r.min.y, 0.32, r.max.y)),
+        ],
+        s,
+    ));
+}
+
+/// 日历。
+pub fn calendar(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let body = Rect::from_min_max(
+        egui::pos2(r.min.x + r.width() * 0.10, lerp(r.min.y, 0.20, r.max.y)),
+        egui::pos2(r.max.x - r.width() * 0.10, r.max.y - r.height() * 0.08),
+    );
+    p.rect_stroke(body, 2.0, s);
+    p.line_segment(
+        [
+            egui::pos2(body.min.x, lerp(r.min.y, 0.38, r.max.y)),
+            egui::pos2(body.max.x, lerp(r.min.y, 0.38, r.max.y)),
+        ],
+        s,
+    );
+    for tx in [0.30, 0.70] {
+        p.line_segment(
+            [
+                egui::pos2(lerp(r.min.x, tx, r.max.x), r.min.y + r.height() * 0.04),
+                egui::pos2(lerp(r.min.x, tx, r.max.x), lerp(r.min.y, 0.28, r.max.y)),
+            ],
+            s,
+        );
+    }
+}
+
+/// 文件库（档案盒）。
+pub fn archive_box(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let body = Rect::from_min_max(
+        egui::pos2(r.min.x + r.width() * 0.10, lerp(r.min.y, 0.26, r.max.y)),
+        egui::pos2(r.max.x - r.width() * 0.10, r.max.y - r.height() * 0.08),
+    );
+    p.rect_stroke(body, 2.0, s);
+    let lid = Rect::from_min_max(
+        egui::pos2(r.min.x + r.width() * 0.06, lerp(r.min.y, 0.10, r.max.y)),
+        egui::pos2(r.max.x - r.width() * 0.06, lerp(r.min.y, 0.26, r.max.y)),
+    );
+    p.rect_stroke(lid, 2.0, s);
+    p.line_segment(
+        [
+            egui::pos2(lerp(r.min.x, 0.40, r.max.x), lerp(r.min.y, 0.44, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.60, r.max.x), lerp(r.min.y, 0.44, r.max.y)),
+        ],
+        s,
+    );
+}
+
+/// 模板库（页面 + 标题块 + 行）。
+pub fn template(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let body = Rect::from_min_max(
+        egui::pos2(r.min.x + r.width() * 0.14, r.min.y + r.height() * 0.06),
+        egui::pos2(r.max.x - r.width() * 0.14, r.max.y - r.height() * 0.06),
+    );
+    p.rect_stroke(body, 2.0, s);
+    p.line_segment(
+        [
+            egui::pos2(body.min.x, lerp(r.min.y, 0.34, r.max.y)),
+            egui::pos2(body.max.x, lerp(r.min.y, 0.34, r.max.y)),
+        ],
+        s,
+    );
+    for t in [0.54, 0.72] {
+        let y = lerp(r.min.y, t, r.max.y);
+        p.line_segment(
+            [
+                egui::pos2(lerp(r.min.x, 0.26, r.max.x), y),
+                egui::pos2(lerp(r.min.x, 0.74, r.max.x), y),
+            ],
+            s,
+        );
+    }
+}
+
+/// 知识星图（三节点网络）。
+pub fn graph_nodes(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let a = egui::pos2(r.center().x, r.min.y + r.height() * 0.16);
+    let b = egui::pos2(r.min.x + r.width() * 0.12, r.max.y - r.height() * 0.16);
+    let d = egui::pos2(r.max.x - r.width() * 0.12, r.max.y - r.height() * 0.20);
+    p.line_segment([a, b], s);
+    p.line_segment([a, d], s);
+    p.line_segment([b, d], s);
+    for n in [a, b, d] {
+        p.circle_filled(n, r.width() * 0.12, c);
+    }
+}
+
+/// 帮助（圆 + 问号）。
+pub fn help_circle(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.circle_stroke(r.center(), r.width() * 0.42, s);
+    let g = p.layout_no_wrap(
+        "?".to_string(),
+        egui::FontId::new(r.height() * 0.62, egui::FontFamily::Proportional),
+        c,
+    );
+    p.galley(
+        egui::pos2(
+            r.center().x - g.size().x * 0.5,
+            r.center().y - g.size().y * 0.5,
+        ),
+        g,
+        c,
+    );
+}
+
+/// 底部列表视图（两行方块 + 横线）。
+pub fn rows_view(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    for t in [0.20, 0.58] {
+        let y = lerp(r.min.y, t, r.max.y);
+        let sq = Rect::from_min_size(
+            egui::pos2(r.min.x + r.width() * 0.06, y),
+            egui::vec2(r.width() * 0.26, r.height() * 0.22),
+        );
+        p.rect_stroke(sq, 1.5, s);
+        p.line_segment(
+            [
+                egui::pos2(lerp(r.min.x, 0.44, r.max.x), y + r.height() * 0.11),
+                egui::pos2(r.max.x - r.width() * 0.04, y + r.height() * 0.11),
+            ],
+            s,
+        );
+    }
+}
+
+/// 通知铃。
+pub fn bell(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let cx = r.center().x;
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.26, r.max.x), lerp(r.min.y, 0.72, r.max.y)),
+            egui::pos2(
+                lerp(r.min.x, 0.30, r.max.y * 0.0 + 1.0) * 0.0 + lerp(r.min.x, 0.30, r.max.x),
+                lerp(r.min.y, 0.42, r.max.y),
+            ),
+            egui::pos2(cx, r.min.y + r.height() * 0.12),
+            egui::pos2(lerp(r.min.x, 0.70, r.max.x), lerp(r.min.y, 0.42, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.74, r.max.x), lerp(r.min.y, 0.72, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.26, r.max.x), lerp(r.min.y, 0.72, r.max.y)),
+        ],
+        s,
+    ));
+    p.line_segment(
+        [
+            egui::pos2(cx, r.min.y + r.height() * 0.12),
+            egui::pos2(cx, lerp(r.min.y, 0.22, r.max.y)),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            egui::pos2(lerp(r.min.x, 0.44, r.max.x), r.max.y - r.height() * 0.10),
+            egui::pos2(lerp(r.min.x, 0.56, r.max.x), r.max.y - r.height() * 0.10),
+        ],
+        Stroke::new(sw(r) * 1.2, c),
+    );
+}
+
+/// 分享（方框 + 外向箭头）。
+pub fn share_box(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.62, r.max.x), r.min.y + r.height() * 0.10),
+            egui::pos2(r.min.x + r.width() * 0.10, r.min.y + r.height() * 0.10),
+            egui::pos2(r.min.x + r.width() * 0.10, r.max.y - r.height() * 0.10),
+            egui::pos2(r.max.x - r.width() * 0.10, r.max.y - r.height() * 0.10),
+            egui::pos2(r.max.x - r.width() * 0.10, lerp(r.min.y, 0.38, r.max.y)),
+        ],
+        s,
+    ));
+    p.line_segment(
+        [
+            egui::pos2(lerp(r.min.x, 0.46, r.max.x), lerp(r.min.y, 0.54, r.max.y)),
+            egui::pos2(r.max.x - r.width() * 0.08, r.min.y + r.height() * 0.08),
+        ],
+        s,
+    );
+    let t = Stroke::new(sw(r) * 1.2, c);
+    p.line_segment(
+        [
+            egui::pos2(r.max.x - r.width() * 0.28, r.min.y + r.height() * 0.08),
+            egui::pos2(r.max.x - r.width() * 0.06, r.min.y + r.height() * 0.08),
+        ],
+        t,
+    );
+    p.line_segment(
+        [
+            egui::pos2(r.max.x - r.width() * 0.08, r.min.y + r.height() * 0.06),
+            egui::pos2(r.max.x - r.width() * 0.08, r.min.y + r.height() * 0.28),
+        ],
+        t,
+    );
+}
+
+/// 表情（圆 + 双眼 + 弧笑）。
+pub fn smiley(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.circle_stroke(r.center(), r.width() * 0.42, s);
+    for tx in [0.36, 0.64] {
+        p.circle_filled(
+            egui::pos2(lerp(r.min.x, tx, r.max.x), lerp(r.min.y, 0.42, r.max.y)),
+            r.width() * 0.055,
+            c,
+        );
+    }
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(lerp(r.min.x, 0.32, r.max.x), lerp(r.min.y, 0.60, r.max.y)),
+            egui::pos2(r.center().x, lerp(r.min.y, 0.72, r.max.y)),
+            egui::pos2(lerp(r.min.x, 0.68, r.max.x), lerp(r.min.y, 0.60, r.max.y)),
+        ],
+        s,
+    ));
+}
+
+/// 盾牌（含锁孔）。
+pub fn shield_key(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    let cx = r.center().x;
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(cx, r.min.y + r.height() * 0.08),
+            egui::pos2(r.max.x - r.width() * 0.12, lerp(r.min.y, 0.22, r.max.y)),
+            egui::pos2(r.max.x - r.width() * 0.12, lerp(r.min.y, 0.55, r.max.y)),
+            egui::pos2(cx, r.max.y - r.height() * 0.08),
+            egui::pos2(r.min.x + r.width() * 0.12, lerp(r.min.y, 0.55, r.max.y)),
+            egui::pos2(r.min.x + r.width() * 0.12, lerp(r.min.y, 0.22, r.max.y)),
+            egui::pos2(cx, r.min.y + r.height() * 0.08),
+        ],
+        s,
+    ));
+    p.circle_filled(
+        egui::pos2(cx, lerp(r.min.y, 0.42, r.max.y)),
+        r.width() * 0.075,
+        c,
+    );
+    p.line_segment(
+        [
+            egui::pos2(cx, lerp(r.min.y, 0.50, r.max.y)),
+            egui::pos2(cx, lerp(r.min.y, 0.62, r.max.y)),
+        ],
+        s,
+    );
+}
+
+/// 圈内三点（官方 ⋯ 钮）。
+pub fn dots_circle(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(sw(r), c);
+    p.circle_stroke(r.center(), r.width() * 0.42, s);
+    for tx in [0.30, 0.50, 0.70] {
+        p.circle_filled(
+            egui::pos2(lerp(r.min.x, tx, r.max.x), r.center().y),
+            r.width() * 0.05,
+            c,
+        );
+    }
+}
+
+/// 左/右 chevron（顶栏导航箭头）。
+pub fn chevron_lr(p: &Painter, r: Rect, c: Color32, left: bool) {
+    let s = Stroke::new(sw(r) * 1.2, c);
+    let (x1, x2) = if left {
+        (lerp(r.min.x, 0.62, r.max.x), lerp(r.min.x, 0.34, r.max.x))
+    } else {
+        (lerp(r.min.x, 0.38, r.max.x), lerp(r.min.x, 0.66, r.max.x))
+    };
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(x1, r.min.y + r.height() * 0.14),
+            egui::pos2(x2, r.center().y),
+            egui::pos2(x1, r.max.y - r.height() * 0.14),
+        ],
+        s,
+    ));
+}
+
+/// 头像（绿圆 + 白色大象简笔：头 + 垂鼻 + 耳）。
+pub fn avatar(p: &Painter, r: Rect, _c: Color32) {
+    p.circle_filled(
+        r.center(),
+        r.width() * 0.48,
+        Color32::from_rgb(0x2E, 0xB8, 0x72),
+    );
+    let w = Color32::WHITE;
+    let body = Rect::from_center_size(
+        egui::pos2(
+            r.center().x - r.width() * 0.05,
+            r.center().y - r.height() * 0.06,
+        ),
+        egui::vec2(r.width() * 0.42, r.height() * 0.34),
+    );
+    p.circle_filled(body.center(), body.width() * 0.5, w);
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(
+                r.center().x + r.width() * 0.10,
+                r.center().y - r.height() * 0.02,
+            ),
+            egui::pos2(
+                r.center().x + r.width() * 0.15,
+                r.center().y + r.height() * 0.20,
+            ),
+            egui::pos2(
+                r.center().x + r.width() * 0.03,
+                r.center().y + r.height() * 0.25,
+            ),
+        ],
+        Stroke::new(r.width() * 0.09, w),
+    ));
+    p.circle_filled(
+        egui::pos2(
+            r.center().x - r.width() * 0.15,
+            r.center().y - r.height() * 0.10,
+        ),
+        r.width() * 0.09,
+        w,
+    );
 }
 
 #[cfg(test)]

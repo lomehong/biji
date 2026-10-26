@@ -1518,6 +1518,7 @@ impl BijiApp {
                     .inner_margin(egui::Margin::symmetric(8.0, 9.0)),
             )
             .show(ctx, |ui| {
+                eprintln!("[menubar-probe] panel max_rect={:?}", ui.max_rect());
                 // 菜单按钮扁平化：静态纯文字，hover 才显灰底（对位原生菜单栏）
                 {
                     let w = &mut ui.style_mut().visuals.widgets;
@@ -1977,68 +1978,176 @@ impl BijiApp {
                             ui.close_menu();
                         }
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let user = self
-                            .service
-                            .get_current_user_info()
-                            .map(|u| format!("{}#{}", u.username, u.service_host))
-                            .unwrap_or_default();
-                        ui.label(
-                            egui::RichText::new(user)
-                                .small()
-                                .color(theme::pal().subtle),
+                    // 官方顶栏右侧簇：面板级绝对定位（horizontal+RTL 组合在
+                    // TopBottomPanel+Frame 下实测不渲染，改 allocate_ui_at_rect）
+                    let panel_rect = ui.max_rect();
+                    let cluster = egui::Rect::from_min_max(
+                        egui::pos2(panel_rect.max.x - 440.0, panel_rect.min.y),
+                        egui::pos2(panel_rect.max.x, panel_rect.max.y),
+                    );
+                    // egui 0.29 中 allocate_new_ui API 未定型，沿用弃用入口
+                    #[allow(deprecated)]
+                    ui.allocate_ui_at_rect(cluster, |ui| {
+                        let panel_p = ui.painter().clone();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+
+                        // 官方顶栏右侧簇（ref-user-live.png）：
+                        // 头像/AI胶囊/│/⋯/盾/表情/分享/铃铛/同步/‹›
+                        let (ar, _ar2) =
+                            ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+                                                crate::icons::avatar(&panel_p, ar, theme::pal().text);
+                        // AI 胶囊（蓝紫渐变 + 白星芒 + AI）
+                        let (pr, presp) =
+                            ui.allocate_exact_size(egui::vec2(64.0, 26.0), egui::Sense::click());
+                        let c0 = egui::Color32::from_rgb(0x6D, 0x8C, 0xF0);
+                        let c1 = egui::Color32::from_rgb(0x8F, 0x7C, 0xF0);
+                        let steps = 16;
+                        for i in 0..steps {
+                            let t = i as f32 / (steps - 1) as f32;
+                            let cc = egui::Color32::from_rgb(
+                                (c0.r() as f32 + (c1.r() as f32 - c0.r() as f32) * t) as u8,
+                                (c0.g() as f32 + (c1.g() as f32 - c0.g() as f32) * t) as u8,
+                                (c0.b() as f32 + (c1.b() as f32 - c0.b() as f32) * t) as u8,
+                            );
+                            let x0 = pr.min.x + pr.width() * (i as f32 / steps as f32);
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(x0, pr.min.y + 1.0),
+                                    egui::vec2(pr.width() / steps as f32 + 1.0, pr.height() - 2.0),
+                                ),
+                                0.0,
+                                cc,
+                            );
+                        }
+                        let ai_g = ui.painter().layout_no_wrap(
+                            "AI".to_string(),
+                            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                            egui::Color32::WHITE,
                         );
-                        // 同步：绿色圆形图标钮（对位原客户端右上圆形同步钮），
-                        // 待同步数走悬停提示（状态栏亦常显）
+                        ui.painter().galley(
+                            egui::pos2(
+                                pr.max.x - 24.0,
+                                pr.center().y - ai_g.size().y * 0.5,
+                            ),
+                            ai_g,
+                            egui::Color32::WHITE,
+                        );
+                        crate::icons::sparkle(
+                            ui.painter(),
+                            egui::Rect::from_center_size(
+                                egui::pos2(pr.min.x + 20.0, pr.center().y),
+                                egui::vec2(14.0, 14.0),
+                            ),
+                            egui::Color32::WHITE,
+                        );
+                                                if presp.clicked() {
+                            self.st.status = "AI 助理：见侧栏「AI 助理」入口".into();
+                        }
+                        let _presp = presp.on_hover_text("AI 助理");
+                        // 手机入口（官方同位）
+                        let (ph, phr) =
+                            ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                        if phr.hovered() {
+                            ui.painter().rect_filled(ph, 6.0, theme::pal().hovered);
+                        }
+                        crate::icons::phone(ui.painter(), ph.shrink(4.0), theme::pal().text);
+                        // 竖分隔线
+                        let (sep, _sep2) =
+                            ui.allocate_exact_size(egui::vec2(1.0, 22.0), egui::Sense::hover());
+                        ui.painter().rect_filled(sep, 0.0, theme::pal().hairline);
+                        ui.add_space(8.0);
+                        // ⋯：主题切换弹层（原标题栏日月钮收编于此）
+                        let dots_id = egui::Id::new("topbar-more");
+                        let (dr, dresp) =
+                            ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+                        if dresp.hovered() {
+                            ui.painter().rect_filled(dr, 6.0, theme::pal().hovered);
+                        }
+                        crate::icons::dots_circle(
+                            ui.painter(),
+                            dr.shrink(3.0),
+                            theme::pal().text,
+                        );
+                                                if dresp.clicked() {
+                            ui.memory_mut(|m| {
+                                if m.is_popup_open(dots_id) {
+                                    m.close_popup();
+                                } else {
+                                    m.open_popup(dots_id);
+                                }
+                            });
+                        }
+                        let dresp = dresp.on_hover_text("更多");
+                        egui::popup_below_widget(
+                            ui,
+                            dots_id,
+                            &dresp,
+                            egui::PopupCloseBehavior::CloseOnClick,
+                            |ui| {
+                                if crate::icons::menu_item(
+                                    ui,
+                                    None,
+                                    if theme::is_dark() { "浅色模式" } else { "深色模式" },
+                                ) {
+                                    self.toggle_theme();
+                                    ui.close_menu();
+                                }
+                            },
+                        );
+                        // 装饰图标（官方同位：盾/表情/分享/铃铛）
+                        let deco = |ui: &mut egui::Ui,
+                                    tip: &str,
+                                    paint: &dyn Fn(&egui::Painter, egui::Rect, egui::Color32)| {
+                            let (r, resp) = ui
+                                .allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                            if resp.hovered() {
+                                ui.painter().rect_filled(r, 6.0, theme::pal().hovered);
+                            }
+                            paint(ui.painter(), r.shrink(4.0), theme::pal().text);
+                            let _ = resp.on_hover_text(format!("{tip}（未实现）"));
+                        };
+                        deco(ui, "加密保护", &crate::icons::shield_key);
+                        deco(ui, "表情反馈", &crate::icons::smiley);
+                        deco(ui, "共享", &crate::icons::share_box);
+                        deco(ui, "通知", &crate::icons::bell);
+                        // 同步（真实功能：outline 样式对位官方刷新圆）
                         let pending = self.pending_sync_count();
                         let (sr, sresp) =
-                            ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
-                        ui.painter()
-                            .circle_filled(sr.center(), 15.0, theme::pal().green);
+                            ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+                        if sresp.hovered() {
+                            ui.painter().rect_filled(sr, 6.0, theme::pal().hovered);
+                        }
                         crate::icons::sync_arrows(
                             ui.painter(),
-                            sr.shrink(7.0),
-                            theme::pal().white,
+                            sr.shrink(5.0),
+                            theme::pal().text,
                         );
                         if sresp.clicked() {
                             self.do_sync();
                         }
-                        let _ = sresp.on_hover_text(format!("同步（待同步 {pending} 条）"));
-                        // 主题快捷切换（自绘太阳/月亮钮，深浅两态都清晰）
-                        {
-                            let (tr, tresp) = ui.allocate_exact_size(
-                                egui::vec2(26.0, 26.0),
-                                egui::Sense::click(),
-                            );
-                            if tresp.hovered() {
-                                ui.painter().rect_filled(tr, 6.0, theme::pal().hovered);
-                            }
-                            let icon_rect = tr.shrink(5.0);
-                            if theme::is_dark() {
-                                crate::icons::sun(
-                                    ui.painter(),
-                                    icon_rect,
-                                    theme::pal().text,
-                                );
-                            } else {
-                                crate::icons::moon(
-                                    ui.painter(),
-                                    icon_rect,
-                                    theme::pal().text,
-                                    theme::pal().white,
-                                );
-                            }
-                            if tresp.clicked() {
-                                self.toggle_theme();
-                            }
-                            let _ = tresp.on_hover_text(if theme::is_dark() {
-                                "切换到浅色模式"
-                            } else {
-                                "切换到深色模式"
-                            });
+                        let _sresp = sresp.on_hover_text(format!("同步（待同步 {pending} 条）"));
+                                                // ‹ › 导航箭头（右箭头弱化为不可用，对位官方）
+                        let (nv2, _nv2r) =
+                            ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+                        crate::icons::chevron_lr(
+                            ui.painter(),
+                            nv2.shrink(4.0),
+                            theme::pal().subtle,
+                            false,
+                        );
+                        let (nv1, nv1r) =
+                            ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+                        if nv1r.hovered() {
+                            ui.painter().rect_filled(nv1, 6.0, theme::pal().hovered);
                         }
-                    });
-                });
+                        crate::icons::chevron_lr(
+                            ui.painter(),
+                            nv1.shrink(4.0),
+                            theme::pal().text,
+                            true,
+                        );
+                        });
+                    });                });
             });
     }
 
@@ -2800,39 +2909,132 @@ impl BijiApp {
                     }
                 }
                 ui.add_space(10.0);
-                if theme::nav_row_p(
+                // ---- 官方侧栏结构补齐（ref-user-live.png）：空间/清单/日历 ----
+                let (spc_row, _spc_plus) = theme::nav_row_chev(
                     ui,
                     ui.available_width(),
-                    "企业空间",
+                    Some(false),
+                    "空间",
                     false,
-                    &crate::icons::corp,
-                )
-                .clicked()
-                {
-                    self.st.groupspace = if self.st.groupspace.is_some() {
-                        None
-                    } else {
-                        Some(GroupspaceState {
-                            open: true,
-                            new_name: String::new(),
-                            new_desc: String::new(),
-                            status: String::new(),
-                        })
-                    };
+                    &crate::icons::cube,
+                    false,
+                );
+                if spc_row.clicked() {
+                    self.st.status = "空间暂未实现（规划中）".into();
                 }
-                ui.add_space(6.0);
+                let task_row = theme::nav_row_p(
+                    ui,
+                    ui.available_width() - 16.0,
+                    "清单",
+                    false,
+                    &crate::icons::check_circle,
+                );
+                if task_row.clicked() {
+                    self.st.status = "清单暂未实现（规划中）".into();
+                }
+                // 清单行右侧红点（官方通知角标，紧跟文字）
+                let label_w = ui
+                    .painter()
+                    .layout_no_wrap(
+                        "清单".to_string(),
+                        egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                        theme::pal().text,
+                    )
+                    .size()
+                    .x;
+                let dot = egui::Rect::from_center_size(
+                    egui::pos2(
+                        task_row.rect.min.x + 32.0 + label_w + 9.0,
+                        task_row.rect.center().y,
+                    ),
+                    egui::vec2(7.0, 7.0),
+                );
+                ui.painter().circle_filled(
+                    dot.center(),
+                    3.5,
+                    egui::Color32::from_rgb(0xE8, 0x4C, 0x4C),
+                );
                 if theme::nav_row_p(
                     ui,
                     ui.available_width(),
-                    "回收站",
-                    self.st.trash_view,
-                    &crate::icons::trash,
+                    "日历",
+                    false,
+                    &crate::icons::calendar,
                 )
                 .clicked()
                 {
-                    self.st.trash_view = true;
-                    action = Some(self.st.selection.clone());
+                    self.st.status = "日历暂未实现（规划中）".into();
                 }
+                ui.add_space(10.0);
+                if theme::nav_row_p(
+                    ui,
+                    ui.available_width(),
+                    "文件库",
+                    false,
+                    &crate::icons::archive_box,
+                )
+                .clicked()
+                {
+                    self.st.status = "文件库暂未实现（规划中）".into();
+                }
+                if theme::nav_row_p(
+                    ui,
+                    ui.available_width(),
+                    "模板库",
+                    false,
+                    &crate::icons::template,
+                )
+                .clicked()
+                {
+                    self.st.status = "模板库暂未实现（规划中）".into();
+                }
+                if theme::nav_row_p(
+                    ui,
+                    ui.available_width(),
+                    "知识星图",
+                    false,
+                    &crate::icons::graph_nodes,
+                )
+                .clicked()
+                {
+                    self.st.status = "知识星图暂未实现（规划中）".into();
+                }
+                // 底部图标行（右对齐）：列表视图 / 帮助 / 回收站
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(14.0);
+                    let (g1, g1r) =
+                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                    if g1r.hovered() {
+                        ui.painter().rect_filled(g1, 6.0, theme::pal().hovered);
+                    }
+                    crate::icons::rows_view(ui.painter(), g1.shrink(3.0), theme::pal().subtle);
+                    if g1r.clicked() {
+                        self.st.status = "侧栏列表视图切换暂未实现".into();
+                    }
+                    let _g1r = g1r.on_hover_text("侧栏列表视图");
+                    let (g2, g2r) =
+                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                    if g2r.hovered() {
+                        ui.painter().rect_filled(g2, 6.0, theme::pal().hovered);
+                    }
+                    crate::icons::help_circle(ui.painter(), g2.shrink(3.0), theme::pal().subtle);
+                    if g2r.clicked() {
+                        self.st.status = "帮助：见 帮助(H) 菜单（F1）".into();
+                    }
+                    let _g2r = g2r.on_hover_text("帮助");
+                    let (g3, g3r) =
+                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                    if g3r.hovered() {
+                        ui.painter().rect_filled(g3, 6.0, theme::pal().hovered);
+                    }
+                    crate::icons::trash(ui.painter(), g3.shrink(3.0), theme::pal().subtle);
+                    if g3r.clicked() {
+                        self.st.trash_view = true;
+                        action = Some(self.st.selection.clone());
+                    }
+                    let _g3r = g3r.on_hover_text("回收站");
+                });
             });
 
         if let Some(sel) = action {
@@ -4250,20 +4452,18 @@ impl BijiApp {
                         },
                     );
                     for (t_uid, t_name) in &attached {
+                        // 官方 chip：浅绿底圆角 + 绿字（ref-user-live.png 底栏）
                         let chip = egui::Frame::default()
-                            .fill(theme::pal().white)
-                            .stroke(egui::Stroke::new(1.0_f32, theme::pal().hairline))
+                            .fill(theme::pal().green_tint)
+                            .stroke(egui::Stroke::NONE)
                             .rounding(10.0)
                             .inner_margin(egui::Margin::symmetric(8.0, 2.0));
                         chip.show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                let (tr, _tr) = ui.allocate_exact_size(
-                                    egui::vec2(10.0, 10.0),
-                                    egui::Sense::hover(),
-                                );
-                                crate::icons::tag(ui.painter(), tr, theme::pal().subtle);
                                 ui.label(
-                                    egui::RichText::new(t_name).small().color(theme::pal().text),
+                                    egui::RichText::new(t_name)
+                                        .small()
+                                        .color(theme::pal().green_dark),
                                 );
                                 if ui
                                     .add(
