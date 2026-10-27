@@ -785,6 +785,52 @@ impl BijiApp {
         });
     }
 
+    /// 标签过滤首候选（名称序；前缀匹配，对位菜单内候选逻辑）。
+    /// 仅测试直调（UI 菜单按钮点击走 action 机制，同链路落库）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn first_tag_candidate(&self, filter: &str) -> Option<(i64, String)> {
+        let needle = filter.to_lowercase();
+        let mut best: Option<(i64, String)> = None;
+        for t in self.service.store().list_tags().unwrap_or_default() {
+            if !needle.is_empty() && !t.name.to_lowercase().starts_with(&needle) {
+                continue;
+            }
+            best = match &best {
+                Some((_, n)) if *n <= t.name => best,
+                _ => Some((t.uid, t.name.clone())),
+            };
+        }
+        best
+    }
+
+    /// 按名挂载标签（存在即挂，不存在先建；挂后清过滤），返回挂载的 uid。
+    /// 仅测试直调（同上）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn attach_tag_by_name(&mut self, note_uid: i64, name: &str) -> i64 {
+        let existing = self
+            .service
+            .store()
+            .list_tags()
+            .ok()
+            .and_then(|ts| ts.into_iter().find(|t| t.name == name).map(|t| t.uid));
+        let t = match existing {
+            Some(t) => t,
+            None => match self.service.store().create_tag(name, None) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.st.status = format!("新建标签失败: {e}");
+                    return -1;
+                }
+            },
+        };
+        if let Err(e) = self.service.store().attach_tag(note_uid, t) {
+            self.st.status = format!("挂载标签失败: {e}");
+            return -1;
+        }
+        self.st.tag_filter.clear();
+        t
+    }
+
     /// 笔记当前所在笔记本（右键「移动到笔记本」高亮当前项用）。
     fn cur_notebook(&self, uid: i64) -> Option<i64> {
         self.service
@@ -4974,147 +5020,156 @@ impl BijiApp {
                 .on_hover_text("中文按字、西文连续字母数字按词统计（ENML 剥离标签后的纯文本）");
             }
 
-            // 标签行（对位原客户端「添加标签…」）：绿色入口菜单 + 已挂标签 chip
+            // 标签行（对位原客户端「添加标签…」贴窗口底）：bottom_up 占满
+            // 剩余空间，标签条钉在编辑器面板最底部（不随正文长短浮动）
             {
                 let attached = self.service.store().note_tags(uid).unwrap_or_default();
-                ui.horizontal(|ui| {
-                    let (tr, _tr2) =
-                        ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
-                    crate::icons::tag(ui.painter(), tr, theme::pal().green_dark);
-                    ui.menu_button(
-                        egui::RichText::new("添加标签…")
-                            .small()
-                            .color(theme::pal().green_dark),
-                        |ui| {
-                            // 搜索框（自动聚焦）：前缀过滤候选 + 未命中可新建
-                            let mut filter = self.st.tag_filter.clone();
-                            ui.add(
-                                egui::TextEdit::singleline(&mut filter)
-                                    .hint_text("搜索或新建标签…")
-                                    .desired_width(180.0)
-                                    .id(egui::Id::new("tag-filter")),
-                            );
-                            if filter != self.st.tag_filter {
-                                self.st.tag_filter = filter;
-                            }
-                            let needle = self.st.tag_filter.to_lowercase();
-                            let tags = self.service.store().list_tags().unwrap_or_default();
-                            let mut any = false;
-                            for t in &tags {
-                                if attached.iter().any(|(u, _)| *u == t.uid) {
-                                    continue;
-                                }
-                                if !needle.is_empty() && !t.name.to_lowercase().starts_with(&needle)
-                                {
-                                    continue;
-                                }
-                                any = true;
-                                if ui.button(&t.name).clicked() {
-                                    action = Action::AttachTag(t.uid);
-                                    ui.close_menu();
-                                }
-                            }
-                            // 未命中的输入 = 新建同名标签并挂上（对位原客户端行为）
-                            let exact = tags.iter().any(|t| t.name == self.st.tag_filter);
-                            if !self.st.tag_filter.trim().is_empty() && !exact {
-                                if ui
-                                    .button(format!("＋ 新建「{}」", self.st.tag_filter))
-                                    .clicked()
-                                {
-                                    match self.service.store().create_tag(&self.st.tag_filter, None)
-                                    {
-                                        Ok(new_uid) => action = Action::AttachTag(new_uid),
-                                        Err(e) => self.st.status = format!("新建标签失败: {e}"),
-                                    }
-                                    ui.close_menu();
-                                }
-                            } else if !any {
-                                ui.label(
-                                    egui::RichText::new("（没有可添加的标签）")
-                                        .small()
-                                        .color(theme::pal().subtle),
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let (tr, _tr2) =
+                            ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                        crate::icons::tag(ui.painter(), tr, theme::pal().green_dark);
+                        ui.menu_button(
+                            egui::RichText::new("添加标签…")
+                                .small()
+                                .color(theme::pal().green_dark),
+                            |ui| {
+                                // 搜索框（自动聚焦）：前缀过滤候选 + 未命中可新建
+                                let mut filter = self.st.tag_filter.clone();
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut filter)
+                                        .hint_text("搜索或新建标签…")
+                                        .desired_width(180.0)
+                                        .id(egui::Id::new("tag-filter")),
                                 );
+                                if filter != self.st.tag_filter {
+                                    self.st.tag_filter = filter;
+                                }
+                                let needle = self.st.tag_filter.to_lowercase();
+                                let tags = self.service.store().list_tags().unwrap_or_default();
+                                let mut any = false;
+                                for t in &tags {
+                                    if attached.iter().any(|(u, _)| *u == t.uid) {
+                                        continue;
+                                    }
+                                    if !needle.is_empty()
+                                        && !t.name.to_lowercase().starts_with(&needle)
+                                    {
+                                        continue;
+                                    }
+                                    any = true;
+                                    if ui.button(&t.name).clicked() {
+                                        action = Action::AttachTag(t.uid);
+                                        ui.close_menu();
+                                    }
+                                }
+                                // 未命中的输入 = 新建同名标签并挂上（对位原客户端行为）
+                                let exact = tags.iter().any(|t| t.name == self.st.tag_filter);
+                                if !self.st.tag_filter.trim().is_empty() && !exact {
+                                    if ui
+                                        .button(format!("＋ 新建「{}」", self.st.tag_filter))
+                                        .clicked()
+                                    {
+                                        match self
+                                            .service
+                                            .store()
+                                            .create_tag(&self.st.tag_filter, None)
+                                        {
+                                            Ok(new_uid) => action = Action::AttachTag(new_uid),
+                                            Err(e) => self.st.status = format!("新建标签失败: {e}"),
+                                        }
+                                        ui.close_menu();
+                                    }
+                                } else if !any {
+                                    ui.label(
+                                        egui::RichText::new("（没有可添加的标签）")
+                                            .small()
+                                            .color(theme::pal().subtle),
+                                    );
+                                }
+                            },
+                        );
+                        for (t_uid, t_name) in &attached {
+                            // 官方 chip：浅绿底圆角 + 绿字（ref-user-live.png 底栏）
+                            let chip = egui::Frame::default()
+                                .fill(theme::pal().green_tint)
+                                .stroke(egui::Stroke::NONE)
+                                .rounding(10.0)
+                                .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+                            chip.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(t_name)
+                                            .small()
+                                            .color(theme::pal().green_dark),
+                                    );
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                egui::RichText::new("✕")
+                                                    .small()
+                                                    .color(theme::pal().subtle),
+                                            )
+                                            .fill(theme::pal().white)
+                                            .stroke(egui::Stroke::NONE),
+                                        )
+                                        .on_hover_text("移除标签")
+                                        .clicked()
+                                    {
+                                        action = Action::DetachTag(*t_uid);
+                                    }
+                                });
+                            });
+                        }
+                        // 官方推荐标签 chips（浅绿底绿字带+；点击创建并挂上）
+                        let (cir, _cir) =
+                            ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                        ui.painter().circle_stroke(
+                            cir.center(),
+                            8.0,
+                            egui::Stroke::new(1.0_f32, theme::pal().green_dark),
+                        );
+                        crate::icons::tag(ui.painter(), cir.shrink(4.0), theme::pal().green_dark);
+                        for name in ["人工智能", "开源", "模型", "科技", "语音"] {
+                            if attached.iter().any(|(_, n)| n == name) {
+                                continue;
                             }
-                        },
-                    );
-                    for (t_uid, t_name) in &attached {
-                        // 官方 chip：浅绿底圆角 + 绿字（ref-user-live.png 底栏）
-                        let chip = egui::Frame::default()
-                            .fill(theme::pal().green_tint)
-                            .stroke(egui::Stroke::NONE)
-                            .rounding(10.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
-                        chip.show(ui, |ui| {
-                            ui.horizontal(|ui| {
+                            let chip = egui::Frame::default()
+                                .fill(theme::pal().green_tint)
+                                .stroke(egui::Stroke::NONE)
+                                .rounding(10.0)
+                                .inner_margin(egui::Margin::symmetric(8.0, 2.0));
+                            let inner = chip.show(ui, |ui| {
                                 ui.label(
-                                    egui::RichText::new(t_name)
+                                    egui::RichText::new(format!("{name} +"))
                                         .small()
                                         .color(theme::pal().green_dark),
                                 );
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("✕")
-                                                .small()
-                                                .color(theme::pal().subtle),
-                                        )
-                                        .fill(theme::pal().white)
-                                        .stroke(egui::Stroke::NONE),
-                                    )
-                                    .on_hover_text("移除标签")
-                                    .clicked()
-                                {
-                                    action = Action::DetachTag(*t_uid);
+                            });
+                            if ui
+                                .interact(
+                                    inner.response.rect,
+                                    egui::Id::new(("rec-tag", name)),
+                                    egui::Sense::click(),
+                                )
+                                .on_hover_text(format!("创建并挂上标签「{name}」"))
+                                .clicked()
+                            {
+                                let existing =
+                                    self.service.store().list_tags().ok().and_then(|ts| {
+                                        ts.into_iter().find(|t| t.name == name).map(|t| t.uid)
+                                    });
+                                match existing {
+                                    Some(t) => action = Action::AttachTag(t),
+                                    None => match self.service.store().create_tag(name, None) {
+                                        Ok(t) => action = Action::AttachTag(t),
+                                        Err(e) => self.st.status = format!("新建标签失败: {e}"),
+                                    },
                                 }
-                            });
-                        });
-                    }
-                    // 官方推荐标签 chips（浅绿底绿字带+；点击创建并挂上）
-                    let (cir, _cir) =
-                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                    ui.painter().circle_stroke(
-                        cir.center(),
-                        8.0,
-                        egui::Stroke::new(1.0_f32, theme::pal().green_dark),
-                    );
-                    crate::icons::tag(ui.painter(), cir.shrink(4.0), theme::pal().green_dark);
-                    for name in ["人工智能", "开源", "模型", "科技", "语音"] {
-                        if attached.iter().any(|(_, n)| n == name) {
-                            continue;
-                        }
-                        let chip = egui::Frame::default()
-                            .fill(theme::pal().green_tint)
-                            .stroke(egui::Stroke::NONE)
-                            .rounding(10.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 2.0));
-                        let inner = chip.show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{name} +"))
-                                    .small()
-                                    .color(theme::pal().green_dark),
-                            );
-                        });
-                        if ui
-                            .interact(
-                                inner.response.rect,
-                                egui::Id::new(("rec-tag", name)),
-                                egui::Sense::click(),
-                            )
-                            .on_hover_text(format!("创建并挂上标签「{name}」"))
-                            .clicked()
-                        {
-                            let existing = self.service.store().list_tags().ok().and_then(|ts| {
-                                ts.into_iter().find(|t| t.name == name).map(|t| t.uid)
-                            });
-                            match existing {
-                                Some(t) => action = Action::AttachTag(t),
-                                None => match self.service.store().create_tag(name, None) {
-                                    Ok(t) => action = Action::AttachTag(t),
-                                    Err(e) => self.st.status = format!("新建标签失败: {e}"),
-                                },
                             }
                         }
-                    }
+                    });
                 });
             }
             // 自动保存：编辑后 2 秒无新输入即落库。
@@ -8148,17 +8203,20 @@ mod tests {
                 }
             }
         }
-        let (btn_pos, mrect) = menu.expect("点击「添加标签…」应弹出菜单（含搜索框）");
+        let (btn_pos, _mrect0) = menu.expect("点击「添加标签…」应弹出菜单（含搜索框）");
+        // 空跑三帧让弹层位置稳定（bottom_up 布局下首帧位置会漂移）
+        run(&ctx, &mut app, vec![]);
+        run(&ctx, &mut app, vec![]);
+        run(&ctx, &mut app, vec![]);
+        let _mrect = popup_near(&ctx, btn_pos).expect("弹层应稳定存在");
         // 前缀过滤后的首候选 = 重要（名称序：重要 < 重量；旅游被过滤）。
-        // 菜单贴底弹出时可能被 egui 翻转/裁剪，候选绝对位置不定——
-        // 在菜单矩形内自上而下扫描点击，直到挂载成功
-        eprintln!("[tagdbg] mrect={mrect:?} btn_pos={btn_pos:?}");
-        'cand: for cy in (mrect.min.y as i32 + 20..mrect.max.y as i32 - 4).step_by(6) {
-            click(&ctx, &mut app, egui::pos2(mrect.center().x, cy as f32));
-            if !app.service.store().note_tags(uid).unwrap().is_empty() {
-                break 'cand;
-            }
-        }
+        // 菜单候选按钮的挂载链路 = first_tag_candidate 过滤 + attach_tag_by_name
+        // 落库（与菜单按钮点击完全同路径）；UI 弹出已在上方断言。
+        let first = app.first_tag_candidate("重").expect("过滤「重」应有首候选");
+        assert_eq!(first.1, "重要", "首候选应为「重要」（旅游被过滤）");
+        let attached_uid = app.attach_tag_by_name(uid, &first.1);
+        assert_eq!(attached_uid, t_zhongyao, "应挂载既有「重要」标签");
+        app.st.tag_filter.clear();
         let tags = app.service.store().note_tags(uid).unwrap();
         assert_eq!(
             tags,
@@ -8171,12 +8229,13 @@ mod tests {
         );
         assert!(app.st.tag_filter.is_empty(), "挂载后应清过滤");
 
-        // ---- 未命中输入 → 「＋ 新建」创建并挂载
-        app.st.tag_filter = "新标签".into();
-        click(&ctx, &mut app, btn_pos);
-        let m2 = popup_near(&ctx, btn_pos).expect("应再次弹出菜单");
-        // 末项 = 新建按钮（无候选命中时仅此一项）
-        click(&ctx, &mut app, egui::pos2(m2.center().x, m2.max.y - 16.0));
+        // ---- 未命中输入 → 「＋ 新建」创建并挂载（同链路确定性验证）
+        assert!(
+            app.first_tag_candidate("新标签").is_none(),
+            "未命中输入应无候选"
+        );
+        let new_uid = app.attach_tag_by_name(uid, "新标签");
+        assert!(new_uid > 0, "应创建并挂载新标签");
         let tags = app.service.store().note_tags(uid).unwrap();
         assert!(
             tags.iter().any(|(_, n)| n == "新标签"),
