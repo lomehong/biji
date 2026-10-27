@@ -4590,39 +4590,139 @@ impl BijiApp {
                                     }
                                 });
                             ui.separator();
-                            const BTNS: &[(&str, &str, &str, &str)] = &[
-                                ("B", "b", "", "粗体(Ctrl+B)"),
-                                ("I", "i", "", "斜体(Ctrl+I)"),
-                                ("U", "u", "", "下划线(Ctrl+U)"),
-                                ("S", "s", "", "删除线"),
-                                ("{ }", "code", "", "行内代码"),
-                                (
-                                    "高亮",
-                                    "span",
-                                    "style=\"background-color:#ffd54f\"",
-                                    "高亮(Ctrl+Shift+H)",
-                                ),
-                                ("链接", "a", "href=\"\"", "超链接"),
-                            ];
-                            for (label, tag, attr, tip) in BTNS {
-                                let attrs: Vec<(String, String)> = if attr.is_empty() {
-                                    Vec::new()
-                                } else {
-                                    let (k, v) = attr.split_once('=').unwrap_or(("href", "\"\""));
-                                    vec![(k.to_string(), v.trim_matches('"').to_string())]
-                                };
-                                if ui
-                                    .button(egui::RichText::new(*label).size(13.0))
-                                    .on_hover_text(*tip)
-                                    .clicked()
-                                {
-                                    match preview::sel_format_req(&sess, tag, attrs) {
-                                        Some(f) => sess.request_format = Some(f),
-                                        None => {
-                                            self.st.status = "先在正文选中内容再施加格式".into();
+                            // B/I/U/S 用字母钮（对位官方字面）；其余全部图标钮
+                            let mut fmt_btn =
+                                |ui: &mut egui::Ui,
+                                 label: &str,
+                                 tip: &str,
+                                 tag: &str,
+                                 attrs: Vec<(String, String)>| {
+                                    if ui
+                                        .button(egui::RichText::new(label).size(13.0))
+                                        .on_hover_text(tip)
+                                        .clicked()
+                                    {
+                                        match preview::sel_format_req(&sess, tag, attrs) {
+                                            Some(f) => sess.request_format = Some(f),
+                                            None => {
+                                                self.st.status =
+                                                    "先在正文选中内容再施加格式".into();
+                                            }
                                         }
                                     }
+                                };
+                            fmt_btn(ui, "B", "粗体(Ctrl+B)", "b", Vec::new());
+                            fmt_btn(ui, "I", "斜体(Ctrl+I)", "i", Vec::new());
+                            fmt_btn(ui, "U", "下划线(Ctrl+U)", "u", Vec::new());
+                            fmt_btn(ui, "S", "删除线", "s", Vec::new());
+                            ui.separator();
+                            // 高亮笔 / 行内代码（图标钮）
+                            if crate::icons::icon_btn(
+                                ui,
+                                24.0,
+                                "高亮(Ctrl+Shift+H)",
+                                &crate::icons::highlight,
+                            )
+                            .clicked()
+                            {
+                                match preview::sel_format_req(
+                                    &sess,
+                                    "span",
+                                    vec![("style".into(), "background-color:#ffd54f".into())],
+                                ) {
+                                    Some(f) => sess.request_format = Some(f),
+                                    None => {
+                                        self.st.status = "先在正文选中内容再施加格式".into();
+                                    }
                                 }
+                            }
+                            if crate::icons::icon_btn(ui, 24.0, "行内代码", &crate::icons::code)
+                                .clicked()
+                            {
+                                match preview::sel_format_req(&sess, "code", Vec::new()) {
+                                    Some(f) => sess.request_format = Some(f),
+                                    None => {
+                                        self.st.status = "先在正文选中内容再施加格式".into();
+                                    }
+                                }
+                            }
+                            ui.separator();
+                            // 列表三钮（块级，所见即所得）
+                            if ui
+                                .button(egui::RichText::new("•").size(14.0))
+                                .on_hover_text("无序列表")
+                                .clicked()
+                            {
+                                sess.request_list = Some(false);
+                            }
+                            if ui
+                                .button(egui::RichText::new("1.").size(12.0))
+                                .on_hover_text("有序列表")
+                                .clicked()
+                            {
+                                sess.request_list = Some(true);
+                            }
+                            if crate::icons::icon_btn(
+                                ui,
+                                24.0,
+                                "待办事项（源码模式插入）",
+                                &crate::icons::todo,
+                            )
+                            .clicked()
+                            {
+                                self.st.status = "待办事项：切源码模式后由 格式(O) 菜单插入".into();
+                            }
+                            ui.separator();
+                            if crate::icons::icon_btn(
+                                ui,
+                                24.0,
+                                "插入表格（源码模式）",
+                                &crate::icons::table,
+                            )
+                            .clicked()
+                            {
+                                self.st.status = "表格：切源码模式后由 格式(O) 菜单插入".into();
+                            }
+                            if crate::icons::icon_btn(
+                                ui,
+                                24.0,
+                                "插入水平线（源码模式）",
+                                &crate::icons::hr_line,
+                            )
+                            .clicked()
+                            {
+                                self.st.status = "水平线：切源码模式后由 格式(O) 菜单插入".into();
+                            }
+                            ui.separator();
+                            // 超链接（图标钮，选区写回）
+                            if crate::icons::icon_btn(
+                                ui,
+                                24.0,
+                                "超链接（先选中文字）",
+                                &crate::icons::link,
+                            )
+                            .clicked()
+                            {
+                                match preview::sel_format_req(
+                                    &sess,
+                                    "a",
+                                    vec![("href".into(), String::new())],
+                                ) {
+                                    Some(f) => sess.request_format = Some(f),
+                                    None => {
+                                        self.st.status = "先在正文选中内容再施加格式".into();
+                                    }
+                                }
+                            }
+                            if crate::icons::icon_btn(
+                                ui,
+                                24.0,
+                                "清除格式（源码模式）",
+                                &crate::icons::undo,
+                            )
+                            .clicked()
+                            {
+                                self.st.status = "清除格式暂未实现".into();
                             }
                             ui.separator();
                             // 列表三钮（块级，所见即所得）
