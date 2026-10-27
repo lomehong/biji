@@ -4213,30 +4213,6 @@ impl BijiApp {
                             }
                         });
                     });
-                    // AI 助理行（对位原客户端编辑器顶部 AI 入口；视觉占位）
-                    ui.horizontal(|ui| {
-                        let (sr, _sr2) =
-                            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                        crate::icons::sparkle(ui.painter(), sr, theme::pal().ai_purple);
-                        ui.label(
-                            egui::RichText::new("AI 助理")
-                                .small()
-                                .color(theme::pal().ai_purple),
-                        );
-                        let box_f = egui::Frame::default()
-                            .fill(theme::pal().extreme)
-                            .stroke(egui::Stroke::NONE)
-                            .rounding(8.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 3.0));
-                        box_f.show(ui, |ui| {
-                            ui.set_min_width(220.0);
-                            ui.label(
-                                egui::RichText::new("向 AI 提问…")
-                                    .small()
-                                    .color(theme::pal().subtle),
-                            );
-                        });
-                    });
                 }
             }
 
