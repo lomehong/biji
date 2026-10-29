@@ -3358,6 +3358,7 @@ impl BijiApp {
                 // 列表头控件行（对位原客户端：条数 + 排序/视图/标签/⋯ 图标钮）
                 let mut resort = false;
                 let mut tag_pick: Option<Selection> = None;
+                let mut header_shortcut_req: Option<i64> = None;
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!("{}条笔记", self.st.rows.len()))
@@ -3395,24 +3396,27 @@ impl BijiApp {
                                 }
                             },
                         );
-                        // 标签筛选（弹层列各标签）
-                        let tag_btn =
-                            crate::icons::icon_btn(ui, 24.0, "按标签筛选", &crate::icons::tag);
-                        egui::popup_below_widget(
+                        // 锁定钮（对位官方 🔒：当前选中/首条笔记加为快捷方式置顶）
+                        let lock_note = self
+                            .st
+                            .selected_note
+                            .or_else(|| self.st.rows.first().map(|r| r.uid));
+                        let lock_btn = crate::icons::icon_btn(
                             ui,
-                            egui::Id::new("tag-filter-menu"),
-                            &tag_btn,
-                            egui::PopupCloseBehavior::CloseOnClick,
-                            |ui| {
-                                ui.set_min_width(130.0);
-                                for (uid, name) in &tags {
-                                    if crate::icons::menu_item(ui, Some(&crate::icons::tag), name) {
-                                        tag_pick = Some(Selection::Tag(*uid));
-                                        ui.close_menu();
-                                    }
-                                }
+                            24.0,
+                            if lock_note.is_some() {
+                                "置顶到快捷方式"
+                            } else {
+                                "置顶到快捷方式（先选中笔记）"
                             },
+                            &crate::icons::pin,
                         );
+                        if lock_btn.clicked() {
+                            if let Some(u) = lock_note {
+                                header_shortcut_req = Some(u);
+                            }
+                        }
+                        let _ = tag_pick;
                         // 视图切换
                         if crate::icons::icon_btn(
                             ui,
@@ -3487,6 +3491,9 @@ impl BijiApp {
                 ui.add_space(2.0);
                 let mut trash_req: Option<i64> = None;
                 let mut shortcut_req: Option<i64> = None;
+                if header_shortcut_req.is_some() {
+                    shortcut_req = header_shortcut_req;
+                }
                 let mut float_req: Option<i64> = None;
                 let mut move_req: Option<(i64, Option<i64>)> = None;
                 let pinned: std::collections::HashSet<i64> =
