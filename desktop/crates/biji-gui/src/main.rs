@@ -3357,7 +3357,7 @@ impl BijiApp {
                 ui.add_space(2.0);
                 // 列表头控件行（对位原客户端：条数 + 排序/视图/标签/⋯ 图标钮）
                 let mut resort = false;
-                let mut tag_pick: Option<Selection> = None;
+                let tag_pick: Option<Selection> = None;
                 let mut header_shortcut_req: Option<i64> = None;
                 ui.horizontal(|ui| {
                     ui.label(
