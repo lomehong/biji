@@ -3222,22 +3222,46 @@ impl BijiApp {
                 let pill_inner = pill.show(ui, |ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut search)
-                            .hint_text("搜索笔记 (Ctrl+F)")
+                            .hint_text(egui::RichText::new("搜索笔记 (F6)").italics())
                             .frame(false)
                             .id(search_id)
-                            .desired_width(ui.available_width() - 24.0),
+                            .desired_width(ui.available_width() - 40.0),
                     );
                 });
-                // 放大镜绘制在胶囊右缘（对位原客户端图标位置）
+                // 放大镜 + 折叠箭头 ^ 绘制在胶囊右缘（对位原客户端）
                 let pr = pill_inner.response.rect;
                 crate::icons::search(
                     ui.painter(),
                     egui::Rect::from_center_size(
-                        egui::pos2(pr.max.x - 14.0, pr.center().y),
+                        egui::pos2(pr.max.x - 32.0, pr.center().y),
                         egui::vec2(14.0, 14.0),
                     ),
                     theme::pal().subtle,
                 );
+                let flr2 = ui.interact(
+                    egui::Rect::from_center_size(
+                        egui::pos2(pr.max.x - 12.0, pr.center().y),
+                        egui::vec2(16.0, 20.0),
+                    ),
+                    egui::Id::new("search-collapse"),
+                    egui::Sense::click(),
+                );
+                let flr = flr2.clone();
+                // 折叠箭头 ^：点击清空并折叠（对位原客户端收起搜索）
+                let arrow_pts = [
+                    egui::pos2(flr.rect.min.x + 4.0, flr.rect.center().y + 3.0),
+                    egui::pos2(flr.rect.center().x, flr.rect.center().y - 3.0),
+                    egui::pos2(flr.rect.max.x - 4.0, flr.rect.center().y + 3.0),
+                ];
+                ui.painter().add(egui::Shape::line(
+                    arrow_pts.to_vec(),
+                    egui::Stroke::new(1.4, theme::pal().subtle),
+                ));
+                if flr.clicked() {
+                    self.st.search.clear();
+                    self.refresh_rows();
+                }
+                let _ = flr2.on_hover_text("收起搜索");
                 if pill_inner.response.changed() {
                     self.st.search = search;
                     self.refresh_rows();
